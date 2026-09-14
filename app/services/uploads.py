@@ -1,7 +1,11 @@
 import uuid
+import logging
 from pathlib import Path
 
 from fastapi import UploadFile
+from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 UPLOAD_DIR = Path(__file__).resolve().parents[2] / "uploads"
 ALLOWED_CONTENT_TYPES = {
@@ -59,6 +63,21 @@ async def save_upload(file: UploadFile) -> str:
         raise ValueError("El archivo supera el tamaño máximo permitido (15 MB).")
 
     filename = f"{uuid.uuid4()}{extension}"
+    
+    if settings.GCP_BUCKET_NAME:
+        try:
+            from google.cloud import storage
+            client = storage.Client()
+            bucket = client.bucket(settings.GCP_BUCKET_NAME)
+            blob = bucket.blob(filename)
+            # Upload from memory
+            blob.upload_from_string(content, content_type=raw_ct or "application/octet-stream")
+            return f"https://storage.googleapis.com/{settings.GCP_BUCKET_NAME}/{filename}"
+        except Exception as e:
+            logger.error(f"Failed to upload to GCS: {e}")
+            raise ValueError(f"Error al subir el archivo a la nube: {e}")
+            
+    # Fallback to local storage (e.g. local development)
     destination = ensure_upload_dir() / filename
 
     with destination.open("wb") as buffer:

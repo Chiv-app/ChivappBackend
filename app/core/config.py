@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     # Public URL for webhooks (in production or ngrok/tunnel; falls back to OAUTH_REDIRECT_BASE_URL)
     MERCADO_PAGO_WEBHOOK_BASE_URL: str = ""
 
+    # Google Cloud Storage
+    GCP_BUCKET_NAME: str = ""
+
     model_config = SettingsConfigDict(
         env_file=".env",
         extra="ignore",
