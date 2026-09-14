@@ -20,7 +20,6 @@ from app.services.uploads import ensure_upload_dir
 import app.models  # noqa: F401 — registra modelos antes de create_all
 from slowapi.errors import RateLimitExceeded
 
-Base.metadata.create_all(bind=engine)
 run_migrations(engine)
 
 app = FastAPI(
