@@ -71,4 +71,4 @@ jobs:
           region: us-central1
           image: us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/cloud-run-source-deploy/backend:latest
           env_vars: |
-            PORT=8080
+            LOG_LEVEL=info
