@@ -85,6 +85,16 @@ def _is_secure_cookie() -> bool:
     return settings.FRONTEND_URL.startswith("https://")
 
 
+def _get_cookie_domain() -> str | None:
+    from urllib.parse import urlparse
+    host = urlparse(settings.FRONTEND_URL).hostname
+    if not host or host in ('localhost', '127.0.0.1'):
+        return None
+    parts = host.split('.')
+    if len(parts) >= 2:
+        return f".{parts[-2]}.{parts[-1]}"
+    return host
+
 def _set_auth_cookie(response: Response, token: str) -> None:
     response.set_cookie(
         key="access_token",
@@ -93,6 +103,7 @@ def _set_auth_cookie(response: Response, token: str) -> None:
         secure=_is_secure_cookie(),
         samesite="lax",
         path="/",
+        domain=_get_cookie_domain(),
         max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     )
 
@@ -101,9 +112,10 @@ def _clear_auth_cookie(response: Response) -> None:
     response.delete_cookie(
         key="access_token",
         httponly=True,
-        samesite="lax",
         secure=_is_secure_cookie(),
+        samesite="lax",
         path="/",
+        domain=_get_cookie_domain(),
     )
 
 

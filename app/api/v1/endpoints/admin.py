@@ -78,74 +78,21 @@ PAYMENT_REVIEW_STATUSES = {
 
 
 def _musician_admin_out(profile: MusicianProfile) -> MusicianProfileAdminOut:
-    return MusicianProfileAdminOut(
-        id=profile.id,
-        user_id=profile.user_id,
-        stage_name=profile.stage_name,
-        bio=profile.bio,
-        genres=profile.genres or [],
-        instruments=profile.instruments or [],
-        songs=profile.songs or [],
-        repertoire=getattr(profile, "repertoire", None) or [
-            {"title": song, "youtube_url": None} for song in (profile.songs or [])
-        ],
-        price_per_hour=profile.price_per_hour,
-        price_per_event=profile.price_per_event,
-        portfolio_description=profile.portfolio_description,
-        location_city=profile.location_city,
-        location_zone=profile.location_zone,
-        availability_type=profile.availability_type,
-        profile_image_url=profile.profile_image_url,
-        gallery_images=profile.gallery_images or [],
-        videos=profile.videos or [],
-        id_document_url=profile.id_document_url,
-        contract_template_title=profile.contract_template_title,
-        contract_template_body=profile.contract_template_body,
-        contract_pdf_url=profile.contract_pdf_url,
-        instagram_url=getattr(profile, "instagram_url", None),
-        facebook_url=getattr(profile, "facebook_url", None),
-        tiktok_url=getattr(profile, "tiktok_url", None),
-        youtube_channel_url=getattr(profile, "youtube_channel_url", None),
-        spotify_url=getattr(profile, "spotify_url", None),
-        website_url=getattr(profile, "website_url", None),
-        status=profile.status,
-        submitted_at=profile.submitted_at,
-        published_at=profile.published_at,
-        rejection_reason=profile.rejection_reason,
-        rating_avg=float(profile.rating_avg) if profile.rating_avg is not None else None,
-        rating_count=profile.rating_count,
-        created_at=profile.created_at,
-        updated_at=profile.updated_at,
-        user_email=profile.user.email if profile.user else None,
-        user_fullname=profile.user.fullname if profile.user else None,
-        user_phone=profile.user.phone if profile.user else None,
-    )
+    out = MusicianProfileAdminOut.model_validate(profile, from_attributes=True)
+    if profile.user:
+        out.user_email = profile.user.email
+        out.user_fullname = profile.user.fullname
+        out.user_phone = profile.user.phone
+    return out
 
 
 def _contractor_admin_out(profile: ContractorProfile) -> ContractorProfileAdminOut:
-    return ContractorProfileAdminOut(
-        id=profile.id,
-        user_id=profile.user_id,
-        bio=profile.bio,
-        preferences=profile.preferences or [],
-        document_type=profile.document_type,
-        document_number=profile.document_number,
-        address=profile.address,
-        city=profile.city,
-        id_document_url=profile.id_document_url,
-        contract_template_title=getattr(profile, "contract_template_title", None),
-        contract_template_body=getattr(profile, "contract_template_body", None),
-        contract_pdf_url=getattr(profile, "contract_pdf_url", None),
-        status=profile.status,
-        submitted_at=profile.submitted_at,
-        published_at=profile.published_at,
-        rejection_reason=profile.rejection_reason,
-        created_at=profile.created_at,
-        updated_at=profile.updated_at,
-        user_email=profile.user.email if profile.user else None,
-        user_fullname=profile.user.fullname if profile.user else None,
-        user_phone=profile.user.phone if profile.user else None,
-    )
+    out = ContractorProfileAdminOut.model_validate(profile, from_attributes=True)
+    if profile.user:
+        out.user_email = profile.user.email
+        out.user_fullname = profile.user.fullname
+        out.user_phone = profile.user.phone
+    return out
 
 
 def _booking_admin_out(booking: Booking) -> AdminBookingOut:
