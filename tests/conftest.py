@@ -38,6 +38,7 @@ if DB_AVAILABLE:
     from app.main import app  # noqa: F401  (dispara create_all + run_migrations)
 
     engine = create_engine(TEST_DATABASE_URL, future=True)
+    Base.metadata.create_all(bind=engine)
     TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 
