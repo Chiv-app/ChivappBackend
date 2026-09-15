@@ -309,7 +309,7 @@ class ContractorProfilePublicOut(BaseModel):
 
 
 class MusicianProfileAdminOut(MusicianProfileOut):
-    user_email: str
+    user_email: str | None = None
     user_fullname: str | None = None
     user_phone: str | None = None
 
@@ -379,6 +379,6 @@ class ContractorProfileOut(ContractorProfileBase):
 
 
 class ContractorProfileAdminOut(ContractorProfileOut):
-    user_email: str
+    user_email: str | None = None
     user_fullname: str | None = None
     user_phone: str | None = None
