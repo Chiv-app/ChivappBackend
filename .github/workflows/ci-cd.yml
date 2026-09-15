@@ -72,3 +72,5 @@ jobs:
           image: us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/cloud-run-source-deploy/backend:latest
           env_vars: |
             LOG_LEVEL=info
+            FRONTEND_URL=https://chiv.app
+            OAUTH_REDIRECT_BASE_URL=https://api.chiv.app/api/v1
