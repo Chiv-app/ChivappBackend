@@ -57,6 +57,27 @@ from app.services.uniqueness import (
 
 router = APIRouter(prefix="/profiles", tags=["Profiles"])
 
+@router.get("/check-username")
+def check_username(
+    username: str,
+    db: Session = Depends(deps.get_db),
+    current_user: User = Depends(deps.get_current_user),
+):
+    from app.models.user import User
+    from app.utils.validators import normalize_username
+    import re
+    
+    try:
+        norm = normalize_username(username)
+        existing = db.query(User).filter(User.username == norm, User.id != current_user.id).first()
+        if existing:
+            return {"available": False, "message": "El nombre de usuario ya está en uso."}
+        return {"available": True, "message": "Nombre de usuario disponible.", "normalized": norm}
+    except ValueError as e:
+        return {"available": False, "message": str(e)}
+
+
+
 
 def _published_musician_query(db: Session):
     return (
