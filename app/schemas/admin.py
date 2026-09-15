@@ -33,7 +33,7 @@ class AdminStatsOut(BaseModel):
 class AdminUserOut(BaseModel):
     id: UUID
     email: EmailStr
-    fullname: str
+    fullname: str | None = None
     role: str
     phone: str | None
     is_verified: bool
