@@ -126,6 +126,7 @@ def _set_oauth_pending_cookie(response: Response, token: str) -> None:
         httponly=True,
         secure=_is_secure_cookie(),
         samesite="lax",
+        domain=_get_cookie_domain(),
         path="/",
         max_age=30 * 60,
     )
@@ -137,6 +138,7 @@ def _clear_oauth_pending_cookie(response: Response) -> None:
         httponly=True,
         samesite="lax",
         secure=_is_secure_cookie(),
+        domain=_get_cookie_domain(),
         path="/",
     )
 
