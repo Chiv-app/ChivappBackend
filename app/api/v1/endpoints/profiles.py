@@ -555,6 +555,46 @@ def update_musician_profile(
     return profile
 
 
+@router.post(
+    "/musician/onboard",
+    response_model=MusicianProfileOut,
+    status_code=status.HTTP_200_OK,
+)
+def onboard_musician_profile(
+    current_user: User = Depends(deps.get_current_user),
+    db: Session = Depends(deps.get_db),
+):
+    if current_user.role != UserRole.musician:
+        raise HTTPException(status_code=403, detail="Solo los músicos pueden realizar el onboarding")
+
+    profile = _get_musician_profile_or_404(db, current_user)
+    
+    if profile.status == ProfileStatus.published:
+        return profile
+        
+    missing = []
+    if not profile.stage_name:
+        missing.append("stage_name")
+    if not profile.location_city:
+        missing.append("location_city")
+    if not profile.genres or len(profile.genres) == 0:
+        missing.append("genres")
+        
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Completa tu perfil antes de publicar. Faltan: {', '.join(missing)}",
+        )
+        
+    profile.status = ProfileStatus.published
+    profile.published_at = datetime.utcnow()
+    profile.rejection_reason = None
+    
+    db.commit()
+    db.refresh(profile)
+    return profile
+
+
 @router.get(
     "/musicians/{musician_id_or_slug}",
     response_model=MusicianProfilePublicOut,

@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, model_validator
 
 
 class LoginRequest(BaseModel):
@@ -14,6 +14,15 @@ class RegisterRequest(BaseModel):
     username: str | None = None
     phone: str | None = None
     accepted_terms: bool = False
+
+    @model_validator(mode="after")
+    def check_contractor_requirements(self) -> "RegisterRequest":
+        if self.role == "contractor":
+            if not self.fullname:
+                raise ValueError("El nombre completo es requerido para contratistas.")
+            if not self.phone:
+                raise ValueError("El número de celular es requerido para contratistas.")
+        return self
 
 
 class SetPasswordRequest(BaseModel):
