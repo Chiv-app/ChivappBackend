@@ -76,6 +76,43 @@ def check_username(
     except ValueError as e:
         return {"available": False, "message": str(e)}
 
+@router.get("/reviews/latest", response_model=list[MusicianPublicReviewOut])
+def get_latest_platform_reviews(
+    db: Session = Depends(deps.get_db),
+    limit: int = 6
+):
+    """Devuelve las reseñas más recientes de toda la plataforma."""
+    rows = (
+        db.query(BookingReview, Booking)
+        .join(Booking, Booking.id == BookingReview.booking_id)
+        .options(joinedload(BookingReview.author))
+        .filter(
+            BookingReview.is_final.is_(True),
+            BookingReview.comment.isnot(None),
+        )
+        .order_by(BookingReview.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    reviews: list[MusicianPublicReviewOut] = []
+    for review, booking in rows:
+        author_label = "Anónimo"
+        if review.guest_name:
+            author_label = review.guest_name
+        elif review.author and review.author.fullname:
+            author_label = review.author.fullname.split(" ")[0]
+        reviews.append(
+            MusicianPublicReviewOut(
+                id=review.id,
+                rating=review.rating,
+                comment=review.comment or "",
+                author_label=author_label,
+                event_type=booking.event_type,
+                created_at=review.created_at,
+            )
+        )
+    return reviews
+
 
 
 
