@@ -1,3 +1,5 @@
+from app.services.email.auth_emails import send_welcome_email
+from app.core.hashing import hash_password
 from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
@@ -595,6 +597,7 @@ def preview_booking_invite(token: str, db: Session = Depends(deps.get_db)):
     booking = invite.booking
     member = invite.ensemble_member
     leader = db.get(User, member.leader_user_id) if member else None
+    member_user = db.get(User, member.member_user_id) if member and member.member_user_id else None
     return {
         "event_type": booking.event_type,
         "event_date": booking.event_date,
@@ -606,6 +609,7 @@ def preview_booking_invite(token: str, db: Session = Depends(deps.get_db)):
         "status": invite.status.value,
         "can_respond": invite.status == BookingMemberInviteStatus.pending
         and booking.status != BookingStatus.cancelled,
+        "needs_password": bool(member_user and not member_user.password_hash)
     }
 
 
@@ -625,6 +629,22 @@ def respond_booking_invite(
     )
     if not invite:
         raise HTTPException(404, "Invitación no encontrada")
+
+    member = invite.ensemble_member
+    member_user = db.get(User, member.member_user_id) if member and member.member_user_id else None
+    
+    if payload.action == "accept" and member_user and not member_user.password_hash:
+        if not payload.password:
+            raise HTTPException(400, "Debes crear una contraseña para aceptar la convocatoria.")
+        member_user.password_hash = hash_password(payload.password)
+        member_user.email_verified_at = datetime.utcnow()
+        db.add(member_user)
+        # Update ensemble member status
+        member.status = EnsembleMemberStatus.active
+        db.add(member)
+        # Also trigger welcome email since they just completed setup
+        send_welcome_email(db, member_user)
+
     _apply_booking_invite_response(db, invite, payload.action)
     db.commit()
     return preview_booking_invite(token, db)

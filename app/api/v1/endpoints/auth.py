@@ -216,7 +216,7 @@ def _link_oauth_account(
     )
 
 
-def _create_role_profile(db: Session, user: User) -> None:
+def _create_role_profile(db: Session, user: User, oauth_verified: bool = False) -> None:
     if user.role == UserRole.musician:
         stage_name = next_available_stage_name(db, user.fullname) if user.fullname else None
         slug = user.username or (next_available_musician_slug(db, stage_name) if stage_name else None)
@@ -233,7 +233,7 @@ def _create_role_profile(db: Session, user: User) -> None:
         db.add(
             ContractorProfile(
                 user_id=user.id,
-                status=ProfileStatus.draft,
+                status=ProfileStatus.published if oauth_verified else ProfileStatus.draft,
             )
         )
 
@@ -663,7 +663,7 @@ def oauth_complete(
     )
     db.add(user)
     db.flush()
-    _create_role_profile(db, user)
+    _create_role_profile(db, user, oauth_verified=True)
     _link_oauth_account(
         db,
         user=user,

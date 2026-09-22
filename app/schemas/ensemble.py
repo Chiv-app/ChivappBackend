@@ -133,10 +133,12 @@ class BookingMemberInvitePreviewOut(BaseModel):
     member_fullname: str
     status: str
     can_respond: bool
+    needs_password: bool = False
 
 
 class BookingMemberRespondRequest(BaseModel):
     action: str = Field(pattern="^(accept|decline)$")
+    password: str | None = Field(default=None, min_length=8)
 
 
 class BookingMemberPayoutItem(BaseModel):
