@@ -1395,12 +1395,27 @@ def settle_admin_booking(
         complaint.settled_at = datetime.utcnow()
         complaint.status = BookingComplaintStatus.settled
         if body.contractor_refund > 0:
-            complaint.refund_status = REFUND_STATUS_AWAITING_TRANSFER
-            complaint.refund_evidence_url = None
-            complaint.refund_sent_at = None
-            complaint.refund_validated_at = None
-            complaint.refund_rejection_reason = None
-            complaint.refund_payment_id = None
+            from app.models.payment import Payment
+            from app.services.mercadopago_service import issue_refund
+            
+            original_payment = db.query(Payment).filter(
+                Payment.booking_id == booking.id,
+                Payment.gateway_payment_id.isnot(None)
+            ).first()
+            
+            if not original_payment:
+                 raise HTTPException(400, "No se encontró el pago original en Mercado Pago para reembolsar automáticamente")
+            
+            try:
+                issue_refund(original_payment.gateway_payment_id, float(body.contractor_refund))
+                complaint.refund_status = REFUND_STATUS_COMPLETED
+                complaint.refund_validated_at = datetime.utcnow()
+                complaint.refund_rejection_reason = None
+                complaint.refund_payment_id = original_payment.id
+                complaint.refund_evidence_url = "Reembolso automático de Mercado Pago"
+                complaint.refund_sent_at = datetime.utcnow()
+            except Exception as e:
+                raise HTTPException(500, f"Error al ejecutar reembolso en Mercado Pago: {str(e)}")
         else:
             complaint.refund_status = REFUND_STATUS_NONE
     elif body.contractor_refund > 0:

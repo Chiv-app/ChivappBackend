@@ -82,6 +82,9 @@ class Booking(Base):
     change_requested_by = Column(String, nullable=True)  # "contractor" | "musician"
     change_requested_at = Column(DateTime, nullable=True)
 
+    # Integraciones externas
+    calendar_event_id = Column(String, nullable=True)
+
     # Guest share link (enabled after final balance is covered)
     share_token = Column(String, unique=True, nullable=True, index=True)
     share_enabled = Column(Boolean, nullable=False, default=False)

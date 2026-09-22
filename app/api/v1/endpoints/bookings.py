@@ -401,7 +401,7 @@ def quote_booking(
         )
 
     booking.price_agreed = payload.price_agreed
-    booking.advance_amount = payload.advance_amount
+    booking.advance_amount = payload.price_agreed  # 100% upfront payment
     booking.musician_quote_notes = payload.musician_quote_notes
     booking.quoted_at = datetime.utcnow()
     booking.status = BookingStatus.accepted

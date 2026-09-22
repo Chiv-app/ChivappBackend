@@ -88,7 +88,8 @@ def apply_pending_changes(booking: Booking) -> None:
     price_changed = booking.pending_price_agreed is not None
     if booking.pending_price_agreed is not None:
         booking.price_agreed = booking.pending_price_agreed
-    if booking.pending_advance_amount is not None:
+        booking.advance_amount = booking.pending_price_agreed  # Keep 100% upfront logic
+    elif booking.pending_advance_amount is not None:
         booking.advance_amount = booking.pending_advance_amount
     clear_pending_changes(booking)
     if price_changed:

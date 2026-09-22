@@ -292,11 +292,51 @@ def process_approved_mercadopago_payment(db: Session, payment_data: dict[str, An
     if is_approved:
         if payment_type in ("advance", "full"):
             booking.status = BookingStatus.payment_retained
+            
+            contractor = db.query(ContractorProfile).filter(ContractorProfile.id == booking.contractor_id).first()
+            contractor_user = db.query(User).filter(User.id == contractor.user_id).first() if contractor else None
+
             musician = db.query(MusicianProfile).filter(MusicianProfile.id == booking.musician_id).first()
             if musician:
                 musician_user = db.query(User).filter(User.id == musician.user_id).first()
                 if musician_user:
                     notify_booking_confirmed(db, musician_user, str(booking.id))
+                    
+                    # Create Google Calendar event
+                    if not booking.calendar_event_id and contractor_user and musician_user:
+                        from app.services.calendar_service import create_booking_event
+                        try:
+                            # Estimate duration (default 1 hour if not specified)
+                            duration_hours = 1
+                            if booking.start_time and booking.end_time:
+                                import datetime as dt
+                                start_dt = dt.datetime.combine(booking.event_date, booking.start_time)
+                                end_dt = dt.datetime.combine(booking.event_date, booking.end_time)
+                                if end_dt > start_dt:
+                                    duration_hours = (end_dt - start_dt).seconds // 3600
+                            
+                            event_date_time = dt.datetime.combine(booking.event_date, booking.start_time)
+                            
+                            event_id = create_booking_event(
+                                booking_id=str(booking.id),
+                                event_type=booking.event_type,
+                                event_date=event_date_time,
+                                duration_hours=duration_hours or 1,
+                                location_city=booking.location_city or "",
+                                location_zone=booking.location_reference or "",
+                                location_address=booking.location_address or "",
+                                musician_email=musician_user.email,
+                                contractor_email=contractor_user.email,
+                                contractor_name=contractor_user.fullname or "Contratista",
+                                musician_name=musician.stage_name,
+                                musician_phone=musician_user.phone or "",
+                                contractor_phone=contractor_user.phone or ""
+                            )
+                            if event_id:
+                                booking.calendar_event_id = event_id
+                        except Exception as e:
+                            logger.error(f"Error calling create_booking_event: {e}")
+                            
         elif payment_type == "balance":
             musician = db.query(MusicianProfile).filter(MusicianProfile.id == booking.musician_id).first()
             if musician:
@@ -466,4 +506,36 @@ def process_direct_payment(
             "status_detail": "network_error",
             "payment_id": None,
             "message": f"Error de comunicación con la pasarela de pago: {exc}",
-        }
+        }
+
+def issue_refund(payment_id: str, amount: float) -> dict[str, Any]:
+    """
+    Emite un reembolso total o parcial para un pago procesado.
+    Llama a: POST /v1/payments/{payment_id}/refunds
+    """
+    if not is_mercadopago_configured():
+        raise ValueError("Mercado Pago no está configurado.")
+
+    payload = {"amount": float(amount)}
+    headers = _mp_headers()
+    headers["X-Idempotency-Key"] = f"refund_{payment_id}_{amount}_{uuid.uuid4()}"
+
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            resp = client.post(
+                f"{MERCADO_PAGO_API_BASE}/v1/payments/{payment_id}/refunds",
+                headers=headers,
+                json=payload,
+            )
+            data = resp.json()
+            if resp.status_code >= 400:
+                logger.error("Error al reembolsar en Mercado Pago: %s %s", resp.status_code, resp.text)
+                message = data.get("message") or "Error en el reembolso."
+                raise ValueError(f"Fallo en Mercado Pago ({resp.status_code}): {message}")
+            return data
+    except httpx.HTTPStatusError as exc:
+        logger.error("Error HTTP al reembolsar: %s", exc)
+        raise ValueError(f"Error HTTP: {exc}")
+    except Exception as exc:
+        logger.error("Excepción en reembolso: %s", exc)
+        raise ValueError(f"Excepción al reembolsar: {exc}")

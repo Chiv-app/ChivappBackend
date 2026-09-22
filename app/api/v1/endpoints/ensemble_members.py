@@ -489,6 +489,8 @@ def create_booking_invites(
         )
 
     results: list[BookingMemberInvite] = []
+    from app.services.calendar_service import add_attendee_to_booking_event
+
     for member_id in payload.ensemble_member_ids:
         member = get_member_for_leader(
             db, leader_id=current_user.id, member_id=member_id
@@ -521,6 +523,10 @@ def create_booking_invites(
             db.add(invite)
         db.flush()
         results.append(invite)
+
+        # AGREGAR A GOOGLE CALENDAR
+        if booking.calendar_event_id:
+            add_attendee_to_booking_event(booking.calendar_event_id, member.email)
 
         if member.member_user_id:
             member_user = db.get(User, member.member_user_id)
@@ -689,6 +695,12 @@ def _apply_booking_invite_response(
     invite.responded_at = datetime.utcnow()
 
     member = invite.ensemble_member
+    
+    # REMOVE FROM CALENDAR IF DECLINED
+    if action == "decline" and booking.calendar_event_id and member:
+        from app.services.calendar_service import remove_attendee_from_booking_event
+        remove_attendee_from_booking_event(booking.calendar_event_id, member.email)
+
     leader = db.get(User, member.leader_user_id) if member else None
     if leader:
         action_label = "aceptó" if action == "accept" else "rechazó"

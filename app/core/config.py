@@ -21,6 +21,7 @@ class Settings(BaseSettings):
 
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
+    GOOGLE_CALENDAR_ID: str = "miguel2cto@gmail.com"
     FACEBOOK_APP_ID: str = ""
     FACEBOOK_APP_SECRET: str = ""
     # Must match the browser-facing API base (Next.js proxy in local/dev).
