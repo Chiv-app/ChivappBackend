@@ -28,6 +28,7 @@ class ProfileValidationResult:
     steps: list[ValidationStep]
     can_submit: bool
     is_public: bool
+    is_ensemble_only: bool = False
 
 
 def _has_price(profile: MusicianProfile) -> bool:
@@ -222,6 +223,7 @@ def validate_musician_profile(db: Session, profile: MusicianProfile) -> ProfileV
         # Verificado/publicado = puede usar la app. El marketplace exige
         # todas las fases vía is_musician_listed_publicly().
         is_public=is_profile_public(profile),
+        is_ensemble_only=getattr(profile, 'is_ensemble_only', False),
     )
 
 
@@ -271,4 +273,5 @@ def validate_contractor_profile(profile: ContractorProfile) -> ProfileValidation
         steps=steps,
         can_submit=can_submit,
         is_public=is_profile_public(profile),
+        is_ensemble_only=getattr(profile, 'is_ensemble_only', False),
     )

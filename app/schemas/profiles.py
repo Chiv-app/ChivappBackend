@@ -29,6 +29,7 @@ class ProfileValidationOut(BaseModel):
     steps: list[ValidationStepOut]
     can_submit: bool
     is_public: bool
+    is_ensemble_only: bool = False
 
 
 class ProfileReviewAction(BaseModel):
@@ -43,6 +44,7 @@ class RepertoireItem(BaseModel):
 # ---------- MUSICIAN PROFILE ----------
 
 class MusicianProfileBase(BaseModel):
+    is_ensemble_only: bool = False
     stage_name: str | None = None
     bio: str | None = None
     genres: list[str] = Field(default_factory=list)
@@ -86,6 +88,7 @@ class MusicianProfileCreate(MusicianProfileBase):
 
 
 class MusicianProfileUpdate(BaseModel):
+    is_ensemble_only: bool | None = None
     stage_name: str | None = None
     username: str | None = None
     fullname: str | None = None

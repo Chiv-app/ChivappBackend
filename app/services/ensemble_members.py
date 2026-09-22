@@ -158,18 +158,17 @@ def create_or_link_member_user(
     )
     db.add(user)
     db.flush()
-
     stage_name = next_available_stage_name(db, fullname)
     profile = MusicianProfile(
         user_id=user.id,
         stage_name=stage_name,
         slug=next_available_musician_slug(db, stage_name),
-        status=ProfileStatus.draft,
-        availability_type=AvailabilityType.both,
-        instruments=list(specialties or []),
         genres=[],
+        instruments=specialties,
         songs=[],
         repertoire=[],
+        status=ProfileStatus.draft,
+        is_ensemble_only=True,
     )
     db.add(profile)
     db.flush()

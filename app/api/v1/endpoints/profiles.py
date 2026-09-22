@@ -268,6 +268,7 @@ def _validation_out(result) -> ProfileValidationOut:
         ],
         can_submit=result.can_submit,
         is_public=result.is_public,
+        is_ensemble_only=getattr(result, 'is_ensemble_only', False),
     )
 
 

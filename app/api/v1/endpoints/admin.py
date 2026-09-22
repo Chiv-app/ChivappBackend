@@ -315,6 +315,7 @@ def list_musicians(
     limit: int = Query(default=50, le=200),
 ):
     query = db.query(MusicianProfile).options(joinedload(MusicianProfile.user)).join(User)
+    query = query.filter(MusicianProfile.is_ensemble_only == False)
     if status_filter:
         query = query.filter(MusicianProfile.status == status_filter)
     if q and q.strip():
@@ -376,6 +377,7 @@ def list_pending_musicians(
         .options(joinedload(MusicianProfile.user))
         .join(User)
         .filter(MusicianProfile.status == ProfileStatus.pending_review)
+        .filter(MusicianProfile.is_ensemble_only == False)
         .order_by(MusicianProfile.submitted_at.desc())
         .all()
     )

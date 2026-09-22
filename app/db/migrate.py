@@ -473,6 +473,8 @@ MIGRATION_STATEMENTS = [
     "ALTER TABLE payment ADD COLUMN IF NOT EXISTS payout_notes VARCHAR",
     # Integracin con Google Calendar
     "ALTER TABLE booking ADD COLUMN IF NOT EXISTS calendar_event_id VARCHAR",
+    # Integrantes
+    "ALTER TABLE musician_profile ADD COLUMN IF NOT EXISTS is_ensemble_only BOOLEAN NOT NULL DEFAULT FALSE",
 ]
 
 

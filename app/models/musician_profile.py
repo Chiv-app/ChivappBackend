@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, Enum, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import Column, DateTime, Enum, ForeignKey, Integer, Numeric, String, Text, Boolean
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import relationship
 
@@ -26,6 +26,7 @@ class MusicianProfile(Base):
         unique=True,
         nullable=False,
     )
+    is_ensemble_only = Column(Boolean, default=False, nullable=False)
 
     stage_name = Column(String, nullable=True)
     # Slug único derivado de stage_name, para URLs públicas legibles
