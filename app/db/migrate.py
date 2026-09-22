@@ -471,6 +471,8 @@ MIGRATION_STATEMENTS = [
     "ALTER TABLE payment ADD COLUMN IF NOT EXISTS payout_reference VARCHAR",
     "ALTER TABLE payment ADD COLUMN IF NOT EXISTS payout_evidence_url VARCHAR",
     "ALTER TABLE payment ADD COLUMN IF NOT EXISTS payout_notes VARCHAR",
+    # Integracin con Google Calendar
+    "ALTER TABLE booking ADD COLUMN IF NOT EXISTS calendar_event_id VARCHAR",
 ]
 
 
