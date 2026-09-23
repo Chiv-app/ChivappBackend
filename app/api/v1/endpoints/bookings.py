@@ -850,6 +850,8 @@ def sync_booking_calendar_endpoint(
     if new_event_id:
         booking.calendar_event_id = new_event_id
         db.commit()
+    else:
+        raise HTTPException(400, "No se pudo sincronizar. Asegúrate que el músico líder tenga conectado su Google Calendar y verifica los permisos.")
     
     # Enviar invitaciones (emails y BD) usando la funcion oficial
     try:
@@ -869,6 +871,8 @@ def sync_booking_calendar_endpoint(
         viewer_role=viewer_role,
         member_invite_status=None,
     )
+
+
 
 
 
