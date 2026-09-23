@@ -17,6 +17,7 @@ from app.api.v1.endpoints import (
     ensemble_members,
     booking_location,
     support,
+    calendar_auth,
 )
 
 api_router = APIRouter()
@@ -37,3 +38,4 @@ api_router.include_router(admin.router)
 api_router.include_router(admin_email.router)
 api_router.include_router(ensemble_members.router)
 api_router.include_router(support.router)
+api_router.include_router(calendar_auth.router, prefix="/calendar-auth", tags=["calendar-auth"])

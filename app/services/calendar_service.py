@@ -14,6 +14,29 @@ logger = logging.getLogger(__name__)
 
 SCOPES = ['https://www.googleapis.com/auth/calendar.events']
 
+def _get_calendar_service_oauth(refresh_token: str):
+    """Inicializa y devuelve el servicio de Google Calendar usando OAuth 2.0."""
+    from google.oauth2.credentials import Credentials
+    from googleapiclient.discovery import build
+    
+    if not refresh_token or not settings.GOOGLE_CLIENT_ID or not settings.GOOGLE_CLIENT_SECRET:
+        return None
+        
+    creds = Credentials(
+        token=None,
+        refresh_token=refresh_token,
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=settings.GOOGLE_CLIENT_ID,
+        client_secret=settings.GOOGLE_CLIENT_SECRET
+    )
+    
+    try:
+        service = build('calendar', 'v3', credentials=creds)
+        return service
+    except Exception as e:
+        logger.error(f"Error al construir servicio de Google Calendar OAuth: {e}")
+        return None
+
 def _get_calendar_service():
     """Inicializa y devuelve el servicio de Google Calendar."""
     creds = None
@@ -189,11 +212,15 @@ def sync_booking_calendar(db, booking_id: str, include_contractor: bool, ensembl
 
 
 
-    service = _get_calendar_service()
+    if not musician_user or not getattr(musician_user, 'google_calendar_refresh_token', None):
+        logger.warning(f"Musician {musician_user.email if musician_user else 'unknown'} no tiene Google Calendar conectado via OAuth.")
+        return None
+
+    service = _get_calendar_service_oauth(musician_user.google_calendar_refresh_token)
     if not service:
         return None
 
-    calendar_id = settings.GOOGLE_CALENDAR_ID or "primary"
+    calendar_id = "primary"
     
     # Calculate end date
     end_date = booking.event_date
@@ -237,7 +264,7 @@ def sync_booking_calendar(db, booking_id: str, include_contractor: bool, ensembl
         'end': {
             'dateTime': end_dt.isoformat() + 'Z',
         },
-        # 'attendees': attendees, # Bloqueado por Google para Service Accounts sin Workspace
+        'attendees': attendees, # Ahora funciona porque usamos OAuth del usuario
         'reminders': {
             'useDefault': False,
             'overrides': [
@@ -284,6 +311,7 @@ def sync_booking_calendar(db, booking_id: str, include_contractor: bool, ensembl
     except Exception as e:
         logger.error(f"Error sincronizando evento en Google Calendar: {e}")
         return None
+
 
 
 

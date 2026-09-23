@@ -42,6 +42,8 @@ class User(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     last_login_at = Column(DateTime, nullable=True)
+    
+    google_calendar_refresh_token = Column(String, nullable=True)
 
     musician_profile = relationship(
         "MusicianProfile", back_populates="user", uselist=False
