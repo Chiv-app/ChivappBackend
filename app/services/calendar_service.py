@@ -1,4 +1,4 @@
-import logging
+﻿import logging
 import os
 import json
 from datetime import datetime
@@ -106,10 +106,7 @@ def create_booking_event(
             'dateTime': end_date.isoformat() + 'Z',
             'timeZone': 'UTC',
         },
-        'attendees': [
-            {'email': musician_email},
-            {'email': contractor_email},
-        ],
+        # 'attendees': [] # Bloqueado por Google,
         'reminders': {
             'useDefault': False,
             'overrides': [
@@ -123,7 +120,7 @@ def create_booking_event(
         event = service.events().insert(
             calendarId=calendar_id, 
             body=event_body, 
-            sendUpdates='all' # EnvÃ­a correos a los invitados
+            sendUpdates='none' # EnvÃ­a correos a los invitados
         ).execute()
         
         logger.info(f"Evento de Google Calendar creado con Ã©xito: {event.get('htmlLink')}")
@@ -164,7 +161,7 @@ def add_attendee_to_booking_event(event_id: str, attendee_email: str) -> bool:
             return True
         attendees.append({'email': attendee_email})
         event['attendees'] = attendees
-        service.events().update(calendarId=calendar_id, eventId=event_id, body=event, sendUpdates='all').execute()
+        service.events().update(calendarId=calendar_id, eventId=event_id, body=event, sendUpdates='none').execute()
         return True
     except Exception as e:
         logger.error(f"Error agregando asistente al calendario: {e}")
@@ -183,7 +180,7 @@ def remove_attendee_from_booking_event(event_id: str, attendee_email: str) -> bo
         if len(attendees) == len(new_attendees):
             return True
         event['attendees'] = new_attendees
-        service.events().update(calendarId=calendar_id, eventId=event_id, body=event, sendUpdates='all').execute()
+        service.events().update(calendarId=calendar_id, eventId=event_id, body=event, sendUpdates='none').execute()
         return True
     except Exception as e:
         logger.error(f"Error eliminando asistente del calendario: {e}")
@@ -267,7 +264,7 @@ def sync_booking_calendar(db, booking_id: str, include_contractor: bool, ensembl
         'end': {
             'dateTime': end_dt.isoformat() + 'Z',
         },
-        'attendees': attendees,
+        # 'attendees': attendees, # Bloqueado por Google para Service Accounts sin Workspace
         'reminders': {
             'useDefault': False,
             'overrides': [
@@ -299,14 +296,14 @@ def sync_booking_calendar(db, booking_id: str, include_contractor: bool, ensembl
                 calendarId=calendar_id, 
                 eventId=booking.calendar_event_id,
                 body=event_body, 
-                sendUpdates='all'
+                sendUpdates='none'
             ).execute()
             return event.get('id')
         else:
             event = service.events().insert(
                 calendarId=calendar_id, 
                 body=event_body, 
-                sendUpdates='all'
+                sendUpdates='none'
             ).execute()
             booking.calendar_event_id = event.get('id')
             db.commit()
@@ -314,6 +311,10 @@ def sync_booking_calendar(db, booking_id: str, include_contractor: bool, ensembl
     except Exception as e:
         logger.error(f"Error sincronizando evento en Google Calendar: {e}")
         return None
+
+
+
+
 
 
 
