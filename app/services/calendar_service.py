@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 SCOPES = ['https://www.googleapis.com/auth/calendar.events']
 
 def _get_calendar_service():
-    "\""Inicializa y devuelve el servicio de Google Calendar."\""
+    """Inicializa y devuelve el servicio de Google Calendar."""
     creds = None
     if settings.GOOGLE_CREDENTIALS_JSON:
         try:
@@ -188,5 +188,6 @@ def remove_attendee_from_booking_event(event_id: str, attendee_email: str) -> bo
     except Exception as e:
         logger.error(f"Error eliminando asistente del calendario: {e}")
         return False
+
 
 

@@ -217,7 +217,6 @@ def _link_oauth_account(
             email=email,
         )
     )
-    )
 
 
 def _create_role_profile(db: Session, user: User, oauth_verified: bool = False) -> None:
@@ -953,6 +952,7 @@ def change_password(
     db.commit()
     db.refresh(current_user)
     return {"message": "Contraseña actualizada exitosamente"}
+
 
 
 
