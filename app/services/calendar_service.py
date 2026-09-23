@@ -1,4 +1,4 @@
-﻿import logging
+import logging
 import os
 import json
 from datetime import datetime
@@ -87,7 +87,7 @@ def create_booking_event(
 ) -> str | None:
     """
     Crea un evento en Google Calendar para una reserva confirmada y pagada.
-    Agrega al mÃºsico y al contratista como invitados.
+    Agrega al músico y al contratista como invitados.
     """
     service = _get_calendar_service()
     if not service:
@@ -95,7 +95,7 @@ def create_booking_event(
 
     calendar_id = settings.GOOGLE_CALENDAR_ID
     if not calendar_id:
-        logger.warning("GOOGLE_CALENDAR_ID no estÃ¡ configurado. Se usarÃ¡ 'primary' (puede fallar para Service Accounts).")
+        logger.warning("GOOGLE_CALENDAR_ID no está configurado. Se usará 'primary' (puede fallar para Service Accounts).")
         calendar_id = "primary"
 
     # Calcular fecha de fin (UTC)
@@ -105,16 +105,16 @@ def create_booking_event(
 
     event_summary = f"Chivapp: {event_type} - {musician_name}"
     
-    # Cuerpo del evento (descripciÃ³n)
+    # Cuerpo del evento (descripción)
     description_lines = [
         f"<b>Reserva confirmada en Chivapp</b> (#{str(booking_id)[:8]})",
         "<br>",
-        f"<b>MÃºsico:</b> {musician_name} ({musician_phone or 'Sin telÃ©fono'})",
-        f"<b>Contratista:</b> {contractor_name} ({contractor_phone or 'Sin telÃ©fono'})",
+        f"<b>Músico:</b> {musician_name} ({musician_phone or 'Sin teléfono'})",
+        f"<b>Contratista:</b> {contractor_name} ({contractor_phone or 'Sin teléfono'})",
         "<br>",
         f"<b>Lugar:</b> {location_address}, {location_zone}, {location_city}",
         "<br>",
-        "<b>Nota:</b> Este evento fue agendado automÃ¡ticamente por Chivapp porque el pago ha sido retenido con Ã©xito."
+        "<b>Nota:</b> Este evento fue agendado automáticamente por Chivapp porque el pago ha sido retenido con éxito."
     ]
     
     event_body = {
@@ -143,16 +143,16 @@ def create_booking_event(
         event = service.events().insert(
             calendarId=calendar_id, 
             body=event_body, 
-            sendUpdates='none' # EnvÃ­a correos a los invitados
+            sendUpdates='all' # Envía correos a los invitados
         ).execute()
         
-        logger.info(f"Evento de Google Calendar creado con Ã©xito: {event.get('htmlLink')}")
+        logger.info(f"Evento de Google Calendar creado con éxito: {event.get('htmlLink')}")
         return event.get('id')
     except HttpError as error:
-        logger.error(f"OcurriÃ³ un error al crear evento en Google Calendar: {error}")
+        logger.error(f"Ocurrió un error al crear evento en Google Calendar: {error}")
         return None
     except Exception as e:
-        logger.error(f"ExcepciÃ³n inesperada en Google Calendar: {e}")
+        logger.error(f"Excepción inesperada en Google Calendar: {e}")
         return None
 
 def cancel_booking_event(event_id: str) -> bool:
@@ -236,7 +236,7 @@ def sync_booking_calendar(db, booking_id: str, include_contractor: bool, ensembl
         # Fallback duration if not found
         end_dt = start_dt + dt.timedelta(hours=1)
         
-    musician_name = musician_user.fullname if musician_user else "Músico"
+    musician_name = musician_user.fullname if musician_user else "M�sico"
     musician_phone = musician_user.phone if musician_user else ""
     contractor_name = contractor_user.fullname if contractor_user else "Cliente"
     contractor_phone = contractor_user.phone if contractor_user else ""
@@ -246,8 +246,8 @@ def sync_booking_calendar(db, booking_id: str, include_contractor: bool, ensembl
     description_lines = [
         f"<b>Reserva confirmada en Chivapp</b> (#{str(booking.id)[:8]})",
         "<br>",
-        f"<b>Músico:</b> {musician_name} ({musician_phone or 'Sin teléfono'})",
-        f"<b>Contratista:</b> {contractor_name} ({contractor_phone or 'Sin teléfono'})",
+        f"<b>M�sico:</b> {musician_name} ({musician_phone or 'Sin tel�fono'})",
+        f"<b>Contratista:</b> {contractor_name} ({contractor_phone or 'Sin tel�fono'})",
         "<br>",
         f"<b>Lugar:</b> {booking.location_address}, {booking.location_reference or ''}, {booking.location_city or ''}",
         "<br>",
@@ -298,7 +298,7 @@ def sync_booking_calendar(db, booking_id: str, include_contractor: bool, ensembl
                     calendarId=calendar_id, 
                     eventId=booking.calendar_event_id,
                     body=event_body, 
-                    sendUpdates='none'
+                    sendUpdates='all'
                 ).execute()
                 return event.get('id')
             except HttpError as he:
@@ -312,7 +312,7 @@ def sync_booking_calendar(db, booking_id: str, include_contractor: bool, ensembl
             event = service.events().insert(
                 calendarId=calendar_id, 
                 body=event_body, 
-                sendUpdates='none'
+                sendUpdates='all'
             ).execute()
             booking.calendar_event_id = event.get('id')
             db.commit()
@@ -320,6 +320,7 @@ def sync_booking_calendar(db, booking_id: str, include_contractor: bool, ensembl
     except Exception as e:
         logger.error(f"Error sincronizando evento en Google Calendar: {e}")
         return None
+
 
 
 
