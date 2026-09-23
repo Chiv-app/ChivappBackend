@@ -1,4 +1,4 @@
-from datetime import date, datetime
+﻿from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session, joinedload
@@ -36,6 +36,7 @@ from app.schemas.booking import (
     BookingUpdate,
     MusicianAttachContractorSignature,
     MusicianBookingCreate,
+    BookingCalendarSyncRequest,
 )
 from app.services.availability_match import assert_musician_available
 from app.services.booking_contract import create_booking_contract
@@ -825,3 +826,31 @@ def cancel_booking(
     db.commit()
     db.refresh(booking)
     return booking
+
+@router.post("/{booking_id}/calendar-sync", response_model=BookingOut)
+def sync_booking_calendar_endpoint(
+    booking_id: str,
+    payload: BookingCalendarSyncRequest,
+    current_user: User = Depends(deps.get_current_user),
+    db: Session = Depends(deps.get_db),
+):
+    from app.services.calendar_service import sync_booking_calendar
+    
+    booking = _get_booking_with_parties(db, booking_id)
+    viewer_role = assert_booking_viewer(db, booking, current_user)
+    
+    if viewer_role != "owner":
+        raise HTTPException(403, "Solo el m\u00fasico l\u00edder puede sincronizar la agenda.")
+
+    if current_user.role != UserRole.musician:
+        raise HTTPException(403, "Solo los m\u00fasicos pueden realizar esta acci\u00f3n.")
+
+    str_member_ids = [str(uid) for uid in payload.member_user_ids]
+    sync_booking_calendar(db, str(booking.id), payload.include_contractor, str_member_ids)
+    
+    return serialize_booking_out(
+        booking,
+        viewer_role=viewer_role,
+        member_invite_status=None,
+    )
+

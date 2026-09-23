@@ -1,4 +1,4 @@
-from datetime import date, time, datetime
+﻿from datetime import date, time, datetime
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
@@ -348,6 +348,7 @@ class BookingOut(BaseModel):
     change_requested_by: str | None = None
     change_requested_at: datetime | None = None
     status: BookingStatus
+    calendar_event_id: str | None = None
     created_at: datetime
     updated_at: datetime
     # Counterparty preview (optional; filled by serializers)
@@ -380,3 +381,10 @@ class BookingOut(BaseModel):
         if isinstance(value, UUID):
             return value
         return UUID(str(value))
+
+
+class BookingCalendarSyncRequest(BaseModel):
+    include_contractor: bool = True
+    member_user_ids: list[UUID] = []
+
+

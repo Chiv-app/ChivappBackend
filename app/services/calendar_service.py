@@ -191,3 +191,128 @@ def remove_attendee_from_booking_event(event_id: str, attendee_email: str) -> bo
 
 
 
+def sync_booking_calendar(db, booking_id: str, include_contractor: bool, member_user_ids: list[str]) -> str | None:
+    from app.models.booking import Booking, BookingStatus
+    from app.models.user import User
+    from app.models.ensemble import EnsembleMember
+
+    booking = db.query(Booking).filter(Booking.id == booking_id).first()
+    if not booking:
+        return None
+
+    # Only sync if paid (or in progress etc)
+    if booking.status not in (BookingStatus.payment_retained, BookingStatus.in_progress, BookingStatus.balance_pending, BookingStatus.balance_review):
+        pass # Well, let's allow it anyway if the user wants it, or maybe limit it. Let's just create it.
+
+    musician_user = db.query(User).filter(User.id == booking.musician.user_id).first()
+    contractor_user = db.query(User).filter(User.id == booking.contractor.user_id).first()
+
+    attendees = []
+    if musician_user and musician_user.email and not musician_user.email.endswith("@guest.local"):
+        attendees.append({'email': musician_user.email})
+    
+    if include_contractor and contractor_user and contractor_user.email and not contractor_user.email.endswith("@guest.local"):
+        attendees.append({'email': contractor_user.email})
+
+    for mid in member_user_ids:
+        mu = db.query(User).filter(User.id == mid).first()
+        if mu and mu.email and not mu.email.endswith("@guest.local"):
+            attendees.append({'email': mu.email})
+
+    service = _get_calendar_service()
+    if not service:
+        return None
+
+    calendar_id = settings.GOOGLE_CALENDAR_ID or "primary"
+    
+    # Calculate end date
+    end_date = booking.event_date
+    import datetime as dt
+    # combine date and time
+    start_dt = dt.datetime.combine(booking.event_date, booking.start_time)
+    
+    if booking.end_time:
+        end_dt = dt.datetime.combine(booking.event_date, booking.end_time)
+        if end_dt < start_dt:
+            end_dt = end_dt + dt.timedelta(days=1)
+    else:
+        # Fallback duration if not found
+        end_dt = start_dt + dt.timedelta(hours=1)
+        
+    musician_name = musician_user.fullname if musician_user else "Músico"
+    musician_phone = musician_user.phone if musician_user else ""
+    contractor_name = contractor_user.fullname if contractor_user else "Cliente"
+    contractor_phone = contractor_user.phone if contractor_user else ""
+    
+    event_summary = f"Chivapp: {booking.event_type} - {musician_name}"
+    
+    description_lines = [
+        f"<b>Reserva confirmada en Chivapp</b> (#{str(booking.id)[:8]})",
+        "<br>",
+        f"<b>Músico:</b> {musician_name} ({musician_phone or 'Sin teléfono'})",
+        f"<b>Contratista:</b> {contractor_name} ({contractor_phone or 'Sin teléfono'})",
+        "<br>",
+        f"<b>Lugar:</b> {booking.location_address}, {booking.location_reference or ''}, {booking.location_city or ''}",
+        "<br>",
+        "<b>Nota:</b> Evento de agenda sincronizado desde Chivapp."
+    ]
+    
+    event_body = {
+        'summary': event_summary,
+        'location': f"{booking.location_address}, {booking.location_reference or ''}, {booking.location_city or ''}",
+        'description': "".join(description_lines),
+        'start': {
+            'dateTime': start_dt.isoformat() + 'Z', # timezone issue? need local timezone...
+        },
+        'end': {
+            'dateTime': end_dt.isoformat() + 'Z',
+        },
+        'attendees': attendees,
+        'reminders': {
+            'useDefault': False,
+            'overrides': [
+                {'method': 'email', 'minutes': 24 * 60},
+                {'method': 'popup', 'minutes': 120},
+            ],
+        },
+    }
+
+    # Add timezone handling
+    # The DB stores dates and times naive. We need to attach America/Lima to it for Google Calendar
+    from zoneinfo import ZoneInfo
+    lima_tz = ZoneInfo('America/Lima')
+    start_dt_tz = start_dt.replace(tzinfo=lima_tz)
+    end_dt_tz = end_dt.replace(tzinfo=lima_tz)
+
+    event_body['start'] = {
+        'dateTime': start_dt_tz.isoformat(),
+        'timeZone': 'America/Lima',
+    }
+    event_body['end'] = {
+        'dateTime': end_dt_tz.isoformat(),
+        'timeZone': 'America/Lima',
+    }
+
+    try:
+        if booking.calendar_event_id:
+            event = service.events().update(
+                calendarId=calendar_id, 
+                eventId=booking.calendar_event_id,
+                body=event_body, 
+                sendUpdates='all'
+            ).execute()
+            return event.get('id')
+        else:
+            event = service.events().insert(
+                calendarId=calendar_id, 
+                body=event_body, 
+                sendUpdates='all'
+            ).execute()
+            booking.calendar_event_id = event.get('id')
+            db.commit()
+            return event.get('id')
+    except Exception as e:
+        logger.error(f"Error sincronizando evento en Google Calendar: {e}")
+        return None
+
+
