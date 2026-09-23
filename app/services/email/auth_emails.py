@@ -158,6 +158,66 @@ def send_booking_member_invite_email(
     )
 
 
+def send_booking_member_accepted_to_member_email(
+    db: Session,
+    *,
+    member_email: str,
+    member_name: str,
+    leader_name: str,
+    event_type: str,
+    event_date: str,
+    event_time: str,
+    event_location: str,
+    user_id: UUID | None,
+    booking_id: str,
+) -> None:
+    send_templated_email(
+        db,
+        slug="booking_member_accepted_member",
+        to=member_email,
+        context={
+            "member_name": member_name,
+            "leader_name": leader_name,
+            "app_name": APP_NAME,
+            "event_type": event_type,
+            "event_date": event_date,
+            "event_time": event_time,
+            "event_location": event_location,
+        },
+        user_id=user_id,
+        meta={"booking_id": booking_id},
+    )
+
+
+def send_booking_member_accepted_to_leader_email(
+    db: Session,
+    *,
+    leader_email: str,
+    leader_name: str,
+    member_name: str,
+    event_type: str,
+    event_date: str,
+    event_time: str,
+    user_id: UUID | None,
+    booking_id: str,
+) -> None:
+    send_templated_email(
+        db,
+        slug="booking_member_accepted_leader",
+        to=leader_email,
+        context={
+            "leader_name": leader_name,
+            "member_name": member_name,
+            "app_name": APP_NAME,
+            "event_type": event_type,
+            "event_date": event_date,
+            "event_time": event_time,
+        },
+        user_id=user_id,
+        meta={"booking_id": booking_id},
+    )
+
+
 def verify_email_token(db: Session, token: str) -> User:
     user = (
         db.query(User)

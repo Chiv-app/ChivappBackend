@@ -651,6 +651,74 @@ def respond_booking_invite(
 
 
 @router.post(
+    "/bookings/{booking_id}/member-invites/{member_id}/resend",
+    response_model=BookingMemberInviteOut,
+)
+def resend_booking_invite_email(
+    booking_id: UUID,
+    member_id: UUID,
+    db: Session = Depends(deps.get_db),
+    current_user: User = Depends(deps.get_current_user),
+):
+    """Re-sends the booking invite email for a pending invite."""
+    booking = db.get(Booking, booking_id)
+    if not booking:
+        raise HTTPException(404, "Reserva no encontrada")
+    assert_booking_musician_owner(db, booking, current_user)
+    
+    member = get_member_for_leader(db, leader_id=current_user.id, member_id=member_id)
+    
+    invite = (
+        db.query(BookingMemberInvite)
+        .filter(
+            BookingMemberInvite.booking_id == booking_id,
+            BookingMemberInvite.ensemble_member_id == member.id,
+        )
+        .first()
+    )
+    if not invite:
+        raise HTTPException(404, "No existe una convocatoria para este integrante en esta reserva")
+    if invite.status != BookingMemberInviteStatus.pending:
+        raise HTTPException(400, f"No se puede reenviar porque la convocatoria ya fue {invite.status.value}")
+        
+    # Generate new token
+    invite.response_token = new_token()
+    invite.invited_at = datetime.utcnow()
+    db.commit()
+    db.refresh(invite)
+    
+    # Send email
+    member_user = db.get(User, member.member_user_id) if member.member_user_id else None
+    if member_user:
+        invite_data = serialize_booking_invite(invite)
+        respond_url = invite_data.get("respond_url")
+        if respond_url:
+            event_time = booking.start_time or "Por confirmar"
+            if booking.end_time:
+                event_time = f"{booking.start_time or '?'} – {booking.end_time}"
+            location_parts = [
+                part for part in (booking.location_address, booking.location_city) if part
+            ]
+            
+            from app.services.email.auth_emails import send_booking_member_invite_email
+            send_booking_member_invite_email(
+                db,
+                member_email=member.email,
+                member_name=member.fullname,
+                leader_name=current_user.fullname,
+                event_type=booking.event_type,
+                event_date=str(booking.event_date),
+                event_time=str(event_time),
+                event_location=", ".join(location_parts) or "Por confirmar",
+                respond_url=respond_url,
+                user_id=member_user.id,
+                booking_id=str(booking.id),
+            )
+            
+    return serialize_booking_invite(invite)
+
+
+@router.post(
     "/bookings/{booking_id}/member-invites/me/respond",
     response_model=BookingOut,
 )
@@ -736,6 +804,49 @@ def _apply_booking_invite_response(
                 "status": invite.status.value,
             },
         )
+        
+        if action == "accept":
+            from app.services.email.auth_emails import (
+                send_booking_member_accepted_to_member_email,
+                send_booking_member_accepted_to_leader_email
+            )
+            event_time = booking.start_time or "Por confirmar"
+            if booking.end_time:
+                event_time = f"{booking.start_time or '?'} – {booking.end_time}"
+            location_parts = [
+                part for part in (booking.location_address, booking.location_city) if part
+            ]
+            event_location = ", ".join(location_parts) or "Por confirmar"
+            
+            # Email to member
+            member_user = db.get(User, member.member_user_id) if member.member_user_id else None
+            if member_user and member.email:
+                send_booking_member_accepted_to_member_email(
+                    db,
+                    member_email=member.email,
+                    member_name=member.fullname,
+                    leader_name=leader.fullname,
+                    event_type=booking.event_type,
+                    event_date=str(booking.event_date),
+                    event_time=str(event_time),
+                    event_location=event_location,
+                    user_id=member_user.id,
+                    booking_id=str(booking.id),
+                )
+            
+            # Email to leader
+            if leader.email:
+                send_booking_member_accepted_to_leader_email(
+                    db,
+                    leader_email=leader.email,
+                    leader_name=leader.fullname,
+                    member_name=member.fullname,
+                    event_type=booking.event_type,
+                    event_date=str(booking.event_date),
+                    event_time=str(event_time),
+                    user_id=leader.id,
+                    booking_id=str(booking.id),
+                )
 
 
 @router.get(
