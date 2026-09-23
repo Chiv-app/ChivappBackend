@@ -1,4 +1,4 @@
-import logging
+ï»¿import logging
 import os
 import json
 from datetime import datetime
@@ -236,7 +236,7 @@ def sync_booking_calendar(db, booking_id: str, include_contractor: bool, ensembl
         # Fallback duration if not found
         end_dt = start_dt + dt.timedelta(hours=1)
         
-    musician_name = musician_user.fullname if musician_user else "Músico"
+    musician_name = musician_user.fullname if musician_user else "MÃºsico"
     musician_phone = musician_user.phone if musician_user else ""
     contractor_name = contractor_user.fullname if contractor_user else "Cliente"
     contractor_phone = contractor_user.phone if contractor_user else ""
@@ -246,8 +246,8 @@ def sync_booking_calendar(db, booking_id: str, include_contractor: bool, ensembl
     description_lines = [
         f"<b>Reserva confirmada en Chivapp</b> (#{str(booking.id)[:8]})",
         "<br>",
-        f"<b>Músico:</b> {musician_name} ({musician_phone or 'Sin teléfono'})",
-        f"<b>Contratista:</b> {contractor_name} ({contractor_phone or 'Sin teléfono'})",
+        f"<b>MÃºsico:</b> {musician_name} ({musician_phone or 'Sin telÃ©fono'})",
+        f"<b>Contratista:</b> {contractor_name} ({contractor_phone or 'Sin telÃ©fono'})",
         "<br>",
         f"<b>Lugar:</b> {booking.location_address}, {booking.location_reference or ''}, {booking.location_city or ''}",
         "<br>",
@@ -320,6 +320,7 @@ def sync_booking_calendar(db, booking_id: str, include_contractor: bool, ensembl
     except Exception as e:
         logger.error(f"Error sincronizando evento en Google Calendar: {e}")
         return None
+
 
 
 
