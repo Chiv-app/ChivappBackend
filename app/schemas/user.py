@@ -16,6 +16,7 @@ class UserOut(BaseModel):
     is_active: bool = True
     is_email_verified: bool = False
     has_password: bool = False
+    has_connected_calendar: bool = False
     # True si el usuario figura como integrante de alguna agrupación
     is_ensemble_member: bool = False
     created_at: datetime
@@ -41,6 +42,7 @@ class UserOut(BaseModel):
                 "is_active": getattr(value, "is_active", True),
                 "is_email_verified": value.email_verified_at is not None,
                 "has_password": bool(value.password_hash),
+                "has_connected_calendar": bool(getattr(value, "google_calendar_refresh_token", None)),
                 "is_ensemble_member": bool(
                     getattr(value, "is_ensemble_member", False)
                 ),
@@ -53,6 +55,11 @@ class UserOut(BaseModel):
             value = {
                 **value,
                 "has_password": bool(value.get("password_hash")),
+                "has_connected_calendar": bool(value.get("google_calendar_refresh_token")),
             }
             value.pop("password_hash", None)
         return handler(value)
+
+
+
+
