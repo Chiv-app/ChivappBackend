@@ -91,6 +91,7 @@ def send_templated_email(
     user_id: UUID | None = None,
     meta: dict | None = None,
     recipient_name: str | None = None,
+    extra_attachments: list[dict] | None = None,
 ) -> EmailLog:
     recipient = normalize_email(to) or to.strip().lower()
     template = get_template(db, slug)
@@ -151,6 +152,7 @@ def send_templated_email(
             html=html,
             text=text,
             recipient_name=target_name,
+            extra_attachments=extra_attachments,
         )
         status = "sent" if provider_id else "skipped"
         error = None if provider_id else "Envío omitido (EMAIL_ENABLED o BREVO_API_KEY)"

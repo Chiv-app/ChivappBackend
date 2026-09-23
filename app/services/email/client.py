@@ -30,6 +30,7 @@ def send_via_brevo(
     html: str,
     text: str,
     recipient_name: str | None = None,
+    extra_attachments: list[dict] | None = None,
 ) -> str | None:
     """Envía un correo transaccional utilizando la API v3 de Brevo."""
     if not settings.EMAIL_ENABLED:
@@ -58,6 +59,9 @@ def send_via_brevo(
                 "contentId": LOGO_CID,
             }
         )
+
+    if extra_attachments:
+        attachments.extend(extra_attachments)
 
     payload: dict = {
         "sender": {

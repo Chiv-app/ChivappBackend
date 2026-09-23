@@ -83,6 +83,42 @@ PAYOUT_ELIGIBLE_STATUSES = {
 }
 
 
+def _generate_ics_attachment(booking, leader_name: str) -> dict | None:
+    try:
+        import datetime as dt
+        from zoneinfo import ZoneInfo
+        import base64
+
+        lima_tz = ZoneInfo('America/Lima')
+        start_dt = dt.datetime.combine(booking.event_date, booking.start_time)
+        if booking.end_time:
+            end_dt = dt.datetime.combine(booking.event_date, booking.end_time)
+            if end_dt < start_dt:
+                end_dt = end_dt + dt.timedelta(days=1)
+        else:
+            end_dt = start_dt + dt.timedelta(hours=1)
+            
+        start_utc = start_dt.replace(tzinfo=lima_tz).astimezone(dt.timezone.utc)
+        end_utc = end_dt.replace(tzinfo=lima_tz).astimezone(dt.timezone.utc)
+        
+        fmt = "%Y%m%dT%H%M%SZ"
+        
+        uid = f"{booking.id}@chiv.app"
+        dtstamp = dt.datetime.now(dt.timezone.utc).strftime(fmt)
+        
+        location = f"{booking.location_address}, {booking.location_city or ''}"
+        
+        ics = f"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Chivapp//NONSGML v1.0//EN\r\nCALSCALE:GREGORIAN\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:{uid}\r\nDTSTAMP:{dtstamp}\r\nDTSTART:{start_utc.strftime(fmt)}\r\nDTEND:{end_utc.strftime(fmt)}\r\nSUMMARY:Chivapp: {booking.event_type} - {leader_name}\r\nLOCATION:{location}\r\nDESCRIPTION:Reserva confirmada en Chivapp.\r\nSTATUS:CONFIRMED\r\nBEGIN:VALARM\r\nTRIGGER:-PT120M\r\nACTION:DISPLAY\r\nDESCRIPTION:Reminder\r\nEND:VALARM\r\nEND:VEVENT\r\nEND:VCALENDAR"
+        
+        return {
+            "name": "invitacion.ics",
+            "content": base64.b64encode(ics.encode("utf-8")).decode("ascii")
+        }
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Error generando ICS: {e}")
+        return None
+
 def _has_musician_contractor_review(db: Session, booking: Booking) -> bool:
     return (
         db.query(ContractorRecommendation.id)
@@ -530,11 +566,13 @@ def create_booking_invites(
         if booking.calendar_event_id:
             add_attendee_to_booking_event(booking.calendar_event_id, member.email)
 
+        invite_data = serialize_booking_invite(invite)
+        respond_url = invite_data.get("respond_url")
+
+        # In-app notification ONLY if the user is registered
         if member.member_user_id:
             member_user = db.get(User, member.member_user_id)
             if member_user:
-                invite_data = serialize_booking_invite(invite)
-                respond_url = invite_data.get("respond_url")
                 notify_user(
                     db,
                     user=member_user,
@@ -550,31 +588,33 @@ def create_booking_invites(
                         "ensemble_member_id": str(member.id),
                     },
                 )
-                if respond_url:
-                    event_time = booking.start_time or "Por confirmar"
-                    if booking.end_time:
-                        event_time = f"{booking.start_time or '?'} – {booking.end_time}"
-                    location_parts = [
-                        part
-                        for part in (
-                            booking.location_address,
-                            booking.location_city,
-                        )
-                        if part
-                    ]
-                    send_booking_member_invite_email(
-                        db,
-                        member_email=member.email,
-                        member_name=member.fullname,
-                        leader_name=current_user.fullname,
-                        event_type=booking.event_type,
-                        event_date=str(booking.event_date),
-                        event_time=str(event_time),
-                        event_location=", ".join(location_parts) or "Por confirmar",
-                        respond_url=respond_url,
-                        user_id=member_user.id,
-                        booking_id=str(booking.id),
-                    )
+
+        # Email notification ALWAYS to the member's email (if they have one)
+        if respond_url and member.email:
+            event_time = booking.start_time or "Por confirmar"
+            if booking.end_time:
+                event_time = f"{booking.start_time or '?'} - {booking.end_time}"
+            location_parts = [
+                part for part in (booking.location_address, booking.location_city) if part
+            ]
+            
+            ics_file = _generate_ics_attachment(booking, current_user.fullname)
+            extra_atts = [ics_file] if ics_file else None
+
+            send_booking_member_invite_email(
+                db,
+                member_email=member.email,
+                member_name=member.fullname,
+                leader_name=current_user.fullname,
+                event_type=booking.event_type,
+                event_date=str(booking.event_date),
+                event_time=str(event_time),
+                event_location=", ".join(location_parts) or "Por confirmar",
+                respond_url=respond_url,
+                user_id=member.member_user_id,
+                booking_id=str(booking.id),
+                extra_attachments=extra_atts,
+            )
 
     db.commit()
     for invite in results:
@@ -687,33 +727,35 @@ def resend_booking_invite_email(
     db.commit()
     db.refresh(invite)
     
-    # Send email
-    member_user = db.get(User, member.member_user_id) if member.member_user_id else None
-    if member_user:
-        invite_data = serialize_booking_invite(invite)
-        respond_url = invite_data.get("respond_url")
-        if respond_url:
-            event_time = booking.start_time or "Por confirmar"
-            if booking.end_time:
-                event_time = f"{booking.start_time or '?'} – {booking.end_time}"
-            location_parts = [
-                part for part in (booking.location_address, booking.location_city) if part
-            ]
-            
-            from app.services.email.auth_emails import send_booking_member_invite_email
-            send_booking_member_invite_email(
-                db,
-                member_email=member.email,
-                member_name=member.fullname,
-                leader_name=current_user.fullname,
-                event_type=booking.event_type,
-                event_date=str(booking.event_date),
-                event_time=str(event_time),
-                event_location=", ".join(location_parts) or "Por confirmar",
-                respond_url=respond_url,
-                user_id=member_user.id,
-                booking_id=str(booking.id),
-            )
+    # Send email ALWAYS
+    invite_data = serialize_booking_invite(invite)
+    respond_url = invite_data.get("respond_url")
+    if respond_url and member.email:
+        event_time = booking.start_time or "Por confirmar"
+        if booking.end_time:
+            event_time = f"{booking.start_time or '?'} - {booking.end_time}"
+        location_parts = [
+            part for part in (booking.location_address, booking.location_city) if part
+        ]
+        
+        ics_file = _generate_ics_attachment(booking, current_user.fullname)
+        extra_atts = [ics_file] if ics_file else None
+        
+        from app.services.email.auth_emails import send_booking_member_invite_email
+        send_booking_member_invite_email(
+            db,
+            member_email=member.email,
+            member_name=member.fullname,
+            leader_name=current_user.fullname,
+            event_type=booking.event_type,
+            event_date=str(booking.event_date),
+            event_time=str(event_time),
+            event_location=", ".join(location_parts) or "Por confirmar",
+            respond_url=respond_url,
+            user_id=member.member_user_id,
+            booking_id=str(booking.id),
+            extra_attachments=extra_atts,
+        )
             
     return serialize_booking_invite(invite)
 
@@ -1258,3 +1300,4 @@ def list_my_calls(
         .all()
     )
     return [serialize_booking_invite(i) for i in invites]
+

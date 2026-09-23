@@ -138,6 +138,7 @@ def send_booking_member_invite_email(
     respond_url: str,
     user_id: UUID | None,
     booking_id: str,
+    extra_attachments: list[dict] | None = None,
 ) -> None:
     send_templated_email(
         db,
@@ -155,6 +156,7 @@ def send_booking_member_invite_email(
         },
         user_id=user_id,
         meta={"booking_id": booking_id},
+        extra_attachments=extra_attachments,
     )
 
 
