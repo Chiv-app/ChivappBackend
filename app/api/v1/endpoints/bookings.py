@@ -1,4 +1,4 @@
-﻿from datetime import date, datetime
+from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session, joinedload
@@ -851,11 +851,25 @@ def sync_booking_calendar_endpoint(
         booking.calendar_event_id = new_event_id
         db.commit()
     
+    # Enviar invitaciones (emails y BD) usando la funcion oficial
+    try:
+        from app.api.v1.endpoints.ensemble_members import create_booking_invites
+        from app.schemas.ensemble import BookingMemberInviteCreate
+        import uuid
+        if str_member_ids:
+            invite_payload = BookingMemberInviteCreate(ensemble_member_ids=[uuid.UUID(m) for m in str_member_ids])
+            create_booking_invites(booking_id=uuid.UUID(booking_id), payload=invite_payload, db=db, current_user=current_user)
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error creando invitaciones de reserva: {e}")
+
     return serialize_booking_out(
         booking,
         viewer_role=viewer_role,
         member_invite_status=None,
     )
+
 
 
 
