@@ -846,12 +846,16 @@ def sync_booking_calendar_endpoint(
         raise HTTPException(403, "Solo los m\u00fasicos pueden realizar esta acci\u00f3n.")
 
     str_member_ids = [str(uid) for uid in payload.ensemble_member_ids]
-    sync_booking_calendar(db, str(booking.id), payload.include_contractor, str_member_ids)
+    new_event_id = sync_booking_calendar(db, str(booking.id), payload.include_contractor, str_member_ids)
+    if new_event_id:
+        booking.calendar_event_id = new_event_id
+        db.commit()
     
     return serialize_booking_out(
         booking,
         viewer_role=viewer_role,
         member_invite_status=None,
     )
+
 
 

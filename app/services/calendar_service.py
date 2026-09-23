@@ -213,8 +213,17 @@ def sync_booking_calendar(db, booking_id: str, include_contractor: bool, ensembl
 
     for mid in ensemble_member_ids:
         em = db.query(EnsembleMember).filter(EnsembleMember.id == mid).first()
-        if em and em.email and not em.email.endswith("@guest.local"):
+        if em and em.email and not em.email.endswith('@guest.local'):
             attendees.append({'email': em.email})
+        
+        # Enviar invitacion de correo directamente por Brevo ya que Calendar bloquea Service Accounts
+        if em and getattr(em, 'member_user_id', None):
+            try:
+                from app.services.booking_notifications import notify_booking_member_invite
+                notify_booking_member_invite(db, booking.id, em.member_user_id)
+            except Exception as e:
+                logger.error(f"Error mandando correo a integrante {em.id}: {e}")
+
 
     service = _get_calendar_service()
     if not service:
@@ -311,6 +320,7 @@ def sync_booking_calendar(db, booking_id: str, include_contractor: bool, ensembl
     except Exception as e:
         logger.error(f"Error sincronizando evento en Google Calendar: {e}")
         return None
+
 
 
 
