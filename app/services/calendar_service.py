@@ -149,42 +149,12 @@ def cancel_booking_event(event_id: str) -> bool:
         return False
 
 def add_attendee_to_booking_event(event_id: str, attendee_email: str) -> bool:
-    """Agrega un asistente a un evento de Google Calendar."""
-    service = _get_calendar_service()
-    if not service or not event_id:
-        return False
-    calendar_id = settings.GOOGLE_CALENDAR_ID or "primary"
-    try:
-        event = service.events().get(calendarId=calendar_id, eventId=event_id).execute()
-        attendees = event.get('attendees', [])
-        if any(a.get('email') == attendee_email for a in attendees):
-            return True
-        attendees.append({'email': attendee_email})
-        event['attendees'] = attendees
-        service.events().update(calendarId=calendar_id, eventId=event_id, body=event, sendUpdates='none').execute()
-        return True
-    except Exception as e:
-        logger.error(f"Error agregando asistente al calendario: {e}")
-        return False
+    # Desactivado debido a la restriccion 403 de Service Accounts (sin Workspace)
+    return False
 
 def remove_attendee_from_booking_event(event_id: str, attendee_email: str) -> bool:
-    """Elimina un asistente de un evento de Google Calendar."""
-    service = _get_calendar_service()
-    if not service or not event_id:
-        return False
-    calendar_id = settings.GOOGLE_CALENDAR_ID or "primary"
-    try:
-        event = service.events().get(calendarId=calendar_id, eventId=event_id).execute()
-        attendees = event.get('attendees', [])
-        new_attendees = [a for a in attendees if a.get('email') != attendee_email]
-        if len(attendees) == len(new_attendees):
-            return True
-        event['attendees'] = new_attendees
-        service.events().update(calendarId=calendar_id, eventId=event_id, body=event, sendUpdates='none').execute()
-        return True
-    except Exception as e:
-        logger.error(f"Error eliminando asistente del calendario: {e}")
-        return False
+    # Desactivado debido a la restriccion 403 de Service Accounts (sin Workspace)
+    return False
 
 
 
@@ -314,6 +284,7 @@ def sync_booking_calendar(db, booking_id: str, include_contractor: bool, ensembl
     except Exception as e:
         logger.error(f"Error sincronizando evento en Google Calendar: {e}")
         return None
+
 
 
 
