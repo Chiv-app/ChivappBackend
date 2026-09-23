@@ -291,15 +291,24 @@ def sync_booking_calendar(db, booking_id: str, include_contractor: bool, ensembl
     }
 
     try:
+        from googleapiclient.errors import HttpError
         if booking.calendar_event_id:
-            event = service.events().update(
-                calendarId=calendar_id, 
-                eventId=booking.calendar_event_id,
-                body=event_body, 
-                sendUpdates='none'
-            ).execute()
-            return event.get('id')
-        else:
+            try:
+                event = service.events().update(
+                    calendarId=calendar_id, 
+                    eventId=booking.calendar_event_id,
+                    body=event_body, 
+                    sendUpdates='none'
+                ).execute()
+                return event.get('id')
+            except HttpError as he:
+                if he.resp.status == 404 or he.resp.status == 410:
+                    logger.warning(f"Evento {booking.calendar_event_id} no encontrado en Google Calendar. Creando uno nuevo.")
+                    booking.calendar_event_id = None
+                else:
+                    raise he
+
+        if not booking.calendar_event_id:
             event = service.events().insert(
                 calendarId=calendar_id, 
                 body=event_body, 
