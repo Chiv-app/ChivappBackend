@@ -1,4 +1,4 @@
-from datetime import datetime
+﻿from datetime import datetime
 from urllib.parse import urlencode
 from uuid import UUID
 
@@ -176,6 +176,9 @@ def _link_oauth_account(
     provider_user_id: str,
     email: str | None,
 ) -> None:
+    if user.role == UserRole.contractor:
+        user.is_verified = True
+
     existing = (
         db.query(OAuthAccount)
         .filter(
@@ -187,7 +190,7 @@ def _link_oauth_account(
     if existing and existing.user_id != user.id:
         raise HTTPException(
             400,
-            "Esta cuenta social ya está vinculada a otro usuario.",
+            "Esta cuenta social ya esta vinculada a otro usuario.",
         )
     if existing:
         existing.email = email
@@ -213,6 +216,7 @@ def _link_oauth_account(
             provider_user_id=provider_user_id,
             email=email,
         )
+    )
     )
 
 
@@ -701,7 +705,7 @@ async def oauth_google_credential(
         db.commit()
         return GoogleAuthResponse(status="linked", role=user.role.value)
 
-    # 1. Existing OAuth account
+        # 1. Existing OAuth account
     existing_oauth = (
         db.query(OAuthAccount)
         .filter(
@@ -716,6 +720,8 @@ async def oauth_google_credential(
             raise HTTPException(404, "Usuario no encontrado")
         if not user.email_verified_at:
             user.email_verified_at = datetime.utcnow()
+        if user.role == UserRole.contractor and not user.is_verified:
+            user.is_verified = True
         token = _issue_login(response, user)
         db.commit()
         return GoogleAuthResponse(
@@ -947,5 +953,7 @@ def change_password(
     db.commit()
     db.refresh(current_user)
     return {"message": "Contraseña actualizada exitosamente"}
+
+
 
 
