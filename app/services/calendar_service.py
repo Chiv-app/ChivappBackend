@@ -1,4 +1,4 @@
-﻿import logging
+import logging
 import os
 import json
 from datetime import datetime
@@ -194,7 +194,7 @@ def remove_attendee_from_booking_event(event_id: str, attendee_email: str) -> bo
 def sync_booking_calendar(db, booking_id: str, include_contractor: bool, ensemble_member_ids: list[str]) -> str | None:
     from app.models.booking import Booking, BookingStatus
     from app.models.user import User
-    from app.models.ensemble import EnsembleMember
+    from app.models.ensemble_member import EnsembleMember
 
     booking = db.query(Booking).filter(Booking.id == booking_id).first()
     if not booking:
