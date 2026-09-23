@@ -1,4 +1,4 @@
-import hashlib
+﻿import hashlib
 import hmac
 import logging
 import uuid
@@ -54,10 +54,10 @@ def create_preference(
     payer_email: str | None = None,
 ) -> dict[str, Any]:
     if not is_mercadopago_configured():
-        raise ValueError("Mercado Pago no está configurado en el servidor.")
+        raise ValueError("Mercado Pago no estÃ¡ configurado en el servidor.")
 
     musician = db.query(MusicianProfile).filter(MusicianProfile.id == booking.musician_id).first()
-    musician_name = musician.stage_name if musician and musician.stage_name else "Músico"
+    musician_name = musician.stage_name if musician and musician.stage_name else "MÃºsico"
 
     type_labels = {
         "advance": "Anticipo",
@@ -145,13 +145,13 @@ def create_preference(
         logger.error("Error al crear preferencia en Mercado Pago: %s %s", exc.response.status_code, exc.response.text)
         raise ValueError(f"Mercado Pago error ({exc.response.status_code}): {exc.response.text}") from exc
     except Exception as exc:
-        logger.error("Error de conexión con Mercado Pago: %s", exc)
+        logger.error("Error de conexiÃ³n con Mercado Pago: %s", exc)
         raise ValueError(f"Error al conectar con Mercado Pago: {exc}") from exc
 
 
 def get_payment_details(payment_id: str) -> dict[str, Any]:
     if not is_mercadopago_configured():
-        raise ValueError("Mercado Pago no está configurado.")
+        raise ValueError("Mercado Pago no estÃ¡ configurado.")
 
     try:
         with httpx.Client(timeout=15.0) as client:
@@ -165,13 +165,13 @@ def get_payment_details(payment_id: str) -> dict[str, Any]:
         logger.error("Error al obtener pago %s de Mercado Pago: %s", payment_id, exc.response.text)
         raise ValueError(f"Error al consultar pago en Mercado Pago: {exc.response.text}") from exc
     except Exception as exc:
-        logger.error("Error de conexión con Mercado Pago para pago %s: %s", payment_id, exc)
+        logger.error("Error de conexiÃ³n con Mercado Pago para pago %s: %s", payment_id, exc)
         raise ValueError(f"Error al conectar con Mercado Pago: {exc}") from exc
 
 
 def get_merchant_order_details(merchant_order_id: str) -> dict[str, Any]:
     if not is_mercadopago_configured():
-        raise ValueError("Mercado Pago no está configurado.")
+        raise ValueError("Mercado Pago no estÃ¡ configurado.")
 
     try:
         with httpx.Client(timeout=15.0) as client:
@@ -185,7 +185,7 @@ def get_merchant_order_details(merchant_order_id: str) -> dict[str, Any]:
         logger.error("Error al obtener merchant order %s de Mercado Pago: %s", merchant_order_id, exc.response.text)
         raise ValueError(f"Error al consultar orden en Mercado Pago: {exc.response.text}") from exc
     except Exception as exc:
-        logger.error("Error de conexión con Mercado Pago para merchant order %s: %s", merchant_order_id, exc)
+        logger.error("Error de conexiÃ³n con Mercado Pago para merchant order %s: %s", merchant_order_id, exc)
         raise ValueError(f"Error al conectar con Mercado Pago: {exc}") from exc
 
 
@@ -229,7 +229,7 @@ def process_approved_mercadopago_payment(db: Session, payment_data: dict[str, An
     try:
         booking_uuid = parse_uuid(booking_id_str, "booking_id")
     except Exception:
-        logger.warning("Booking ID inválido en pago %s: %s", payment_id, booking_id_str)
+        logger.warning("Booking ID invÃ¡lido en pago %s: %s", payment_id, booking_id_str)
         return None
 
     booking = db.get(Booking, booking_uuid)
@@ -300,7 +300,7 @@ def process_approved_mercadopago_payment(db: Session, payment_data: dict[str, An
             if musician:
                 musician_user = db.query(User).filter(User.id == musician.user_id).first()
                 if musician_user:
-                    notify_booking_confirmed(db, musician_user, str(booking.id))
+                    notify_booking_confirmed(db, musician_user, str(booking.id), contractor_user)
                     
                     # Create Google Calendar event
                     if not booking.calendar_event_id and contractor_user and musician_user:
@@ -357,10 +357,10 @@ def process_direct_payment(
 ) -> dict[str, Any]:
     """
     Procesa un pago directo (Checkout API / Payments API) usando un token generado en el frontend.
-    Soporta Yape nativo (token vía mp.yape) y Tarjetas de crédito/débito (token vía Bricks/SDK).
+    Soporta Yape nativo (token vÃ­a mp.yape) y Tarjetas de crÃ©dito/dÃ©bito (token vÃ­a Bricks/SDK).
     """
     if not is_mercadopago_configured():
-        raise ValueError("Mercado Pago no está configurado en el servidor.")
+        raise ValueError("Mercado Pago no estÃ¡ configurado en el servidor.")
 
     token = payment_payload.get("token")
     if not token:
@@ -376,7 +376,7 @@ def process_direct_payment(
     issuer_id = payment_payload.get("issuer_id")
 
     musician = db.query(MusicianProfile).filter(MusicianProfile.id == booking.musician_id).first()
-    musician_name = musician.stage_name if musician and musician.stage_name else "Músico"
+    musician_name = musician.stage_name if musician and musician.stage_name else "MÃºsico"
     description = f"Chivapp: {booking.event_type} - {musician_name} (Reserva #{str(booking.id)[:8]})"
 
     payer_email = payment_payload.get("payer_email") or contractor_user.email
@@ -462,24 +462,24 @@ def process_direct_payment(
             payment_id = str(data.get("id")) if data.get("id") else None
 
             detail_messages = {
-                "rejected_high_risk": "Pago rechazado por prevención de riesgo/fraude de Mercado Pago. (Nota: en modo producción no puedes pagarte a ti mismo con tu propio celular/tarjeta/cuenta de Mercado Pago).",
-                "rejected_by_bank": "El banco emisor o la billetera rechazó la operación.",
+                "rejected_high_risk": "Pago rechazado por prevenciÃ³n de riesgo/fraude de Mercado Pago. (Nota: en modo producciÃ³n no puedes pagarte a ti mismo con tu propio celular/tarjeta/cuenta de Mercado Pago).",
+                "rejected_by_bank": "El banco emisor o la billetera rechazÃ³ la operaciÃ³n.",
                 "cc_rejected_insufficient_amount": "Saldo o fondos insuficientes en la cuenta.",
-                "cc_rejected_bad_filled_security_code": "Código de seguridad o validación inválido.",
-                "cc_rejected_bad_filled_date": "Fecha de vencimiento de la tarjeta inválida.",
+                "cc_rejected_bad_filled_security_code": "CÃ³digo de seguridad o validaciÃ³n invÃ¡lido.",
+                "cc_rejected_bad_filled_date": "Fecha de vencimiento de la tarjeta invÃ¡lida.",
                 "cc_rejected_bad_filled_other": "Datos ingresados incorrectos o no coinciden.",
                 "cc_rejected_call_for_authorize": "Debes llamar a tu banco para autorizar compras por internet.",
-                "cc_rejected_card_disabled": "Tu tarjeta o cuenta no está habilitada para pagos por internet.",
-                "cc_rejected_duplicated_payment": "Se detectó un pago duplicado reciente para este monto.",
-                "cc_rejected_max_attempts": "Se superó el límite de intentos permitidos. Intenta más tarde.",
+                "cc_rejected_card_disabled": "Tu tarjeta o cuenta no estÃ¡ habilitada para pagos por internet.",
+                "cc_rejected_duplicated_payment": "Se detectÃ³ un pago duplicado reciente para este monto.",
+                "cc_rejected_max_attempts": "Se superÃ³ el lÃ­mite de intentos permitidos. Intenta mÃ¡s tarde.",
             }
 
             if status == "approved":
-                friendly_message = "¡Pago aprobado con éxito! Tu reserva ha quedado confirmada."
+                friendly_message = "Â¡Pago aprobado con Ã©xito! Tu reserva ha quedado confirmada."
             elif status == "in_process":
-                friendly_message = "El pago está en proceso de revisión por la entidad financiera."
+                friendly_message = "El pago estÃ¡ en proceso de revisiÃ³n por la entidad financiera."
             elif status == "pending":
-                friendly_message = "El pago se encuentra pendiente de acreditación."
+                friendly_message = "El pago se encuentra pendiente de acreditaciÃ³n."
             else:
                 friendly_message = (
                     detail_messages.get(status_detail)
@@ -499,13 +499,13 @@ def process_direct_payment(
             }
 
     except Exception as exc:
-        logger.error("Excepción al contactar con Mercado Pago v1/payments: %s", exc)
+        logger.error("ExcepciÃ³n al contactar con Mercado Pago v1/payments: %s", exc)
         return {
             "success": False,
             "status": "error",
             "status_detail": "network_error",
             "payment_id": None,
-            "message": f"Error de comunicación con la pasarela de pago: {exc}",
+            "message": f"Error de comunicaciÃ³n con la pasarela de pago: {exc}",
         }
 
 def issue_refund(payment_id: str, amount: float) -> dict[str, Any]:
@@ -514,7 +514,7 @@ def issue_refund(payment_id: str, amount: float) -> dict[str, Any]:
     Llama a: POST /v1/payments/{payment_id}/refunds
     """
     if not is_mercadopago_configured():
-        raise ValueError("Mercado Pago no está configurado.")
+        raise ValueError("Mercado Pago no estÃ¡ configurado.")
 
     payload = {"amount": float(amount)}
     headers = _mp_headers()
@@ -537,5 +537,5 @@ def issue_refund(payment_id: str, amount: float) -> dict[str, Any]:
         logger.error("Error HTTP al reembolsar: %s", exc)
         raise ValueError(f"Error HTTP: {exc}")
     except Exception as exc:
-        logger.error("Excepción en reembolso: %s", exc)
-        raise ValueError(f"Excepción al reembolsar: {exc}")
+        logger.error("ExcepciÃ³n en reembolso: %s", exc)
+        raise ValueError(f"ExcepciÃ³n al reembolsar: {exc}")

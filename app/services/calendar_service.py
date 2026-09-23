@@ -1,5 +1,6 @@
-import logging
+﻿import logging
 import os
+import json
 from datetime import datetime
 from typing import Any
 
@@ -14,21 +15,38 @@ logger = logging.getLogger(__name__)
 SCOPES = ['https://www.googleapis.com/auth/calendar.events']
 
 def _get_calendar_service():
-    """Inicializa y devuelve el servicio de Google Calendar."""
-    creds_path = os.path.join(os.path.dirname(__file__), '..', '..', 'google_credentials.json')
-    if not os.path.exists(creds_path):
-        logger.warning(f"No se encontró google_credentials.json en {creds_path}. No se sincronizará con Google Calendar.")
+    "\""Inicializa y devuelve el servicio de Google Calendar."\""
+    creds = None
+    if settings.GOOGLE_CREDENTIALS_JSON:
+        try:
+            creds_info = json.loads(settings.GOOGLE_CREDENTIALS_JSON)
+            creds = service_account.Credentials.from_service_account_info(
+                creds_info, scopes=SCOPES
+            )
+        except Exception as e:
+            logger.error(f"Error al cargar credenciales de entorno: {e}")
+    else:
+        creds_path = os.path.join(os.path.dirname(__file__), '..', '..', 'google_credentials.json')
+        if not os.path.exists(creds_path):
+            logger.warning(f"No se encontro google_credentials.json ni GOOGLE_CREDENTIALS_JSON. No se sincronizara con Google Calendar.")
+            return None
+        try:
+            creds = service_account.Credentials.from_service_account_file(
+                creds_path, scopes=SCOPES
+            )
+        except Exception as e:
+            logger.error(f"Error al inicializar Google Calendar desde archivo: {e}")
+            return None
+
+    if not creds:
         return None
 
     try:
-        creds = service_account.Credentials.from_service_account_file(
-            creds_path, scopes=SCOPES)
         service = build('calendar', 'v3', credentials=creds)
         return service
     except Exception as e:
-        logger.error(f"Error al inicializar Google Calendar: {e}")
+        logger.error(f"Error al construir servicio de Google Calendar: {e}")
         return None
-
 def create_booking_event(
     booking_id: str,
     event_type: str,
@@ -46,7 +64,7 @@ def create_booking_event(
 ) -> str | None:
     """
     Crea un evento en Google Calendar para una reserva confirmada y pagada.
-    Agrega al músico y al contratista como invitados.
+    Agrega al mÃºsico y al contratista como invitados.
     """
     service = _get_calendar_service()
     if not service:
@@ -54,7 +72,7 @@ def create_booking_event(
 
     calendar_id = settings.GOOGLE_CALENDAR_ID
     if not calendar_id:
-        logger.warning("GOOGLE_CALENDAR_ID no está configurado. Se usará 'primary' (puede fallar para Service Accounts).")
+        logger.warning("GOOGLE_CALENDAR_ID no estÃ¡ configurado. Se usarÃ¡ 'primary' (puede fallar para Service Accounts).")
         calendar_id = "primary"
 
     # Calcular fecha de fin (UTC)
@@ -64,16 +82,16 @@ def create_booking_event(
 
     event_summary = f"Chivapp: {event_type} - {musician_name}"
     
-    # Cuerpo del evento (descripción)
+    # Cuerpo del evento (descripciÃ³n)
     description_lines = [
         f"<b>Reserva confirmada en Chivapp</b> (#{str(booking_id)[:8]})",
         "<br>",
-        f"<b>Músico:</b> {musician_name} ({musician_phone or 'Sin teléfono'})",
-        f"<b>Contratista:</b> {contractor_name} ({contractor_phone or 'Sin teléfono'})",
+        f"<b>MÃºsico:</b> {musician_name} ({musician_phone or 'Sin telÃ©fono'})",
+        f"<b>Contratista:</b> {contractor_name} ({contractor_phone or 'Sin telÃ©fono'})",
         "<br>",
         f"<b>Lugar:</b> {location_address}, {location_zone}, {location_city}",
         "<br>",
-        "<b>Nota:</b> Este evento fue agendado automáticamente por Chivapp porque el pago ha sido retenido con éxito."
+        "<b>Nota:</b> Este evento fue agendado automÃ¡ticamente por Chivapp porque el pago ha sido retenido con Ã©xito."
     ]
     
     event_body = {
@@ -105,16 +123,16 @@ def create_booking_event(
         event = service.events().insert(
             calendarId=calendar_id, 
             body=event_body, 
-            sendUpdates='all' # Envía correos a los invitados
+            sendUpdates='all' # EnvÃ­a correos a los invitados
         ).execute()
         
-        logger.info(f"Evento de Google Calendar creado con éxito: {event.get('htmlLink')}")
+        logger.info(f"Evento de Google Calendar creado con Ã©xito: {event.get('htmlLink')}")
         return event.get('id')
     except HttpError as error:
-        logger.error(f"Ocurrió un error al crear evento en Google Calendar: {error}")
+        logger.error(f"OcurriÃ³ un error al crear evento en Google Calendar: {error}")
         return None
     except Exception as e:
-        logger.error(f"Excepción inesperada en Google Calendar: {e}")
+        logger.error(f"ExcepciÃ³n inesperada en Google Calendar: {e}")
         return None
 
 def cancel_booking_event(event_id: str) -> bool:
@@ -170,4 +188,5 @@ def remove_attendee_from_booking_event(event_id: str, attendee_email: str) -> bo
     except Exception as e:
         logger.error(f"Error eliminando asistente del calendario: {e}")
         return False
+
 

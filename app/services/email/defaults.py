@@ -1,4 +1,4 @@
-"""Default email templates seeded on startup. Admin can edit via panel."""
+﻿"""Default email templates seeded on startup. Admin can edit via panel."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ EMAIL_TEMPLATE_DEFAULTS: list[dict] = [
     {
         "slug": "welcome",
         "name": "Bienvenida",
-        "description": "Se envía al crear una cuenta con correo y contraseña.",
-        "subject": "¡Bienvenido a Chivapp, {{user_name}}!",
+        "description": "Se envÃ­a al crear una cuenta con correo y contraseÃ±a.",
+        "subject": "Â¡Bienvenido a Chivapp, {{user_name}}!",
         "available_variables": [
             "user_name",
             "user_email",
@@ -22,9 +22,9 @@ EMAIL_TEMPLATE_DEFAULTS: list[dict] = [
             category_badge="Bienvenida",
             badge_bg="#DCFCE7",
             badge_color="#15803D",
-            title="¡Bienvenido a {{app_name}}!",
+            title="Â¡Bienvenido a {{app_name}}!",
             greeting="Hola {{user_name}},",
-            lead_text="Tu cuenta ha sido creada exitosamente con el correo <strong>{{user_email}}</strong>. Desde Chivapp puedes descubrir músicos, gestionar reservas y coordinar tus presentaciones.",
+            lead_text="Tu cuenta ha sido creada exitosamente con el correo <strong>{{user_email}}</strong>. Desde Chivapp puedes descubrir mÃºsicos, gestionar reservas y coordinar tus presentaciones.",
             info_items=[
                 ("Correo registrado", "{{user_email}}"),
                 ("Plataforma", "{{app_name}}"),
@@ -36,19 +36,19 @@ EMAIL_TEMPLATE_DEFAULTS: list[dict] = [
         "text_body": """
 Hola {{user_name}},
 
-¡Bienvenido a {{app_name}}!
+Â¡Bienvenido a {{app_name}}!
 
-Tu cuenta quedó creada con el correo {{user_email}}.
+Tu cuenta quedÃ³ creada con el correo {{user_email}}.
 
-Ingresa aquí: {{login_url}}
+Ingresa aquÃ­: {{login_url}}
 
 Si no creaste esta cuenta, ignora este mensaje.
 """.strip(),
     },
     {
         "slug": "email_verification",
-        "name": "Verificación de correo",
-        "description": "Enlace para confirmar el correo electrónico de la cuenta.",
+        "name": "VerificaciÃ³n de correo",
+        "description": "Enlace para confirmar el correo electrÃ³nico de la cuenta.",
         "subject": "Confirma tu correo en {{app_name}}",
         "available_variables": [
             "user_name",
@@ -61,12 +61,12 @@ Si no creaste esta cuenta, ignora este mensaje.
             category_badge="Seguridad",
             badge_bg="#FEF3C7",
             badge_color="#92400E",
-            title="Confirma tu correo electrónico",
+            title="Confirma tu correo electrÃ³nico",
             greeting="Hola {{user_name}},",
-            lead_text="Para activar tu cuenta en {{app_name}} y mantenerla protegida, confirma que esta dirección de correo te pertenece pulsando el siguiente botón:",
+            lead_text="Para activar tu cuenta en {{app_name}} y mantenerla protegida, confirma que esta direcciÃ³n de correo te pertenece pulsando el siguiente botÃ³n:",
             cta_label="Verificar mi correo",
             cta_url="{{action_url}}",
-            secondary_note="⏳ Este enlace expira en {{expires_hours}} horas. Si no creaste una cuenta, puedes ignorar este mensaje.",
+            secondary_note="â³ Este enlace expira en {{expires_hours}} horas. Si no creaste una cuenta, puedes ignorar este mensaje.",
         ),
         "text_body": """
 Hola {{user_name}},
@@ -80,9 +80,9 @@ Si no creaste una cuenta, ignora este mensaje.
     },
     {
         "slug": "password_reset",
-        "name": "Restablecer contraseña",
-        "description": "Enlace para crear una nueva contraseña.",
-        "subject": "Restablece tu contraseña en {{app_name}}",
+        "name": "Restablecer contraseÃ±a",
+        "description": "Enlace para crear una nueva contraseÃ±a.",
+        "subject": "Restablece tu contraseÃ±a en {{app_name}}",
         "available_variables": [
             "user_name",
             "user_email",
@@ -94,17 +94,17 @@ Si no creaste una cuenta, ignora este mensaje.
             category_badge="Seguridad",
             badge_bg="#FEE2E2",
             badge_color="#991B1B",
-            title="Restablece tu contraseña",
+            title="Restablece tu contraseÃ±a",
             greeting="Hola {{user_name}},",
-            lead_text="Recibimos una solicitud para restablecer la contraseña asociada a <strong>{{user_email}}</strong>. Haz clic en el botón para crear tu nueva contraseña:",
-            cta_label="Crear nueva contraseña",
+            lead_text="Recibimos una solicitud para restablecer la contraseÃ±a asociada a <strong>{{user_email}}</strong>. Haz clic en el botÃ³n para crear tu nueva contraseÃ±a:",
+            cta_label="Crear nueva contraseÃ±a",
             cta_url="{{action_url}}",
-            secondary_note="⏳ El enlace expira en {{expires_hours}} horas. Si tú no solicitaste este cambio, no te preocupes; tu cuenta sigue segura y puedes ignorar este mensaje.",
+            secondary_note="â³ El enlace expira en {{expires_hours}} horas. Si tÃº no solicitaste este cambio, no te preocupes; tu cuenta sigue segura y puedes ignorar este mensaje.",
         ),
         "text_body": """
 Hola {{user_name}},
 
-Restablece tu contraseña en {{app_name}}:
+Restablece tu contraseÃ±a en {{app_name}}:
 {{action_url}}
 
 El enlace expira en {{expires_hours}} horas.
@@ -113,9 +113,9 @@ Si no solicitaste este cambio, ignora este mensaje.
     },
     {
         "slug": "ensemble_invite",
-        "name": "Invitación a integrante",
-        "description": "Un líder invita a alguien a unirse a su agrupación.",
-        "subject": "{{leader_name}} te invitó a unirte a su agrupación en {{app_name}}",
+        "name": "InvitaciÃ³n a integrante",
+        "description": "Un lÃ­der invita a alguien a unirse a su agrupaciÃ³n.",
+        "subject": "{{leader_name}} te invitÃ³ a unirte a su agrupaciÃ³n en {{app_name}}",
         "available_variables": [
             "member_name",
             "member_email",
@@ -126,37 +126,37 @@ Si no solicitaste este cambio, ignora este mensaje.
             "specialties",
         ],
         "html_body": build_email_layout(
-            category_badge="Agrupación",
+            category_badge="AgrupaciÃ³n",
             badge_bg="#EDE9FE",
             badge_color="#5B21B6",
-            title="Te invitaron a una agrupación musical",
+            title="Te invitaron a una agrupaciÃ³n musical",
             greeting="Hola {{member_name}},",
-            lead_text="<strong>{{leader_name}}</strong> te agregó como integrante en {{app_name}}. Crea tu contraseña para activar tu cuenta, ver convocatorias y coordinar tus presentaciones:",
+            lead_text="<strong>{{leader_name}}</strong> te agregÃ³ como integrante en {{app_name}}. Crea tu contraseÃ±a para activar tu cuenta, ver convocatorias y coordinar tus presentaciones:",
             info_items=[
-                ("Líder / Grupo", "{{leader_name}}"),
+                ("LÃ­der / Grupo", "{{leader_name}}"),
                 ("Especialidades", "{{specialties}}"),
             ],
-            cta_label="Crear mi contraseña y unirme",
+            cta_label="Crear mi contraseÃ±a y unirme",
             cta_url="{{action_url}}",
-            secondary_note="⏳ El enlace de invitación expira en {{expires_days}} días.",
+            secondary_note="â³ El enlace de invitaciÃ³n expira en {{expires_days}} dÃ­as.",
         ),
         "text_body": """
 Hola {{member_name}},
 
-{{leader_name}} te invitó a unirte a su agrupación en {{app_name}}.
+{{leader_name}} te invitÃ³ a unirte a su agrupaciÃ³n en {{app_name}}.
 Especialidades: {{specialties}}
 
-Crea tu contraseña aquí:
+Crea tu contraseÃ±a aquÃ­:
 {{action_url}}
 
-El enlace expira en {{expires_days}} días.
+El enlace expira en {{expires_days}} dÃ­as.
 """.strip(),
     },
     {
         "slug": "booking_member_invite",
         "name": "Convocatoria a evento",
-        "description": "Un líder convoca a un integrante para un evento confirmado.",
-        "subject": "Convocatoria: {{leader_name}} te convocó a {{event_type}}",
+        "description": "Un lÃ­der convoca a un integrante para un evento confirmado.",
+        "subject": "Convocatoria: {{leader_name}} te convocÃ³ a {{event_type}}",
         "available_variables": [
             "member_name",
             "leader_name",
@@ -173,33 +173,33 @@ El enlace expira en {{expires_days}} días.
             badge_color="#854D0E",
             title="Nueva convocatoria para evento",
             greeting="Hola {{member_name}},",
-            lead_text="<strong>{{leader_name}}</strong> te ha convocado a una presentación en {{app_name}}. Revisa los datos y confirma tu asistencia:",
+            lead_text="<strong>{{leader_name}}</strong> te ha convocado a una presentaciÃ³n en {{app_name}}. Revisa los datos y confirma tu asistencia:",
             info_items=[
                 ("Tipo de evento", "{{event_type}}"),
                 ("Fecha", "{{event_date}}"),
-                ("Hora de inicio", "{{event_time}} (Hora Perú)"),
-                ("Ubicación", "{{event_location}}"),
+                ("Hora de inicio", "{{event_time}} (Hora PerÃº)"),
+                ("UbicaciÃ³n", "{{event_location}}"),
             ],
             cta_label="Ver convocatoria y responder",
             cta_url="{{action_url}}",
-            secondary_note="Por favor responde a la brevedad para que el líder pueda cerrar la formación del grupo.",
+            secondary_note="Por favor responde a la brevedad para que el lÃ­der pueda cerrar la formaciÃ³n del grupo.",
         ),
         "text_body": """
 Hola {{member_name}},
 
-{{leader_name}} te convocó a {{event_type}}.
+{{leader_name}} te convocÃ³ a {{event_type}}.
 Fecha: {{event_date}}
-Hora: {{event_time}} (Hora Perú)
-Ubicación: {{event_location}}
+Hora: {{event_time}} (Hora PerÃº)
+UbicaciÃ³n: {{event_location}}
 
-Responde aquí: {{action_url}}
+Responde aquÃ­: {{action_url}}
 """.strip(),
     },
     {
         "slug": "booking_new_request",
         "name": "Nueva solicitud de reserva",
-        "description": "Se envía al músico cuando un cliente genera una solicitud de reserva.",
-        "subject": "¡Nueva solicitud de {{contractor_name}} para {{event_type}} en {{app_name}}!",
+        "description": "Se envÃ­a al mÃºsico cuando un cliente genera una solicitud de reserva.",
+        "subject": "Â¡Nueva solicitud de {{contractor_name}} para {{event_type}} en {{app_name}}!",
         "available_variables": [
             "musician_name",
             "contractor_name",
@@ -215,15 +215,15 @@ Responde aquí: {{action_url}}
             category_badge="Nueva Solicitud",
             badge_bg="#E0F2FE",
             badge_color="#0369A1",
-            title="¡Tienes una nueva solicitud de reserva!",
+            title="Â¡Tienes una nueva solicitud de reserva!",
             greeting="Hola {{musician_name}},",
-            lead_text="El cliente <strong>{{contractor_name}}</strong> está interesado en tu agrupación y te ha enviado una solicitud de reserva en {{app_name}}:",
+            lead_text="El cliente <strong>{{contractor_name}}</strong> estÃ¡ interesado en tu agrupaciÃ³n y te ha enviado una solicitud de reserva en {{app_name}}:",
             info_items=[
                 ("Cliente", "{{contractor_name}}"),
                 ("Tipo de evento", "{{event_type}}"),
                 ("Fecha del evento", "{{event_date}}"),
-                ("Hora de inicio", "{{event_time}} (Hora Perú)"),
-                ("Lugar / Dirección", "{{event_location}}"),
+                ("Hora de inicio", "{{event_time}} (Hora PerÃº)"),
+                ("Lugar / DirecciÃ³n", "{{event_location}}"),
                 ("Detalles / Mensaje", "{{event_description}}"),
             ],
             cta_label="Ver solicitud y cotizar",
@@ -237,19 +237,19 @@ El cliente {{contractor_name}} te ha enviado una nueva solicitud de reserva en {
 
 Tipo de evento: {{event_type}}
 Fecha: {{event_date}}
-Hora: {{event_time}} (Hora Perú)
-Ubicación: {{event_location}}
+Hora: {{event_time}} (Hora PerÃº)
+UbicaciÃ³n: {{event_location}}
 Detalles: {{event_description}}
 
-Revisa la solicitud y envía tu cotización aquí:
+Revisa la solicitud y envÃ­a tu cotizaciÃ³n aquÃ­:
 {{action_url}}
 """.strip(),
     },
     {
         "slug": "profile_approved",
         "name": "Perfil verificado y aprobado",
-        "description": "Se envía al usuario cuando su perfil de músico o contratista es aprobado por el administrador.",
-        "subject": "¡Felicidades {{user_name}}! Tu perfil ha sido verificado en {{app_name}}",
+        "description": "Se envÃ­a al usuario cuando su perfil de mÃºsico o contratista es aprobado por el administrador.",
+        "subject": "Â¡Felicidades {{user_name}}! Tu perfil ha sido verificado en {{app_name}}",
         "available_variables": [
             "user_name",
             "role_label",
@@ -257,10 +257,10 @@ Revisa la solicitud y envía tu cotización aquí:
             "action_url",
         ],
         "html_body": build_email_layout(
-            category_badge="Verificación",
+            category_badge="VerificaciÃ³n",
             badge_bg="#DCFCE7",
             badge_color="#15803D",
-            title="¡Tu perfil ha sido verificado!",
+            title="Â¡Tu perfil ha sido verificado!",
             greeting="Hola {{user_name}},",
             lead_text="Nos alegra informarte que tu perfil de <strong>{{role_label}}</strong> ha sido revisado y verificado exitosamente por el equipo de {{app_name}}. Ya tienes acceso completo a todas las funciones de la plataforma.",
             info_items=[
@@ -270,7 +270,7 @@ Revisa la solicitud y envía tu cotización aquí:
             ],
             cta_label="Ir a mi panel",
             cta_url="{{action_url}}",
-            secondary_note="Tu perfil ya es visible y está habilitado para gestionar reservas.",
+            secondary_note="Tu perfil ya es visible y estÃ¡ habilitado para gestionar reservas.",
         ),
         "text_body": """
 Hola {{user_name}},
@@ -279,14 +279,14 @@ Nos alegra informarte que tu perfil de {{role_label}} ha sido revisado y verific
 
 Ya tienes acceso completo a todas las funciones de la plataforma.
 
-Puedes acceder a tu panel aquí:
+Puedes acceder a tu panel aquÃ­:
 {{action_url}}
 """.strip(),
     },
     {
         "slug": "profile_rejected",
         "name": "Perfil requiere correcciones",
-        "description": "Se envía al usuario cuando su perfil requiere correcciones tras la revisión del administrador.",
+        "description": "Se envÃ­a al usuario cuando su perfil requiere correcciones tras la revisiÃ³n del administrador.",
         "subject": "Tu perfil de {{role_label}} requiere correcciones en {{app_name}}",
         "available_variables": [
             "user_name",
@@ -296,37 +296,37 @@ Puedes acceder a tu panel aquí:
             "action_url",
         ],
         "html_body": build_email_layout(
-            category_badge="Revisión de Perfil",
+            category_badge="RevisiÃ³n de Perfil",
             badge_bg="#FEF3C7",
             badge_color="#92400E",
             title="Tu perfil requiere algunos ajustes",
             greeting="Hola {{user_name}},",
-            lead_text="El equipo de {{app_name}} revisó tu perfil de <strong>{{role_label}}</strong> y solicita que realices las siguientes correcciones antes de poder verificarlo:",
+            lead_text="El equipo de {{app_name}} revisÃ³ tu perfil de <strong>{{role_label}}</strong> y solicita que realices las siguientes correcciones antes de poder verificarlo:",
             info_items=[
                 ("Tipo de perfil", "{{role_label}}"),
                 ("Motivo / Ajuste requerido", "{{reason}}"),
             ],
             cta_label="Editar y corregir mi perfil",
             cta_url="{{action_url}}",
-            secondary_note="Una vez que apliques los cambios, vuelve a enviar tu perfil para completar la verificación.",
+            secondary_note="Una vez que apliques los cambios, vuelve a enviar tu perfil para completar la verificaciÃ³n.",
         ),
         "text_body": """
 Hola {{user_name}},
 
-El equipo de {{app_name}} revisó tu perfil de {{role_label}} y solicita que realices unas correcciones antes de poder verificarlo:
+El equipo de {{app_name}} revisÃ³ tu perfil de {{role_label}} y solicita que realices unas correcciones antes de poder verificarlo:
 
 Motivo / Ajuste:
 {{reason}}
 
-Edita y corrige tu perfil aquí:
+Edita y corrige tu perfil aquÃ­:
 {{action_url}}
 """.strip(),
     },
     {
         "slug": "booking_quoted",
-        "name": "Cotización recibida",
-        "description": "Se envía al contratista cuando el músico responde su solicitud con una cotización.",
-        "subject": "¡{{musician_name}} te ha enviado una cotización en {{app_name}}!",
+        "name": "CotizaciÃ³n recibida",
+        "description": "Se envÃ­a al contratista cuando el mÃºsico responde su solicitud con una cotizaciÃ³n.",
+        "subject": "Â¡{{musician_name}} te ha enviado una cotizaciÃ³n en {{app_name}}!",
         "available_variables": [
             "contractor_name",
             "musician_name",
@@ -336,28 +336,29 @@ Edita y corrige tu perfil aquí:
             "action_url",
         ],
         "html_body": build_email_layout(
-            category_badge="Cotización Recibida",
+            category_badge="CotizaciÃ³n Recibida",
             badge_bg="#E0F2FE",
             badge_color="#0369A1",
-            title="¡Tienes una cotización para tu evento!",
+            title="Â¡Tienes una cotizaciÃ³n para tu evento!",
             greeting="Hola {{contractor_name}},",
-            lead_text="<strong>{{musician_name}}</strong> ha respondido a tu solicitud para el evento <strong>{{event_type}}</strong> con una cotización:",
+            lead_text="<strong>{{musician_name}}</strong> ha respondido a tu solicitud para el evento <strong>{{event_type}}</strong> con una cotizaciÃ³n:",
             info_items=[
-                ("Músico / Agrupación", "{{musician_name}}"),
+                ("MÃºsico / AgrupaciÃ³n", "{{musician_name}}"),
                 ("Tipo de evento", "{{event_type}}"),
                 ("Monto cotizado", "S/ {{price}}"),
             ],
-            cta_label="Ver cotización y confirmar",
+            cta_label="Ver cotizaciÃ³n y confirmar",
             cta_url="{{action_url}}",
-            secondary_note="Revisa la cotización en Chivapp para aceptar el contrato y asegurar la fecha de tu evento.",
+            secondary_note="Revisa la cotizaciÃ³n en Chivapp para aceptar el contrato y asegurar la fecha de tu evento.",
         ),
         "text_body": """
 Hola {{contractor_name}},
 
-{{musician_name}} ha respondido a tu solicitud para el evento {{event_type}} con una cotización de S/ {{price}}.
+{{musician_name}} ha respondido a tu solicitud para el evento {{event_type}} con una cotizaciÃ³n de S/ {{price}}.
 
-Revisa la cotización y confirma tu reserva aquí:
+Revisa la cotizaciÃ³n y confirma tu reserva aquÃ­:
 {{action_url}}
 """.strip(),
     },
 ]
+

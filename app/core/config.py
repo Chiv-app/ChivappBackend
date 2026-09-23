@@ -1,4 +1,4 @@
-from pydantic import field_validator
+﻿from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
     GOOGLE_CALENDAR_ID: str = "miguel2cto@gmail.com"
+    GOOGLE_CREDENTIALS_JSON: str = ""
     FACEBOOK_APP_ID: str = ""
     FACEBOOK_APP_SECRET: str = ""
     # Must match the browser-facing API base (Next.js proxy in local/dev).
