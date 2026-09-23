@@ -13,6 +13,8 @@ from app.services.email.service import ensure_email_templates
 
 
 MIGRATION_STATEMENTS = [
+    "ALTER TABLE \"user\" ADD COLUMN IF NOT EXISTS google_calendar_refresh_token VARCHAR",
+
     "ALTER TYPE userrole ADD VALUE IF NOT EXISTS 'admin'",
     "ALTER TABLE musician_profile ADD COLUMN IF NOT EXISTS status VARCHAR DEFAULT 'draft'",
     "ALTER TABLE musician_profile ADD COLUMN IF NOT EXISTS submitted_at TIMESTAMP",
