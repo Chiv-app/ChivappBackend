@@ -385,6 +385,7 @@ class BookingOut(BaseModel):
 
 class BookingCalendarSyncRequest(BaseModel):
     include_contractor: bool = True
-    member_user_ids: list[UUID] = []
+    ensemble_member_ids: list[UUID] = []
+
 
 

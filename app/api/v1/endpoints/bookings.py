@@ -845,7 +845,7 @@ def sync_booking_calendar_endpoint(
     if current_user.role != UserRole.musician:
         raise HTTPException(403, "Solo los m\u00fasicos pueden realizar esta acci\u00f3n.")
 
-    str_member_ids = [str(uid) for uid in payload.member_user_ids]
+    str_member_ids = [str(uid) for uid in payload.ensemble_member_ids]
     sync_booking_calendar(db, str(booking.id), payload.include_contractor, str_member_ids)
     
     return serialize_booking_out(
@@ -853,4 +853,5 @@ def sync_booking_calendar_endpoint(
         viewer_role=viewer_role,
         member_invite_status=None,
     )
+
 

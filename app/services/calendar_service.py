@@ -191,7 +191,7 @@ def remove_attendee_from_booking_event(event_id: str, attendee_email: str) -> bo
 
 
 
-def sync_booking_calendar(db, booking_id: str, include_contractor: bool, member_user_ids: list[str]) -> str | None:
+def sync_booking_calendar(db, booking_id: str, include_contractor: bool, ensemble_member_ids: list[str]) -> str | None:
     from app.models.booking import Booking, BookingStatus
     from app.models.user import User
     from app.models.ensemble import EnsembleMember
@@ -214,10 +214,10 @@ def sync_booking_calendar(db, booking_id: str, include_contractor: bool, member_
     if include_contractor and contractor_user and contractor_user.email and not contractor_user.email.endswith("@guest.local"):
         attendees.append({'email': contractor_user.email})
 
-    for mid in member_user_ids:
-        mu = db.query(User).filter(User.id == mid).first()
-        if mu and mu.email and not mu.email.endswith("@guest.local"):
-            attendees.append({'email': mu.email})
+    for mid in ensemble_member_ids:
+        em = db.query(EnsembleMember).filter(EnsembleMember.id == mid).first()
+        if em and em.email and not em.email.endswith("@guest.local"):
+            attendees.append({'email': em.email})
 
     service = _get_calendar_service()
     if not service:
@@ -314,5 +314,6 @@ def sync_booking_calendar(db, booking_id: str, include_contractor: bool, member_
     except Exception as e:
         logger.error(f"Error sincronizando evento en Google Calendar: {e}")
         return None
+
 
 
