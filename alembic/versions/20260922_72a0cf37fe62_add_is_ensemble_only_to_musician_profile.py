@@ -39,11 +39,13 @@ def upgrade() -> None:
                existing_type=sa.TEXT(),
                type_=sa.String(),
                existing_nullable=True)
+    op.execute("ALTER TABLE contractor_profile ALTER COLUMN status DROP DEFAULT")
     op.alter_column('contractor_profile', 'status',
                existing_type=sa.VARCHAR(),
                type_=sa.Enum('draft', 'pending_review', 'published', 'rejected', name='profilestatus'),
                nullable=False,
-               existing_server_default=sa.text("'draft'::character varying"))
+               postgresql_using='status::profilestatus',
+               server_default=sa.text("'draft'::profilestatus"))
     op.drop_index(op.f('uq_contractor_document_number_normalized'), table_name='contractor_profile', postgresql_where="((document_number IS NOT NULL) AND (btrim((document_number)::text) <> ''::text))")
     op.drop_constraint(op.f('contractor_profile_user_id_fkey'), 'contractor_profile', type_='foreignkey')
     op.create_foreign_key(None, 'contractor_profile', 'user', ['user_id'], ['id'], ondelete='CASCADE')
@@ -55,11 +57,13 @@ def upgrade() -> None:
                existing_type=postgresql.JSONB(astext_type=sa.Text()),
                nullable=False,
                existing_server_default=sa.text("'[]'::jsonb"))
+    op.execute("ALTER TABLE musician_profile ALTER COLUMN status DROP DEFAULT")
     op.alter_column('musician_profile', 'status',
                existing_type=sa.VARCHAR(),
                type_=sa.Enum('draft', 'pending_review', 'published', 'rejected', name='profilestatus'),
                nullable=False,
-               existing_server_default=sa.text("'draft'::character varying"))
+               postgresql_using='status::profilestatus',
+               server_default=sa.text("'draft'::profilestatus"))
     op.drop_index(op.f('uq_musician_profile_slug'), table_name='musician_profile', postgresql_where='(slug IS NOT NULL)')
     op.drop_index(op.f('uq_musician_profile_slug_lower'), table_name='musician_profile', postgresql_where="((slug IS NOT NULL) AND (btrim((slug)::text) <> ''::text))")
     op.drop_index(op.f('uq_musician_profile_stage_name_lower'), table_name='musician_profile')
