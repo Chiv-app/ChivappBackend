@@ -1,4 +1,4 @@
-﻿with open('app/services/calendar_service.py', 'r', encoding='utf-8') as f:
+with open('app/services/calendar_service.py', 'r', encoding='utf-8') as f:
     content = f.read()
 
 old_try = '''    try:

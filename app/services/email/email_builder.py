@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from app.services.email.logo import LOGO_CID, LOGO_PUBLIC_URL
 

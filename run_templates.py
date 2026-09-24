@@ -1,4 +1,4 @@
-﻿from app.db.session import SessionLocal
+from app.db.session import SessionLocal
 from app.services.email.service import ensure_email_templates
 
 db = SessionLocal()

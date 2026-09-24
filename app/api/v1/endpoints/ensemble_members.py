@@ -1,4 +1,4 @@
-﻿from app.services.email.auth_emails import send_welcome_email
+from app.services.email.auth_emails import send_welcome_email
 from app.core.hashing import hash_password
 from datetime import datetime
 from decimal import Decimal
