@@ -1,11 +1,11 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from app.services.email.logo import LOGO_CID, LOGO_PUBLIC_URL
 
 APP_NAME = "Chivapp"
 APP_URL = "https://chiv.app"
 APP_LOGO_URL = LOGO_PUBLIC_URL
-APP_LOGO_SRC = f"cid:{LOGO_CID}"
+APP_LOGO_SRC = APP_LOGO_URL
 
 
 def build_email_layout(
@@ -147,3 +147,4 @@ def build_email_layout(
   </table>
 </body>
 </html>"""
+

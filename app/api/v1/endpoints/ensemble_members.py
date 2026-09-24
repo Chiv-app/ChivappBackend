@@ -1,4 +1,4 @@
-from app.services.email.auth_emails import send_welcome_email
+﻿from app.services.email.auth_emails import send_welcome_email
 from app.core.hashing import hash_password
 from datetime import datetime
 from decimal import Decimal
@@ -849,7 +849,6 @@ def _apply_booking_invite_response(
         
         if action == "accept":
             from app.services.email.auth_emails import (
-                send_booking_member_accepted_to_member_email,
                 send_booking_member_accepted_to_leader_email
             )
             event_time = booking.start_time or "Por confirmar"
@@ -859,22 +858,6 @@ def _apply_booking_invite_response(
                 part for part in (booking.location_address, booking.location_city) if part
             ]
             event_location = ", ".join(location_parts) or "Por confirmar"
-            
-            # Email to member
-            member_user = db.get(User, member.member_user_id) if member.member_user_id else None
-            if member_user and member.email:
-                send_booking_member_accepted_to_member_email(
-                    db,
-                    member_email=member.email,
-                    member_name=member.fullname,
-                    leader_name=leader.fullname,
-                    event_type=booking.event_type,
-                    event_date=str(booking.event_date),
-                    event_time=str(event_time),
-                    event_location=event_location,
-                    user_id=member_user.id,
-                    booking_id=str(booking.id),
-                )
             
             # Email to leader
             if leader.email:
@@ -1300,4 +1283,5 @@ def list_my_calls(
         .all()
     )
     return [serialize_booking_invite(i) for i in invites]
+
 
