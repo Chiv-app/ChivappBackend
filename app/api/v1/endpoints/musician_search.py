@@ -38,11 +38,14 @@ def search_musicians(
         query = query.filter(MusicianProfile.location_city.ilike(f"%{filters.city}%"))
 
     if filters.genres:
-        # contiene alguno de los géneros enviados
-        query = query.filter(MusicianProfile.genres.op("&&")(filters.genres))
+        from sqlalchemy import or_, func
+        conditions = [func.array_to_string(MusicianProfile.genres, ',').ilike(f"%{g}%") for g in filters.genres]
+        query = query.filter(or_(*conditions))
 
     if filters.instruments:
-        query = query.filter(MusicianProfile.instruments.op("&&")(filters.instruments))
+        from sqlalchemy import or_, func
+        conditions = [func.array_to_string(MusicianProfile.instruments, ',').ilike(f"%{i}%") for i in filters.instruments]
+        query = query.filter(or_(*conditions))
 
     if filters.min_price_per_event is not None:
         query = query.filter(MusicianProfile.price_per_event >= filters.min_price_per_event)
