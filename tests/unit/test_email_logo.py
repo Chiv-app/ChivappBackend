@@ -1,4 +1,4 @@
-import re
+﻿import re
 from unittest.mock import MagicMock, patch
 
 from app.core.config import settings
@@ -27,7 +27,7 @@ def test_build_email_layout_uses_cid_and_dimensions():
         greeting="Hola Músico",
         lead_text="Gracias por unirte a Chivapp.",
     )
-    assert f'src="cid:{LOGO_CID}"' in html
+    assert f'src="{LOGO_PUBLIC_URL}"' in html
     assert 'alt="Chivapp"' in html
     assert 'width="107"' in html
     assert 'height="34"' in html
@@ -35,7 +35,7 @@ def test_build_email_layout_uses_cid_and_dimensions():
 
 def test_email_template_defaults_include_cid_logo():
     for tmpl in EMAIL_TEMPLATE_DEFAULTS:
-        assert f"cid:{LOGO_CID}" in tmpl["html_body"], f"Template {tmpl['slug']} missing cid logo"
+        assert f"{LOGO_PUBLIC_URL}" in tmpl["html_body"], f"Template {tmpl['slug']} missing public url logo"
 
 
 def test_send_via_brevo_attaches_inline_logo():
@@ -78,3 +78,4 @@ def test_admin_email_preview_replaces_cid_with_public_url():
     )
     assert f"cid:{LOGO_CID}" not in preview_html
     assert LOGO_PUBLIC_URL in preview_html
+
