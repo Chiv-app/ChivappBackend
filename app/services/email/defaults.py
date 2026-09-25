@@ -360,5 +360,30 @@ Revisa la cotizaciÃ³n y confirma tu reserva aquÃ­:
 {{action_url}}
 """.strip(),
     },
+    {
+        "slug": "booking_review_reminder",
+        "name": "Recordatorio de reseña del evento",
+        "description": "Se envía 5 horas después de iniciar el evento para pedir una reseña.",
+        "subject": "Tu evento ha finalizado, ¡déjanos tu reseña!",
+        "available_variables": ["user_name", "other_party_name", "action_url"],
+        "html_body": build_email_layout(
+            category_badge="Reseña Pendiente",
+            title="¿Cómo estuvo el evento?",
+            greeting="Hola {{user_name}}",
+            lead_text="Esperamos que tu evento haya sido un éxito. Ha llegado el momento de calificar la experiencia con {{other_party_name}}.",
+            body_extra_html="<p>Las reseñas ayudan a mantener la confianza y seguridad en nuestra comunidad. ¡Te tomará menos de un minuto!</p>",
+            cta_label="Dejar mi reseña",
+            cta_url="{{action_url}}",
+        ),
+        "text_body": """
+Hola {{user_name}},
+
+Esperamos que el evento haya sido un éxito.
+Por favor, tómate un minuto para calificar tu experiencia con {{other_party_name}}.
+
+Déjanos tu reseña aquí:
+{{action_url}}
+""",
+    },
 ]
 
