@@ -385,5 +385,72 @@ Déjanos tu reseña aquí:
 {{action_url}}
 """,
     },
+    {
+        "slug": "booking_confirmed_musician",
+        "name": "Reserva confirmada (Músico)",
+        "description": "Se envía al músico cuando el contratista realiza el pago y se confirma la reserva.",
+        "subject": "¡Reserva confirmada! {{event_type}}",
+        "available_variables": ["musician_name", "event_type", "app_name", "action_url"],
+        "html_body": build_email_layout(
+            category_badge="Confirmado",
+            title="¡Tienes un nuevo evento confirmado!",
+            greeting="Hola {{musician_name}}",
+            lead_text="El contratista ha completado el pago total para tu evento de {{event_type}}. ¡La reserva está oficialmente confirmada!",
+            body_extra_html="<p>Puedes revisar los detalles del evento, ubicación y horario desde tu panel.</p>",
+            cta_label="Ver evento",
+            cta_url="{{action_url}}",
+        ),
+        "text_body": """
+Hola {{musician_name}},
+
+El contratista ha completado el pago para tu evento de {{event_type}}. ¡La reserva está confirmada!
+
+Revisa los detalles aquí:
+{{action_url}}
+""",
+    },
+    {
+        "slug": "booking_confirmed_contractor",
+        "name": "Reserva confirmada (Contratista)",
+        "description": "Se envía al contratista después de realizar el pago total.",
+        "subject": "Pago exitoso - Reserva confirmada",
+        "available_variables": ["contractor_name", "event_type", "app_name", "action_url"],
+        "html_body": build_email_layout(
+            category_badge="Confirmado",
+            title="¡Tu evento está asegurado!",
+            greeting="Hola {{contractor_name}}",
+            lead_text="Hemos recibido tu pago para el evento de {{event_type}} exitosamente.",
+            body_extra_html="<p>Tu dinero está seguro. El músico ya fue notificado y puedes coordinar los últimos detalles desde el chat de tu reserva.</p>",
+            cta_label="Ver mi reserva",
+            cta_url="{{action_url}}",
+        ),
+        "text_body": """
+Hola {{contractor_name}},
+
+Hemos recibido tu pago para el evento de {{event_type}}. ¡La reserva está confirmada!
+
+Revisa los detalles y coordina por el chat aquí:
+{{action_url}}
+""",
+    },
+    {
+        "slug": "booking_member_accepted_leader",
+        "name": "Integrante aceptó invitación al evento",
+        "description": "Se envía al músico líder cuando un integrante acepta ir al evento.",
+        "subject": "{{member_name}} confirmó su asistencia al evento",
+        "available_variables": ["leader_name", "member_name", "event_type", "event_date", "event_time", "app_name"],
+        "html_body": build_email_layout(
+            category_badge="Equipo actualizado",
+            title="Integrante confirmado",
+            greeting="Hola {{leader_name}}",
+            lead_text="{{member_name}} acaba de aceptar tu invitación para participar en el evento de {{event_type}}.",
+            body_extra_html="<p><strong>Fecha:</strong> {{event_date}}<br><strong>Hora:</strong> {{event_time}}</p><p>El integrante ya tiene acceso a los detalles y al chat de coordinación.</p>",
+        ),
+        "text_body": """
+Hola {{leader_name}},
+
+{{member_name}} ha aceptado participar en tu evento de {{event_type}} el {{event_date}} a las {{event_time}}.
+""",
+    },
 ]
 
