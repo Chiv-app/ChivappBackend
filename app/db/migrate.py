@@ -478,8 +478,8 @@ MIGRATION_STATEMENTS = [
     """
     UPDATE notification
     SET 
-        title = replace(replace(replace(replace(replace(replace(replace(replace(title, 'Ã¡', 'á'), 'Ã©', 'é'), 'Ã­', 'í'), 'Ã³', 'ó'), 'Ãº', 'ú'), 'Ã±', 'ñ'), 'Â¡', '¡'), 'Â¿', '¿'),
-        message = replace(replace(replace(replace(replace(replace(replace(replace(message, 'Ã¡', 'á'), 'Ã©', 'é'), 'Ã­', 'í'), 'Ã³', 'ó'), 'Ãº', 'ú'), 'Ã±', 'ñ'), 'Â¡', '¡'), 'Â¿', '¿')
+        title = replace(replace(replace(replace(replace(replace(replace(replace(title, 'á', 'á'), 'é', 'é'), 'í', 'í'), 'ó', 'ó'), 'ú', 'ú'), 'ñ', 'ñ'), '¡', '¡'), '¿', '¿'),
+        message = replace(replace(replace(replace(replace(replace(replace(replace(message, 'á', 'á'), 'é', 'é'), 'í', 'í'), 'ó', 'ó'), 'ú', 'ú'), 'ñ', 'ñ'), '¡', '¡'), '¿', '¿')
     WHERE title LIKE '%Ã%' OR message LIKE '%Ã%' OR title LIKE '%Â%' OR message LIKE '%Â%';
     """,
     # Integrantes
