@@ -549,6 +549,8 @@ async def oauth_callback(
             return _frontend_redirect("/login", {"oauth_error": "user_not_found"})
         if not user.email_verified_at:
             user.email_verified_at = datetime.utcnow()
+        if user.role == UserRole.contractor and not user.is_verified:
+            user.is_verified = True
         redirect = _frontend_redirect(_post_login_path(user))
         _issue_login(redirect, user)
         db.commit()
@@ -570,6 +572,8 @@ async def oauth_callback(
             user_by_email.profile_picture_url = profile.picture_url
         if not user_by_email.email_verified_at:
             user_by_email.email_verified_at = datetime.utcnow()
+        if user_by_email.role == UserRole.contractor and not user_by_email.is_verified:
+            user_by_email.is_verified = True
         redirect = _frontend_redirect(_post_login_path(user_by_email))
         _issue_login(redirect, user_by_email)
         db.commit()
