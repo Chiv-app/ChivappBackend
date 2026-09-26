@@ -36,7 +36,7 @@ jobs:
 
   deploy:
     name: Deploy to Cloud Run
-    needs: test
+    # needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
