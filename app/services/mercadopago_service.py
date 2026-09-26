@@ -1,4 +1,4 @@
-﻿import hashlib
+import hashlib
 import hmac
 import logging
 import uuid

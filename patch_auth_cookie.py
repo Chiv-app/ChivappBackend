@@ -1,4 +1,4 @@
-﻿import sys
+import sys
 import re
 sys.path.append('.')
 

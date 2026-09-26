@@ -1,4 +1,4 @@
-﻿"""add musician payout and payment settlement disbursement columns
+"""add musician payout and payment settlement disbursement columns
 
 Revision ID: 52c3d4e5f6a7
 Revises: 41b2c3d4e5f6

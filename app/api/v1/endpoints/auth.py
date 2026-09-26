@@ -1,4 +1,4 @@
-﻿from datetime import datetime
+from datetime import datetime
 from urllib.parse import urlencode
 from uuid import UUID
 

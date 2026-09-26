@@ -1,4 +1,4 @@
-﻿import sys
+import sys
 sys.path.append('.')
 
 path = 'app/api/v1/endpoints/auth.py'

@@ -1,4 +1,4 @@
-﻿import re
+import re
 from unittest.mock import MagicMock, patch
 
 from app.core.config import settings

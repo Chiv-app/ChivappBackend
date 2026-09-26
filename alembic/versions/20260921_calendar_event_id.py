@@ -1,4 +1,4 @@
-﻿"""Add calendar_event_id to Booking
+"""Add calendar_event_id to Booking
 
 Revision ID: 3b1c2d3e4f5g
 Revises: 52c3d4e5f6a7

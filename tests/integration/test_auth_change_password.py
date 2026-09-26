@@ -1,4 +1,4 @@
-﻿import pytest
+import pytest
 
 
 def _register_and_login(client, email="change.pwd@example.com", password="Password123!"):
