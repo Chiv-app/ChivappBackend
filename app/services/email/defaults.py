@@ -1,4 +1,4 @@
-﻿"""Default email templates seeded on startup. Admin can edit via panel."""
+"""Default email templates seeded on startup. Admin can edit via panel."""
 
 from __future__ import annotations
 
