@@ -475,6 +475,13 @@ MIGRATION_STATEMENTS = [
     "ALTER TABLE payment ADD COLUMN IF NOT EXISTS payout_notes VARCHAR",
     # Integracin con Google Calendar
     "ALTER TABLE booking ADD COLUMN IF NOT EXISTS calendar_event_id VARCHAR",
+    """
+    UPDATE notification
+    SET 
+        title = replace(replace(replace(replace(replace(replace(replace(replace(title, 'Ã¡', 'á'), 'Ã©', 'é'), 'Ã­', 'í'), 'Ã³', 'ó'), 'Ãº', 'ú'), 'Ã±', 'ñ'), 'Â¡', '¡'), 'Â¿', '¿'),
+        message = replace(replace(replace(replace(replace(replace(replace(replace(message, 'Ã¡', 'á'), 'Ã©', 'é'), 'Ã­', 'í'), 'Ã³', 'ó'), 'Ãº', 'ú'), 'Ã±', 'ñ'), 'Â¡', '¡'), 'Â¿', '¿')
+    WHERE title LIKE '%Ã%' OR message LIKE '%Ã%' OR title LIKE '%Â%' OR message LIKE '%Â%';
+    """,
     # Integrantes
     "ALTER TABLE musician_profile ADD COLUMN IF NOT EXISTS is_ensemble_only BOOLEAN NOT NULL DEFAULT FALSE",
 ]
