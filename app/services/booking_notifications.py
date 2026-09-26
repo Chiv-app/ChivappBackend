@@ -57,11 +57,11 @@ def notify_booking_created(db: Session, musician_user: User, booking_id: str) ->
         user=musician_user,
         type="booking_requested",
         title="Nueva solicitud de reserva",
-        message="Un contratista te enviÃ³ una solicitud de reserva. RevÃ­sala y responde con tu cotizaciÃ³n.",
+        message="Un contratista te envió una solicitud de reserva. Revísala y responde con tu cotización.",
         booking_id=booking_id,
     )
 
-    # EnvÃ­o de correo transaccional enriquecido al mÃºsico
+    # Envío de correo transaccional enriquecido al músico
     try:
         from app.core.config import settings
         from app.models.booking import Booking
@@ -102,9 +102,9 @@ def notify_booking_created(db: Session, musician_user: User, booking_id: str) ->
                 slug="booking_new_request",
                 to=musician_user.email,
                 context={
-                    "musician_name": musician_user.fullname or "MÃºsico",
+                    "musician_name": musician_user.fullname or "Músico",
                     "contractor_name": contractor_name,
-                    "event_type": booking.event_type or "PresentaciÃ³n musical",
+                    "event_type": booking.event_type or "Presentación musical",
                     "event_date": event_date_str,
                     "event_time": event_time_str,
                     "event_location": location_str,
@@ -129,7 +129,7 @@ def notify_booking_updated(db: Session, musician_user: User, booking_id: str) ->
         user=musician_user,
         type="booking_updated",
         title="Solicitud actualizada",
-        message="El contratista actualizÃ³ los detalles de la solicitud. RevÃ­sala antes de cotizar.",
+        message="El contratista actualizó los detalles de la solicitud. Revísala antes de cotizar.",
         booking_id=booking_id,
     )
 
@@ -139,8 +139,8 @@ def notify_booking_quoted(db: Session, contractor_user: User, booking_id: str) -
         db,
         user=contractor_user,
         type="booking_quoted",
-        title="CotizaciÃ³n recibida",
-        message="El mÃºsico respondiÃ³ tu solicitud con un precio. Revisa la cotizaciÃ³n y confirma o rechaza.",
+        title="Cotización recibida",
+        message="El músico respondió tu solicitud con un precio. Revisa la cotización y confirma o rechaza.",
         booking_id=booking_id,
     )
 
@@ -153,7 +153,7 @@ def notify_booking_quoted(db: Session, contractor_user: User, booking_id: str) -
 
         booking = db.query(Booking).filter(Booking.id == booking_id).first()
         if booking and contractor_user.email and not contractor_user.email.endswith("@guest.local"):
-            musician_name = "El mÃºsico"
+            musician_name = "El músico"
             if booking.musician_id:
                 musician = (
                     db.query(MusicianProfile)
@@ -172,7 +172,7 @@ def notify_booking_quoted(db: Session, contractor_user: User, booking_id: str) -
                 context={
                     "contractor_name": contractor_user.fullname or "Cliente",
                     "musician_name": musician_name,
-                    "event_type": booking.event_type or "PresentaciÃ³n musical",
+                    "event_type": booking.event_type or "Presentación musical",
                     "price": price_str,
                     "app_name": APP_NAME,
                     "action_url": action_url,
@@ -183,7 +183,7 @@ def notify_booking_quoted(db: Session, contractor_user: User, booking_id: str) -
     except Exception as exc:
         import logging
         logging.getLogger(__name__).warning(
-            "Error enviando correo de cotizaciÃ³n recibida: %s", exc
+            "Error enviando correo de cotización recibida: %s", exc
         )
 
 
@@ -192,8 +192,8 @@ def notify_booking_quote_updated(db: Session, contractor_user: User, booking_id:
         db,
         user=contractor_user,
         type="booking_quote_updated",
-        title="CotizaciÃ³n actualizada",
-        message="El mÃºsico modificÃ³ su cotizaciÃ³n. Revisa los cambios y confirma o rechaza.",
+        title="Cotización actualizada",
+        message="El músico modificó su cotización. Revisa los cambios y confirma o rechaza.",
         booking_id=booking_id,
     )
 
@@ -203,8 +203,8 @@ def notify_booking_quote_accepted(db: Session, musician_user: User, booking_id: 
         db,
         user=musician_user,
         type="booking_quote_accepted",
-        title="CotizaciÃ³n aceptada",
-        message="El contratista aceptÃ³ tu cotizaciÃ³n. El contrato estÃ¡ listo para su revisiÃ³n.",
+        title="Cotización aceptada",
+        message="El contratista aceptó tu cotización. El contrato está listo para su revisión.",
         booking_id=booking_id,
     )
 
@@ -283,7 +283,7 @@ def notify_admins_payment_submitted(
         db,
         type="admin_payment_review_requested",
         title="Comprobante por validar",
-        message=f"Un contratista subiÃ³ el comprobante de {label}. RevÃ­salo en TesorerÃ­a.",
+        message=f"Un contratista subió el comprobante de {label}. Revísalo en Tesorería.",
         meta={"booking_id": booking_id, "kind": kind},
     )
 
@@ -296,7 +296,7 @@ def notify_payment_validated(
         user=contractor_user,
         type="payment_validated",
         title="Reserva confirmada",
-        message="El administrador validÃ³ tu anticipo. Ya puedes coordinar detalles del evento.",
+        message="El administrador validó tu anticipo. Ya puedes coordinar detalles del evento.",
         booking_id=booking_id,
     )
     notify_user(
@@ -304,7 +304,7 @@ def notify_payment_validated(
         user=musician_user,
         type="payment_validated",
         title="Reserva confirmada",
-        message="El administrador validÃ³ el anticipo del contratista. La reserva quedÃ³ confirmada.",
+        message="El administrador validó el anticipo del contratista. La reserva quedó confirmada.",
         booking_id=booking_id,
     )
 
@@ -322,7 +322,7 @@ def notify_payment_rejected(
         user=contractor_user,
         type="payment_rejected",
         title="Comprobante rechazado",
-        message=f"El administrador rechazÃ³ tu comprobante: {reason}. Vuelve a firmar y subir la evidencia.",
+        message=f"El administrador rechazó tu comprobante: {reason}. Vuelve a firmar y subir la evidencia.",
         booking_id=booking_id,
     )
     notify_user(
@@ -330,7 +330,7 @@ def notify_payment_rejected(
         user=musician_user,
         type="payment_rejected",
         title="Comprobante rechazado",
-        message="El administrador rechazÃ³ el comprobante del anticipo de tu contratista.",
+        message="El administrador rechazó el comprobante del anticipo de tu contratista.",
         booking_id=booking_id,
     )
 
@@ -353,9 +353,9 @@ def notify_booking_commitment_updated(
     *,
     notes: str | None = None,
 ) -> None:
-    """MÃºsico actualiza el compromiso: solo notifica al contratista (sin validaciÃ³n)."""
+    """Músico actualiza el compromiso: solo notifica al contratista (sin validación)."""
     base = (
-        "El mÃºsico actualizÃ³ detalles del compromiso (ubicaciÃ³n, precio u otros). "
+        "El músico actualizó detalles del compromiso (ubicación, precio u otros). "
         "Revisa la reserva."
     )
     if notes and notes.strip():
@@ -378,7 +378,7 @@ def notify_booking_change_requested(
         user=musician_user,
         type="booking_change_requested",
         title="Cambio solicitado en la reserva",
-        message="El contratista propuso cambios (ubicaciÃ³n u otros detalles). RevÃ­salos y acepta o rechaza.",
+        message="El contratista propuso cambios (ubicación u otros detalles). Revísalos y acepta o rechaza.",
         booking_id=booking_id,
     )
 
@@ -391,7 +391,7 @@ def notify_booking_change_accepted(
         user=contractor_user,
         type="booking_change_accepted",
         title="Cambio aceptado",
-        message="El mÃºsico aceptÃ³ los cambios que propusiste. La reserva se actualizÃ³ sin volver a firmar.",
+        message="El músico aceptó los cambios que propusiste. La reserva se actualizó sin volver a firmar.",
         booking_id=booking_id,
     )
 
@@ -404,7 +404,7 @@ def notify_booking_change_rejected(
         user=contractor_user,
         type="booking_change_rejected",
         title="Cambio rechazado",
-        message="El mÃºsico rechazÃ³ los cambios propuestos. La reserva continÃºa con los datos anteriores.",
+        message="El músico rechazó los cambios propuestos. La reserva continúa con los datos anteriores.",
         booking_id=booking_id,
     )
 
@@ -416,8 +416,8 @@ def notify_booking_requoted(
         db,
         user=contractor_user,
         type="booking_quoted",
-        title="Nueva cotizaciÃ³n por cambios",
-        message="El mÃºsico actualizÃ³ el precio tras tus cambios. Revisa la nueva cotizaciÃ³n.",
+        title="Nueva cotización por cambios",
+        message="El músico actualizó el precio tras tus cambios. Revisa la nueva cotización.",
         booking_id=booking_id,
     )
 
@@ -442,8 +442,8 @@ def notify_balance_submitted(
         db,
         user=musician_user,
         type="balance_submitted",
-        title="Abono final en revisiÃ³n",
-        message="El contratista subiÃ³ el comprobante del saldo. Un administrador lo revisarÃ¡.",
+        title="Abono final en revisión",
+        message="El contratista subió el comprobante del saldo. Un administrador lo revisará.",
         booking_id=booking_id,
     )
 
@@ -456,7 +456,7 @@ def notify_balance_validated(
         user=contractor_user,
         type="balance_validated",
         title="Abono final validado",
-        message="El administrador validÃ³ el pago total. Ya puedes compartir fotos y reseÃ±a del evento.",
+        message="El administrador validó el pago total. Ya puedes compartir fotos y reseña del evento.",
         booking_id=booking_id,
     )
     notify_user(
@@ -464,7 +464,7 @@ def notify_balance_validated(
         user=musician_user,
         type="balance_validated",
         title="Abono final validado",
-        message="El administrador validÃ³ el pago total del contratista. Ya se habilitÃ³ la fase de evento.",
+        message="El administrador validó el pago total del contratista. Ya se habilitó la fase de evento.",
         booking_id=booking_id,
     )
 
@@ -482,7 +482,7 @@ def notify_balance_rejected(
         user=contractor_user,
         type="balance_rejected",
         title="Abono final rechazado",
-        message=f"El administrador rechazÃ³ el comprobante del saldo: {reason}. Vuelve a subirlo.",
+        message=f"El administrador rechazó el comprobante del saldo: {reason}. Vuelve a subirlo.",
         booking_id=booking_id,
     )
     notify_user(
@@ -490,7 +490,7 @@ def notify_balance_rejected(
         user=musician_user,
         type="balance_rejected",
         title="Abono final rechazado",
-        message="El administrador rechazÃ³ el comprobante del saldo de tu contratista.",
+        message="El administrador rechazó el comprobante del saldo de tu contratista.",
         booking_id=booking_id,
     )
 
@@ -503,7 +503,7 @@ def notify_booking_event_started(
         user=target_user,
         type="booking_event_started",
         title="Evento habilitado",
-        message="La fase de evento quedÃ³ activa. Ya pueden compartir fotos y reacciones.",
+        message="La fase de evento quedó activa. Ya pueden compartir fotos y reacciones.",
         booking_id=booking_id,
     )
 
@@ -515,17 +515,17 @@ def notify_live_location_requested(
     from_party: str,
 ) -> None:
     who = {
-        "leader": "El mÃºsico lÃ­der",
+        "leader": "El músico líder",
         "member": "Un integrante",
-        "musician": "El mÃºsico",
+        "musician": "El músico",
         "contractor": "El contratista",
     }.get(from_party, "Un participante")
     notify_user(
         db,
         user=target_user,
         type="live_location_requested",
-        title="Solicitud de ubicaciÃ³n",
-        message=f"{who} te pide compartir tu ubicaciÃ³n en vivo durante el evento.",
+        title="Solicitud de ubicación",
+        message=f"{who} te pide compartir tu ubicación en vivo durante el evento.",
         booking_id=booking_id,
     )
 
@@ -537,17 +537,17 @@ def notify_live_location_sharing(
     from_party: str,
 ) -> None:
     who = {
-        "leader": "El mÃºsico lÃ­der",
+        "leader": "El músico líder",
         "member": "Un integrante",
-        "musician": "El mÃºsico",
+        "musician": "El músico",
         "contractor": "El contratista",
     }.get(from_party, "Un participante")
     notify_user(
         db,
         user=target_user,
         type="live_location_sharing",
-        title="UbicaciÃ³n compartida",
-        message=f"{who} empezÃ³ a compartir su ubicaciÃ³n. Ya puedes verla en el mapa.",
+        title="Ubicación compartida",
+        message=f"{who} empezó a compartir su ubicación. Ya puedes verla en el mapa.",
         booking_id=booking_id,
     )
 
@@ -560,7 +560,7 @@ def notify_booking_completed(
         user=target_user,
         type="booking_completed",
         title="Reserva finalizada",
-        message="La contrataciÃ³n quedÃ³ cerrada. Gracias por usar la plataforma.",
+        message="La contratación quedó cerrada. Gracias por usar la plataforma.",
         booking_id=booking_id,
     )
 
@@ -572,7 +572,7 @@ def notify_booking_review(
         db,
         user=target_user,
         type="booking_review",
-        title="Nueva reacciÃ³n del evento",
+        title="Nueva reacción del evento",
         message=preview[:140],
         booking_id=booking_id,
     )
@@ -585,7 +585,7 @@ def notify_booking_rejected(
     *,
     by_role: str,
 ) -> None:
-    role_label = "mÃºsico" if by_role == "musician" else "contratista"
+    role_label = "músico" if by_role == "musician" else "contratista"
     notify_user(
         db,
         user=target_user,
@@ -603,7 +603,7 @@ def notify_booking_cancelled(
     *,
     by_role: str,
 ) -> None:
-    role_label = "mÃºsico" if by_role == "musician" else "contratista"
+    role_label = "músico" if by_role == "musician" else "contratista"
     notify_user(
         db,
         user=target_user,
@@ -622,20 +622,20 @@ def notify_profile_submitted(
     profile_id: str,
     display_name: str,
 ) -> None:
-    role_label = "mÃºsico" if profile_role == "musician" else "contratista"
+    role_label = "músico" if profile_role == "musician" else "contratista"
     notify_user(
         db,
         user=user,
         type="profile_submitted",
-        title="Perfil enviado a revisiÃ³n",
-        message="Recibimos tu solicitud de verificaciÃ³n. Te avisaremos cuando un administrador la revise.",
+        title="Perfil enviado a revisión",
+        message="Recibimos tu solicitud de verificación. Te avisaremos cuando un administrador la revise.",
         meta={"profile_id": profile_id, "profile_role": profile_role},
     )
     notify_admins(
         db,
         type="profile_review_requested",
-        title=f"Nueva verificaciÃ³n de {role_label}",
-        message=f"{display_name} enviÃ³ su perfil de {role_label} para revisiÃ³n.",
+        title=f"Nueva verificación de {role_label}",
+        message=f"{display_name} envió su perfil de {role_label} para revisión.",
         meta={"profile_id": profile_id, "profile_role": profile_role},
     )
 
@@ -647,7 +647,7 @@ def notify_profile_approved(
     profile_role: str,
     profile_id: str,
 ) -> None:
-    role_label = "mÃºsico" if profile_role == "musician" else "contratista"
+    role_label = "músico" if profile_role == "musician" else "contratista"
     notify_user(
         db,
         user=user,
@@ -695,7 +695,7 @@ def notify_profile_rejected(
     profile_id: str,
     reason: str,
 ) -> None:
-    role_label = "mÃºsico" if profile_role == "musician" else "contratista"
+    role_label = "músico" if profile_role == "musician" else "contratista"
     notify_user(
         db,
         user=user,
@@ -755,8 +755,8 @@ def notify_profile_needs_resubmit(
         db,
         user=user,
         type="profile_needs_resubmit",
-        title="VerificaciÃ³n pendiente otra vez",
-        message="Actualizaste tu perfil publicado. Vuelve a enviarlo para revisiÃ³n para recuperar la verificaciÃ³n.",
+        title="Verificación pendiente otra vez",
+        message="Actualizaste tu perfil publicado. Vuelve a enviarlo para revisión para recuperar la verificación.",
         meta={"profile_id": profile_id, "profile_role": profile_role},
     )
 
@@ -767,14 +767,14 @@ def notify_complaint_opened(db: Session, musician_user: User, booking_id: str) -
         user=musician_user,
         type="booking_complaint_opened",
         title="Queja sobre un show finalizado",
-        message="El contratista registrÃ³ una queja. Revisa el detalle y acepta o presenta tu descargo.",
+        message="El contratista registró una queja. Revisa el detalle y acepta o presenta tu descargo.",
         booking_id=booking_id,
     )
     notify_admins(
         db,
         type="booking_complaint_opened",
         title="Nueva queja de reserva",
-        message="Un contratista abriÃ³ una queja. Espera las respuestas antes de liquidar.",
+        message="Un contratista abrió una queja. Espera las respuestas antes de liquidar.",
         meta={"booking_id": booking_id},
     )
 
@@ -790,11 +790,11 @@ def notify_complaint_musician_update(
         db,
         user=contractor_user,
         type="booking_complaint_musician_update",
-        title="El mÃºsico respondiÃ³ la queja" if not accepted else "El mÃºsico aceptÃ³ la queja",
+        title="El músico respondió la queja" if not accepted else "El músico aceptó la queja",
         message=(
-            "El mÃºsico aceptÃ³ la queja. El admin definirÃ¡ los montos al liquidar."
+            "El músico aceptó la queja. El admin definirá los montos al liquidar."
             if accepted
-            else "El mÃºsico presentÃ³ su descargo. El admin revisarÃ¡ y liquidarÃ¡."
+            else "El músico presentó su descargo. El admin revisará y liquidará."
         ),
         booking_id=booking_id,
     )
@@ -802,7 +802,7 @@ def notify_complaint_musician_update(
         db,
         type="booking_complaint_musician_update",
         title="Queja lista para liquidar",
-        message="Ambas partes ya respondieron. Define montos y liquida desde TesorerÃ­a.",
+        message="Ambas partes ya respondieron. Define montos y liquida desde Tesorería.",
         meta={"booking_id": booking_id, "accepted": accepted},
     )
 
@@ -821,7 +821,7 @@ def notify_settlement_completed(
         user=musician_user,
         type="booking_settled",
         title="Desembolso autorizado",
-        message=f"El admin liquidÃ³ la reserva. Monto a recibir: S/ {musician_amount:.2f}.",
+        message=f"El admin liquidó la reserva. Monto a recibir: S/ {musician_amount:.2f}.",
         booking_id=booking_id,
     )
     if contractor_refund > 0:
@@ -829,11 +829,11 @@ def notify_settlement_completed(
             db,
             user=contractor_user,
             type="booking_settled_refund",
-            title="DevoluciÃ³n pendiente de transferencia",
+            title="Devolución pendiente de transferencia",
             message=(
-                f"El admin liquidÃ³ la disputa con una devoluciÃ³n de "
-                f"S/ {contractor_refund:.2f}. Cuando envÃ­en el comprobante "
-                f"deberÃ¡s validarlo."
+                f"El admin liquidó la disputa con una devolución de "
+                f"S/ {contractor_refund:.2f}. Cuando envíen el comprobante "
+                f"deberás validarlo."
             ),
             booking_id=booking_id,
         )
@@ -850,9 +850,9 @@ def notify_refund_transfer_sent(
         db,
         user=contractor_user,
         type="booking_refund_transfer",
-        title="Comprobante de devoluciÃ³n",
+        title="Comprobante de devolución",
         message=(
-            f"El admin registrÃ³ la devoluciÃ³n de S/ {amount:.2f}. "
+            f"El admin registró la devolución de S/ {amount:.2f}. "
             f"Revisa el comprobante y valida para completar."
         ),
         booking_id=booking_id,
@@ -871,9 +871,9 @@ def notify_refund_validated(
         notify_admins(
             db,
             type="booking_refund_validated",
-            title="DevoluciÃ³n confirmada",
+            title="Devolución confirmada",
             message=(
-                f"El contratista validÃ³ la devoluciÃ³n de S/ {amount:.2f}."
+                f"El contratista validó la devolución de S/ {amount:.2f}."
             ),
             meta={"booking_id": booking_id, "amount": amount},
         )
@@ -882,9 +882,9 @@ def notify_refund_validated(
         notify_admins(
             db,
             type="booking_refund_rejected",
-            title="DevoluciÃ³n rechazada",
+            title="Devolución rechazada",
             message=(
-                f"El contratista rechazÃ³ el comprobante de S/ {amount:.2f}."
+                f"El contratista rechazó el comprobante de S/ {amount:.2f}."
                 f"{detail} Debes volver a transferir."
             ),
             meta={"booking_id": booking_id, "amount": amount, "reason": reason},
