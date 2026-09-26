@@ -1,150 +1,151 @@
-from __future__ import annotations
-
-from app.services.email.logo import LOGO_CID, LOGO_PUBLIC_URL
-
-APP_NAME = "Chivapp"
-APP_URL = "https://chiv.app"
-APP_LOGO_URL = LOGO_PUBLIC_URL
-APP_LOGO_SRC = APP_LOGO_URL
-
-
-def build_email_layout(
-    *,
-    category_badge: str,
-    badge_bg: str = "#EEF2FF",
-    badge_color: str = "#4338CA",
-    title: str,
-    greeting: str,
-    lead_text: str,
-    body_extra_html: str = "",
-    info_items: list[tuple[str, str]] | None = None,
-    cta_label: str | None = None,
-    cta_url: str | None = None,
-    secondary_note: str | None = None,
-) -> str:
-    """Construye un correo HTML moderno, responsivo y profesional siguiendo las
-
-    mejores prácticas de diseño UI/UX para clientes de correo (Gmail, Apple Mail, Outlook).
-    """
-
-    info_card_html = ""
-    if info_items:
-        rows_html = []
-        for index, (label, value) in enumerate(info_items):
-            border_top = "border-top: 1px solid #E2E8F0;" if index > 0 else ""
-            rows_html.append(f"""
-            <tr>
-              <td style="padding: 10px 14px; {border_top}">
-                <span style="display: block; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: #64748B; margin-bottom: 2px;">
-                  {label}
-                </span>
-                <span style="display: block; font-size: 15px; font-weight: 600; color: #0F172A; line-height: 1.4;">
-                  {value}
-                </span>
-              </td>
-            </tr>
-            """)
-        joined_rows = "\n".join(rows_html)
-        info_card_html = f"""
-        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin: 22px 0; background-color: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 12px; overflow: hidden;">
-          {joined_rows}
-        </table>
-        """
-
-    cta_html = ""
-    if cta_label and cta_url:
-        cta_html = f"""
-        <div style="margin: 28px 0 16px; text-align: center;">
-          <a href="{cta_url}" target="_blank" style="display: inline-block; background-color: #0F172A; color: #FFFFFF !important; font-size: 15px; font-weight: 600; text-decoration: none; padding: 14px 32px; border-radius: 10px; box-shadow: 0 4px 6px -1px rgba(15, 23, 42, 0.15); line-height: 1.2;">
-            {cta_label}
-          </a>
-        </div>
-        """
-
-    secondary_note_html = ""
-    if secondary_note:
-        secondary_note_html = f"""
-        <p style="font-size: 13px; color: #64748B; text-align: center; margin: 12px 0 0; line-height: 1.5;">
-          {secondary_note}
-        </p>
-        """
-
-    return f"""<!DOCTYPE html>
-<html lang="es">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{title}</title>
-</head>
-<body style="margin: 0; padding: 0; background-color: #F1F5F9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased;">
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color: #F1F5F9; padding: 32px 12px;">
-    <tr>
-      <td align="center">
-        <!-- Main Container Card -->
-        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width: 580px; background-color: #FFFFFF; border-radius: 16px; border: 1px solid #E2E8F0; overflow: hidden; box-shadow: 0 4px 12px -2px rgba(15, 23, 42, 0.06);">
-          
-          <!-- Brand Header -->
-          <tr>
-            <td style="padding: 24px 32px; border-bottom: 1px solid #F1F5F9; background-color: #FFFFFF;">
-              <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
-                <tr>
-                  <td align="left" valign="middle">
-                    <a href="{APP_URL}" target="_blank" style="text-decoration: none; display: inline-block;">
-                      <img src="{APP_LOGO_SRC}" alt="{APP_NAME}" width="107" height="34" style="display: block; width: 107px; height: 34px; max-height: 34px; border: 0; outline: none; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 20px; font-weight: 800; color: #0F172A;" />
-                    </a>
-                  </td>
-                  <td align="right" valign="middle">
-                    <span style="display: inline-block; background-color: {badge_bg}; color: {badge_color}; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; padding: 5px 12px; border-radius: 9999px;">
-                      {category_badge}
-                    </span>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-
-          <!-- Email Content Body -->
-          <tr>
-            <td style="padding: 32px 32px 28px;">
-              <h1 style="font-size: 23px; font-weight: 700; color: #0F172A; line-height: 1.3; margin: 0 0 16px 0;">
-                {title}
-              </h1>
-              <p style="font-size: 15px; color: #334155; line-height: 1.6; margin: 0 0 14px 0;">
-                {greeting}
-              </p>
-              <p style="font-size: 15px; color: #334155; line-height: 1.6; margin: 0 0 16px 0;">
-                {lead_text}
-              </p>
-
-              {info_card_html}
-
-              {body_extra_html}
-
-              {cta_html}
-
-              {secondary_note_html}
-            </td>
-          </tr>
-
-          <!-- Professional Footer -->
-          <tr>
-            <td style="padding: 24px 32px; background-color: #F8FAFC; border-top: 1px solid #E2E8F0; text-align: center;">
-              <p style="font-size: 14px; font-weight: 700; color: #334155; margin: 0 0 6px 0; letter-spacing: -0.2px;">
-                {APP_NAME}
-              </p>
-              <p style="font-size: 12px; color: #94A3B8; margin: 0 0 12px 0; line-height: 1.5;">
-                Este es un correo transaccional generado automáticamente. Si no realizaste esta acción o no reconoces esta cuenta, puedes ignorar este mensaje con seguridad.
-              </p>
-              <p style="font-size: 11px; color: #94A3B8; margin: 0;">
-                Horario de referencia: Lima, Perú (GMT-5) · © 2026 {APP_NAME}
-              </p>
-            </td>
-          </tr>
-
-        </table>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>"""
-
+·f·r·o·m· ·_·_·f·u·t·u·r·e·_·_· ·i·m·p·o·r·t· ·a·n·n·o·t·a·t·i·o·n·s·
+·
+·f·r·o·m· ·a·p·p·.·s·e·r·v·i·c·e·s·.·e·m·a·i·l·.·l·o·g·o· ·i·m·p·o·r·t· ·L·O·G·O·_·C·I·D·,· ·L·O·G·O·_·P·U·B·L·I·C·_·U·R·L·
+·
+·A·P·P·_·N·A·M·E· ·=· ·"·C·h·i·v·a·p·p·"·
+·A·P·P·_·U·R·L· ·=· ·"·h·t·t·p·s·:·/·/·c·h·i·v·.·a·p·p·"·
+·A·P·P·_·L·O·G·O·_·U·R·L· ·=· ·L·O·G·O·_·P·U·B·L·I·C·_·U·R·L·
+·A·P·P·_·L·O·G·O·_·S·R·C· ·=· ·A·P·P·_·L·O·G·O·_·U·R·L·
+·
+·
+·d·e·f· ·b·u·i·l·d·_·e·m·a·i·l·_·l·a·y·o·u·t·(·
+· · · · ·*·,·
+· · · · ·c·a·t·e·g·o·r·y·_·b·a·d·g·e·:· ·s·t·r·,·
+· · · · ·b·a·d·g·e·_·b·g·:· ·s·t·r· ·=· ·"·#·E·E·F·2·F·F·"·,·
+· · · · ·b·a·d·g·e·_·c·o·l·o·r·:· ·s·t·r· ·=· ·"·#·4·3·3·8·C·A·"·,·
+· · · · ·t·i·t·l·e·:· ·s·t·r·,·
+· · · · ·g·r·e·e·t·i·n·g·:· ·s·t·r·,·
+· · · · ·l·e·a·d·_·t·e·x·t·:· ·s·t·r·,·
+· · · · ·b·o·d·y·_·e·x·t·r·a·_·h·t·m·l·:· ·s·t·r· ·=· ·"·"·,·
+· · · · ·i·n·f·o·_·i·t·e·m·s·:· ·l·i·s·t·[·t·u·p·l·e·[·s·t·r·,· ·s·t·r·]·]· ·|· ·N·o·n·e· ·=· ·N·o·n·e·,·
+· · · · ·c·t·a·_·l·a·b·e·l·:· ·s·t·r· ·|· ·N·o·n·e· ·=· ·N·o·n·e·,·
+· · · · ·c·t·a·_·u·r·l·:· ·s·t·r· ·|· ·N·o·n·e· ·=· ·N·o·n·e·,·
+· · · · ·s·e·c·o·n·d·a·r·y·_·n·o·t·e·:· ·s·t·r· ·|· ·N·o·n·e· ·=· ·N·o·n·e·,·
+·)· ·-·>· ·s·t·r·:·
+· · · · ·"·"·"·C·o·n·s·t·r·u·y·e· ·u·n· ·c·o·r·r·e·o· ·H·T·M·L· ·m·o·d·e·r·n·o·,· ·r·e·s·p·o·n·s·i·v·o· ·y· ·p·r·o·f·e·s·i·o·n·a·l· ·s·i·g·u·i·e·n·d·o· ·l·a·s·
+·
+· · · · ·m·e·j·o·r·e·s· ·p·r·á·c·t·i·c·a·s· ·d·e· ·d·i·s·e·ñ·o· ·U·I·/·U·X· ·p·a·r·a· ·c·l·i·e·n·t·e·s· ·d·e· ·c·o·r·r·e·o· ·(·G·m·a·i·l·,· ·A·p·p·l·e· ·M·a·i·l·,· ·O·u·t·l·o·o·k·)·.·
+· · · · ·"·"·"·
+·
+· · · · ·i·n·f·o·_·c·a·r·d·_·h·t·m·l· ·=· ·"·"·
+· · · · ·i·f· ·i·n·f·o·_·i·t·e·m·s·:·
+· · · · · · · · ·r·o·w·s·_·h·t·m·l· ·=· ·[·]·
+· · · · · · · · ·f·o·r· ·i·n·d·e·x·,· ·(·l·a·b·e·l·,· ·v·a·l·u·e·)· ·i·n· ·e·n·u·m·e·r·a·t·e·(·i·n·f·o·_·i·t·e·m·s·)·:·
+· · · · · · · · · · · · ·b·o·r·d·e·r·_·t·o·p· ·=· ·"·b·o·r·d·e·r·-·t·o·p·:· ·1·p·x· ·s·o·l·i·d· ·#·E·2·E·8·F·0·;·"· ·i·f· ·i·n·d·e·x· ·>· ·0· ·e·l·s·e· ·"·"·
+· · · · · · · · · · · · ·r·o·w·s·_·h·t·m·l·.·a·p·p·e·n·d·(·f·"·"·"·
+· · · · · · · · · · · · ·<·t·r·>·
+· · · · · · · · · · · · · · ·<·t·d· ·s·t·y·l·e·=·"·p·a·d·d·i·n·g·:· ·1·0·p·x· ·1·4·p·x·;· ·{·b·o·r·d·e·r·_·t·o·p·}·"·>·
+· · · · · · · · · · · · · · · · ·<·s·p·a·n· ·s·t·y·l·e·=·"·d·i·s·p·l·a·y·:· ·b·l·o·c·k·;· ·f·o·n·t·-·s·i·z·e·:· ·1·1·p·x·;· ·f·o·n·t·-·w·e·i·g·h·t·:· ·7·0·0·;· ·t·e·x·t·-·t·r·a·n·s·f·o·r·m·:· ·u·p·p·e·r·c·a·s·e·;· ·l·e·t·t·e·r·-·s·p·a·c·i·n·g·:· ·0·.·5·p·x·;· ·c·o·l·o·r·:· ·#·6·4·7·4·8·B·;· ·m·a·r·g·i·n·-·b·o·t·t·o·m·:· ·2·p·x·;·"·>·
+· · · · · · · · · · · · · · · · · · ·{·l·a·b·e·l·}·
+· · · · · · · · · · · · · · · · ·<·/·s·p·a·n·>·
+· · · · · · · · · · · · · · · · ·<·s·p·a·n· ·s·t·y·l·e·=·"·d·i·s·p·l·a·y·:· ·b·l·o·c·k·;· ·f·o·n·t·-·s·i·z·e·:· ·1·5·p·x·;· ·f·o·n·t·-·w·e·i·g·h·t·:· ·6·0·0·;· ·c·o·l·o·r·:· ·#·0·F·1·7·2·A·;· ·l·i·n·e·-·h·e·i·g·h·t·:· ·1·.·4·;·"·>·
+· · · · · · · · · · · · · · · · · · ·{·v·a·l·u·e·}·
+· · · · · · · · · · · · · · · · ·<·/·s·p·a·n·>·
+· · · · · · · · · · · · · · ·<·/·t·d·>·
+· · · · · · · · · · · · ·<·/·t·r·>·
+· · · · · · · · · · · · ·"·"·"·)·
+· · · · · · · · ·j·o·i·n·e·d·_·r·o·w·s· ·=· ·"·\·n·"·.·j·o·i·n·(·r·o·w·s·_·h·t·m·l·)·
+· · · · · · · · ·i·n·f·o·_·c·a·r·d·_·h·t·m·l· ·=· ·f·"·"·"·
+· · · · · · · · ·<·t·a·b·l·e· ·r·o·l·e·=·"·p·r·e·s·e·n·t·a·t·i·o·n·"· ·w·i·d·t·h·=·"·1·0·0·%·"· ·c·e·l·l·p·a·d·d·i·n·g·=·"·0·"· ·c·e·l·l·s·p·a·c·i·n·g·=·"·0·"· ·s·t·y·l·e·=·"·m·a·r·g·i·n·:· ·2·2·p·x· ·0·;· ·b·a·c·k·g·r·o·u·n·d·-·c·o·l·o·r·:· ·#·F·8·F·A·F·C·;· ·b·o·r·d·e·r·:· ·1·p·x· ·s·o·l·i·d· ·#·E·2·E·8·F·0·;· ·b·o·r·d·e·r·-·r·a·d·i·u·s·:· ·1·2·p·x·;· ·o·v·e·r·f·l·o·w·:· ·h·i·d·d·e·n·;·"·>·
+· · · · · · · · · · ·{·j·o·i·n·e·d·_·r·o·w·s·}·
+· · · · · · · · ·<·/·t·a·b·l·e·>·
+· · · · · · · · ·"·"·"·
+·
+· · · · ·c·t·a·_·h·t·m·l· ·=· ·"·"·
+· · · · ·i·f· ·c·t·a·_·l·a·b·e·l· ·a·n·d· ·c·t·a·_·u·r·l·:·
+· · · · · · · · ·c·t·a·_·h·t·m·l· ·=· ·f·"·"·"·
+· · · · · · · · ·<·d·i·v· ·s·t·y·l·e·=·"·m·a·r·g·i·n·:· ·2·8·p·x· ·0· ·1·6·p·x·;· ·t·e·x·t·-·a·l·i·g·n·:· ·c·e·n·t·e·r·;·"·>·
+· · · · · · · · · · ·<·a· ·h·r·e·f·=·"·{·c·t·a·_·u·r·l·}·"· ·t·a·r·g·e·t·=·"·_·b·l·a·n·k·"· ·s·t·y·l·e·=·"·d·i·s·p·l·a·y·:· ·i·n·l·i·n·e·-·b·l·o·c·k·;· ·b·a·c·k·g·r·o·u·n·d·-·c·o·l·o·r·:· ·#·0·F·1·7·2·A·;· ·c·o·l·o·r·:· ·#·F·F·F·F·F·F· ·!·i·m·p·o·r·t·a·n·t·;· ·f·o·n·t·-·s·i·z·e·:· ·1·5·p·x·;· ·f·o·n·t·-·w·e·i·g·h·t·:· ·6·0·0·;· ·t·e·x·t·-·d·e·c·o·r·a·t·i·o·n·:· ·n·o·n·e·;· ·p·a·d·d·i·n·g·:· ·1·4·p·x· ·3·2·p·x·;· ·b·o·r·d·e·r·-·r·a·d·i·u·s·:· ·1·0·p·x·;· ·b·o·x·-·s·h·a·d·o·w·:· ·0· ·4·p·x· ·6·p·x· ·-·1·p·x· ·r·g·b·a·(·1·5·,· ·2·3·,· ·4·2·,· ·0·.·1·5·)·;· ·l·i·n·e·-·h·e·i·g·h·t·:· ·1·.·2·;·"·>·
+· · · · · · · · · · · · ·{·c·t·a·_·l·a·b·e·l·}·
+· · · · · · · · · · ·<·/·a·>·
+· · · · · · · · ·<·/·d·i·v·>·
+· · · · · · · · ·"·"·"·
+·
+· · · · ·s·e·c·o·n·d·a·r·y·_·n·o·t·e·_·h·t·m·l· ·=· ·"·"·
+· · · · ·i·f· ·s·e·c·o·n·d·a·r·y·_·n·o·t·e·:·
+· · · · · · · · ·s·e·c·o·n·d·a·r·y·_·n·o·t·e·_·h·t·m·l· ·=· ·f·"·"·"·
+· · · · · · · · ·<·p· ·s·t·y·l·e·=·"·f·o·n·t·-·s·i·z·e·:· ·1·3·p·x·;· ·c·o·l·o·r·:· ·#·6·4·7·4·8·B·;· ·t·e·x·t·-·a·l·i·g·n·:· ·c·e·n·t·e·r·;· ·m·a·r·g·i·n·:· ·1·2·p·x· ·0· ·0·;· ·l·i·n·e·-·h·e·i·g·h·t·:· ·1·.·5·;·"·>·
+· · · · · · · · · · ·{·s·e·c·o·n·d·a·r·y·_·n·o·t·e·}·
+· · · · · · · · ·<·/·p·>·
+· · · · · · · · ·"·"·"·
+·
+· · · · ·r·e·t·u·r·n· ·f·"·"·"·<·!·D·O·C·T·Y·P·E· ·h·t·m·l·>·
+·<·h·t·m·l· ·l·a·n·g·=·"·e·s·"·>·
+·<·h·e·a·d·>·
+· · ·<·m·e·t·a· ·c·h·a·r·s·e·t·=·"·u·t·f·-·8·"·>·
+· · ·<·m·e·t·a· ·n·a·m·e·=·"·v·i·e·w·p·o·r·t·"· ·c·o·n·t·e·n·t·=·"·w·i·d·t·h·=·d·e·v·i·c·e·-·w·i·d·t·h·,· ·i·n·i·t·i·a·l·-·s·c·a·l·e·=·1·.·0·"·>·
+· · ·<·t·i·t·l·e·>·{·t·i·t·l·e·}·<·/·t·i·t·l·e·>·
+·<·/·h·e·a·d·>·
+·<·b·o·d·y· ·s·t·y·l·e·=·"·m·a·r·g·i·n·:· ·0·;· ·p·a·d·d·i·n·g·:· ·0·;· ·b·a·c·k·g·r·o·u·n·d·-·c·o·l·o·r·:· ·#·F·1·F·5·F·9·;· ·f·o·n·t·-·f·a·m·i·l·y·:· ·-·a·p·p·l·e·-·s·y·s·t·e·m·,· ·B·l·i·n·k·M·a·c·S·y·s·t·e·m·F·o·n·t·,· ·'·S·e·g·o·e· ·U·I·'·,· ·R·o·b·o·t·o·,· ·H·e·l·v·e·t·i·c·a·,· ·A·r·i·a·l·,· ·s·a·n·s·-·s·e·r·i·f·;· ·-·w·e·b·k·i·t·-·f·o·n·t·-·s·m·o·o·t·h·i·n·g·:· ·a·n·t·i·a·l·i·a·s·e·d·;·"·>·
+· · ·<·t·a·b·l·e· ·r·o·l·e·=·"·p·r·e·s·e·n·t·a·t·i·o·n·"· ·w·i·d·t·h·=·"·1·0·0·%·"· ·c·e·l·l·p·a·d·d·i·n·g·=·"·0·"· ·c·e·l·l·s·p·a·c·i·n·g·=·"·0·"· ·s·t·y·l·e·=·"·b·a·c·k·g·r·o·u·n·d·-·c·o·l·o·r·:· ·#·F·1·F·5·F·9·;· ·p·a·d·d·i·n·g·:· ·3·2·p·x· ·1·2·p·x·;·"·>·
+· · · · ·<·t·r·>·
+· · · · · · ·<·t·d· ·a·l·i·g·n·=·"·c·e·n·t·e·r·"·>·
+· · · · · · · · ·<·!·-·-· ·M·a·i·n· ·C·o·n·t·a·i·n·e·r· ·C·a·r·d· ·-·-·>·
+· · · · · · · · ·<·t·a·b·l·e· ·r·o·l·e·=·"·p·r·e·s·e·n·t·a·t·i·o·n·"· ·w·i·d·t·h·=·"·1·0·0·%·"· ·c·e·l·l·p·a·d·d·i·n·g·=·"·0·"· ·c·e·l·l·s·p·a·c·i·n·g·=·"·0·"· ·s·t·y·l·e·=·"·m·a·x·-·w·i·d·t·h·:· ·5·8·0·p·x·;· ·b·a·c·k·g·r·o·u·n·d·-·c·o·l·o·r·:· ·#·F·F·F·F·F·F·;· ·b·o·r·d·e·r·-·r·a·d·i·u·s·:· ·1·6·p·x·;· ·b·o·r·d·e·r·:· ·1·p·x· ·s·o·l·i·d· ·#·E·2·E·8·F·0·;· ·o·v·e·r·f·l·o·w·:· ·h·i·d·d·e·n·;· ·b·o·x·-·s·h·a·d·o·w·:· ·0· ·4·p·x· ·1·2·p·x· ·-·2·p·x· ·r·g·b·a·(·1·5·,· ·2·3·,· ·4·2·,· ·0·.·0·6·)·;·"·>·
+· · · · · · · · · · ·
+· · · · · · · · · · ·<·!·-·-· ·B·r·a·n·d· ·H·e·a·d·e·r· ·-·-·>·
+· · · · · · · · · · ·<·t·r·>·
+· · · · · · · · · · · · ·<·t·d· ·s·t·y·l·e·=·"·p·a·d·d·i·n·g·:· ·2·4·p·x· ·3·2·p·x·;· ·b·o·r·d·e·r·-·b·o·t·t·o·m·:· ·1·p·x· ·s·o·l·i·d· ·#·F·1·F·5·F·9·;· ·b·a·c·k·g·r·o·u·n·d·-·c·o·l·o·r·:· ·#·F·F·F·F·F·F·;·"·>·
+· · · · · · · · · · · · · · ·<·t·a·b·l·e· ·r·o·l·e·=·"·p·r·e·s·e·n·t·a·t·i·o·n·"· ·w·i·d·t·h·=·"·1·0·0·%·"· ·c·e·l·l·p·a·d·d·i·n·g·=·"·0·"· ·c·e·l·l·s·p·a·c·i·n·g·=·"·0·"·>·
+· · · · · · · · · · · · · · · · ·<·t·r·>·
+· · · · · · · · · · · · · · · · · · ·<·t·d· ·a·l·i·g·n·=·"·l·e·f·t·"· ·v·a·l·i·g·n·=·"·m·i·d·d·l·e·"·>·
+· · · · · · · · · · · · · · · · · · · · ·<·a· ·h·r·e·f·=·"·{·A·P·P·_·U·R·L·}·"· ·t·a·r·g·e·t·=·"·_·b·l·a·n·k·"· ·s·t·y·l·e·=·"·t·e·x·t·-·d·e·c·o·r·a·t·i·o·n·:· ·n·o·n·e·;· ·d·i·s·p·l·a·y·:· ·i·n·l·i·n·e·-·b·l·o·c·k·;·"·>·
+· · · · · · · · · · · · · · · · · · · · · · ·<·i·m·g· ·s·r·c·=·"·{·A·P·P·_·L·O·G·O·_·S·R·C·}·"· ·a·l·t·=·"·{·A·P·P·_·N·A·M·E·}·"· ·w·i·d·t·h·=·"·1·0·7·"· ·h·e·i·g·h·t·=·"·3·4·"· ·s·t·y·l·e·=·"·d·i·s·p·l·a·y·:· ·b·l·o·c·k·;· ·w·i·d·t·h·:· ·1·0·7·p·x·;· ·h·e·i·g·h·t·:· ·3·4·p·x·;· ·m·a·x·-·h·e·i·g·h·t·:· ·3·4·p·x·;· ·b·o·r·d·e·r·:· ·0·;· ·o·u·t·l·i·n·e·:· ·n·o·n·e·;· ·f·o·n·t·-·f·a·m·i·l·y·:· ·-·a·p·p·l·e·-·s·y·s·t·e·m·,· ·B·l·i·n·k·M·a·c·S·y·s·t·e·m·F·o·n·t·,· ·'·S·e·g·o·e· ·U·I·'·,· ·R·o·b·o·t·o·,· ·H·e·l·v·e·t·i·c·a·,· ·A·r·i·a·l·,· ·s·a·n·s·-·s·e·r·i·f·;· ·f·o·n·t·-·s·i·z·e·:· ·2·0·p·x·;· ·f·o·n·t·-·w·e·i·g·h·t·:· ·8·0·0·;· ·c·o·l·o·r·:· ·#·0·F·1·7·2·A·;·"· ·/·>·
+· · · · · · · · · · · · · · · · · · · · ·<·/·a·>·
+· · · · · · · · · · · · · · · · · · ·<·/·t·d·>·
+· · · · · · · · · · · · · · · · · · ·<·t·d· ·a·l·i·g·n·=·"·r·i·g·h·t·"· ·v·a·l·i·g·n·=·"·m·i·d·d·l·e·"·>·
+· · · · · · · · · · · · · · · · · · · · ·<·s·p·a·n· ·s·t·y·l·e·=·"·d·i·s·p·l·a·y·:· ·i·n·l·i·n·e·-·b·l·o·c·k·;· ·b·a·c·k·g·r·o·u·n·d·-·c·o·l·o·r·:· ·{·b·a·d·g·e·_·b·g·}·;· ·c·o·l·o·r·:· ·{·b·a·d·g·e·_·c·o·l·o·r·}·;· ·f·o·n·t·-·s·i·z·e·:· ·1·1·p·x·;· ·f·o·n·t·-·w·e·i·g·h·t·:· ·7·0·0·;· ·t·e·x·t·-·t·r·a·n·s·f·o·r·m·:· ·u·p·p·e·r·c·a·s·e·;· ·l·e·t·t·e·r·-·s·p·a·c·i·n·g·:· ·0·.·5·p·x·;· ·p·a·d·d·i·n·g·:· ·5·p·x· ·1·2·p·x·;· ·b·o·r·d·e·r·-·r·a·d·i·u·s·:· ·9·9·9·9·p·x·;·"·>·
+· · · · · · · · · · · · · · · · · · · · · · ·{·c·a·t·e·g·o·r·y·_·b·a·d·g·e·}·
+· · · · · · · · · · · · · · · · · · · · ·<·/·s·p·a·n·>·
+· · · · · · · · · · · · · · · · · · ·<·/·t·d·>·
+· · · · · · · · · · · · · · · · ·<·/·t·r·>·
+· · · · · · · · · · · · · · ·<·/·t·a·b·l·e·>·
+· · · · · · · · · · · · ·<·/·t·d·>·
+· · · · · · · · · · ·<·/·t·r·>·
+·
+· · · · · · · · · · ·<·!·-·-· ·E·m·a·i·l· ·C·o·n·t·e·n·t· ·B·o·d·y· ·-·-·>·
+· · · · · · · · · · ·<·t·r·>·
+· · · · · · · · · · · · ·<·t·d· ·s·t·y·l·e·=·"·p·a·d·d·i·n·g·:· ·3·2·p·x· ·3·2·p·x· ·2·8·p·x·;·"·>·
+· · · · · · · · · · · · · · ·<·h·1· ·s·t·y·l·e·=·"·f·o·n·t·-·s·i·z·e·:· ·2·3·p·x·;· ·f·o·n·t·-·w·e·i·g·h·t·:· ·7·0·0·;· ·c·o·l·o·r·:· ·#·0·F·1·7·2·A·;· ·l·i·n·e·-·h·e·i·g·h·t·:· ·1·.·3·;· ·m·a·r·g·i·n·:· ·0· ·0· ·1·6·p·x· ·0·;·"·>·
+· · · · · · · · · · · · · · · · ·{·t·i·t·l·e·}·
+· · · · · · · · · · · · · · ·<·/·h·1·>·
+· · · · · · · · · · · · · · ·<·p· ·s·t·y·l·e·=·"·f·o·n·t·-·s·i·z·e·:· ·1·5·p·x·;· ·c·o·l·o·r·:· ·#·3·3·4·1·5·5·;· ·l·i·n·e·-·h·e·i·g·h·t·:· ·1·.·6·;· ·m·a·r·g·i·n·:· ·0· ·0· ·1·4·p·x· ·0·;·"·>·
+· · · · · · · · · · · · · · · · ·{·g·r·e·e·t·i·n·g·}·
+· · · · · · · · · · · · · · ·<·/·p·>·
+· · · · · · · · · · · · · · ·<·p· ·s·t·y·l·e·=·"·f·o·n·t·-·s·i·z·e·:· ·1·5·p·x·;· ·c·o·l·o·r·:· ·#·3·3·4·1·5·5·;· ·l·i·n·e·-·h·e·i·g·h·t·:· ·1·.·6·;· ·m·a·r·g·i·n·:· ·0· ·0· ·1·6·p·x· ·0·;·"·>·
+· · · · · · · · · · · · · · · · ·{·l·e·a·d·_·t·e·x·t·}·
+· · · · · · · · · · · · · · ·<·/·p·>·
+·
+· · · · · · · · · · · · · · ·{·i·n·f·o·_·c·a·r·d·_·h·t·m·l·}·
+·
+· · · · · · · · · · · · · · ·{·b·o·d·y·_·e·x·t·r·a·_·h·t·m·l·}·
+·
+· · · · · · · · · · · · · · ·{·c·t·a·_·h·t·m·l·}·
+·
+· · · · · · · · · · · · · · ·{·s·e·c·o·n·d·a·r·y·_·n·o·t·e·_·h·t·m·l·}·
+· · · · · · · · · · · · ·<·/·t·d·>·
+· · · · · · · · · · ·<·/·t·r·>·
+·
+· · · · · · · · · · ·<·!·-·-· ·P·r·o·f·e·s·s·i·o·n·a·l· ·F·o·o·t·e·r· ·-·-·>·
+· · · · · · · · · · ·<·t·r·>·
+· · · · · · · · · · · · ·<·t·d· ·s·t·y·l·e·=·"·p·a·d·d·i·n·g·:· ·2·4·p·x· ·3·2·p·x·;· ·b·a·c·k·g·r·o·u·n·d·-·c·o·l·o·r·:· ·#·F·8·F·A·F·C·;· ·b·o·r·d·e·r·-·t·o·p·:· ·1·p·x· ·s·o·l·i·d· ·#·E·2·E·8·F·0·;· ·t·e·x·t·-·a·l·i·g·n·:· ·c·e·n·t·e·r·;·"·>·
+· · · · · · · · · · · · · · ·<·p· ·s·t·y·l·e·=·"·f·o·n·t·-·s·i·z·e·:· ·1·4·p·x·;· ·f·o·n·t·-·w·e·i·g·h·t·:· ·7·0·0·;· ·c·o·l·o·r·:· ·#·3·3·4·1·5·5·;· ·m·a·r·g·i·n·:· ·0· ·0· ·6·p·x· ·0·;· ·l·e·t·t·e·r·-·s·p·a·c·i·n·g·:· ·-·0·.·2·p·x·;·"·>·
+· · · · · · · · · · · · · · · · ·{·A·P·P·_·N·A·M·E·}·
+· · · · · · · · · · · · · · ·<·/·p·>·
+· · · · · · · · · · · · · · ·<·p· ·s·t·y·l·e·=·"·f·o·n·t·-·s·i·z·e·:· ·1·2·p·x·;· ·c·o·l·o·r·:· ·#·9·4·A·3·B·8·;· ·m·a·r·g·i·n·:· ·0· ·0· ·1·2·p·x· ·0·;· ·l·i·n·e·-·h·e·i·g·h·t·:· ·1·.·5·;·"·>·
+· · · · · · · · · · · · · · · · ·E·s·t·e· ·e·s· ·u·n· ·c·o·r·r·e·o· ·t·r·a·n·s·a·c·c·i·o·n·a·l· ·g·e·n·e·r·a·d·o· ·a·u·t·o·m·á·t·i·c·a·m·e·n·t·e·.· ·S·i· ·n·o· ·r·e·a·l·i·z·a·s·t·e· ·e·s·t·a· ·a·c·c·i·ó·n· ·o· ·n·o· ·r·e·c·o·n·o·c·e·s· ·e·s·t·a· ·c·u·e·n·t·a·,· ·p·u·e·d·e·s· ·i·g·n·o·r·a·r· ·e·s·t·e· ·m·e·n·s·a·j·e· ·c·o·n· ·s·e·g·u·r·i·d·a·d·.·
+· · · · · · · · · · · · · · ·<·/·p·>·
+· · · · · · · · · · · · · · ·<·p· ·s·t·y·l·e·=·"·f·o·n·t·-·s·i·z·e·:· ·1·1·p·x·;· ·c·o·l·o·r·:· ·#·9·4·A·3·B·8·;· ·m·a·r·g·i·n·:· ·0·;·"·>·
+· · · · · · · · · · · · · · · · ·H·o·r·a·r·i·o· ·d·e· ·r·e·f·e·r·e·n·c·i·a·:· ·L·i·m·a·,· ·P·e·r·ú· ·(·G·M·T·-·5·)· ··· ·©· ·2·0·2·6· ·{·A·P·P·_·N·A·M·E·}·
+· · · · · · · · · · · · · · ·<·/·p·>·
+· · · · · · · · · · · · ·<·/·t·d·>·
+· · · · · · · · · · ·<·/·t·r·>·
+·
+· · · · · · · · ·<·/·t·a·b·l·e·>·
+· · · · · · ·<·/·t·d·>·
+· · · · ·<·/·t·r·>·
+· · ·<·/·t·a·b·l·e·>·
+·<·/·b·o·d·y·>·
+·<·/·h·t·m·l·>·"·"·"·
+·
+·
