@@ -256,7 +256,7 @@ def list_users(
     is_verified: bool | None = None,
     is_active: bool | None = None,
 ):
-    query = db.query(User)
+    query = db.query(User).options(joinedload(User.oauth_accounts))
     if role:
         try:
             query = query.filter(User.role == UserRole(role))

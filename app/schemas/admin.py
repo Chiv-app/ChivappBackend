@@ -41,6 +41,7 @@ class AdminUserOut(BaseModel):
     created_at: datetime
     last_login_at: datetime | None
     profile_picture_url: str | None = None
+    registration_type: str | None = None
 
     model_config = {"from_attributes": True}
 

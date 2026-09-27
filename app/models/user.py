@@ -58,3 +58,10 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+
+    @property
+    def registration_type(self) -> str:
+        if self.oauth_accounts:
+            return str(self.oauth_accounts[0].provider.value)
+        return "chivapp"
+
