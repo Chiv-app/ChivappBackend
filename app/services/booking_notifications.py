@@ -259,6 +259,49 @@ def notify_booking_quote_updated(db: Session, contractor_user: User, booking_id:
     )
 
 
+
+    try:
+        from app.core.config import settings
+        from app.models.booking import Booking
+        from app.models.musician_profile import MusicianProfile
+        from app.services.email.defaults import APP_NAME
+        from app.services.email.service import send_templated_email
+        
+        booking = db.query(Booking).filter(Booking.id == booking_id).first()
+        if booking and contractor_user.email and not contractor_user.email.endswith("@guest.local"):
+            musician_name = "El músico"
+            if booking.musician_id:
+                musician = db.query(MusicianProfile).filter(MusicianProfile.id == booking.musician_id).first()
+                if musician and musician.stage_name:
+                    musician_name = musician.stage_name
+            
+            price_str = f"{booking.price:.2f}" if booking.price else "0.00"
+            action_url = f"{settings.FRONTEND_URL.rstrip('/')}/contractor/bookings/{booking_id}"
+            
+            if not contractor_user.password_hash:
+                from app.core.jwt import create_magic_token
+                magic_token = create_magic_token(subject=str(contractor_user.id), redirect_to=f"/contractor/bookings/{booking_id}")
+                action_url = f"{settings.FRONTEND_URL.rstrip('/')}/api/v1/auth/magic-link/login?token={magic_token}"
+
+            send_templated_email(
+                db,
+                slug="booking_quote_updated",
+                to=contractor_user.email,
+                context={
+                    "contractor_name": contractor_user.fullname or "Cliente",
+                    "musician_name": musician_name,
+                    "event_type": booking.event_type or "Presentación",
+                    "price": price_str,
+                    "action_url": action_url,
+                    "app_name": APP_NAME,
+                },
+                user_id=contractor_user.id,
+                meta={"booking_id": booking_id},
+            )
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(f"Error email quote_updated: {exc}")
+
 def notify_booking_quote_accepted(db: Session, musician_user: User, booking_id: str) -> None:
     notify_user(
         db,
@@ -269,6 +312,42 @@ def notify_booking_quote_accepted(db: Session, musician_user: User, booking_id: 
         booking_id=booking_id,
     )
 
+
+
+    try:
+        from app.core.config import settings
+        from app.models.booking import Booking
+        from app.models.contractor_profile import ContractorProfile
+        from app.services.email.defaults import APP_NAME
+        from app.services.email.service import send_templated_email
+        
+        booking = db.query(Booking).filter(Booking.id == booking_id).first()
+        if booking and musician_user.email and not musician_user.email.endswith("@guest.local"):
+            contractor_name = "Cliente"
+            if booking.contractor_id:
+                contractor = db.query(ContractorProfile).filter(ContractorProfile.id == booking.contractor_id).first()
+                if contractor and contractor.user and contractor.user.fullname:
+                    contractor_name = contractor.user.fullname
+            
+            action_url = f"{settings.FRONTEND_URL.rstrip('/')}/musician/bookings/{booking_id}"
+            
+            send_templated_email(
+                db,
+                slug="booking_quote_accepted",
+                to=musician_user.email,
+                context={
+                    "musician_name": musician_user.fullname or "Músico",
+                    "contractor_name": contractor_name,
+                    "event_type": booking.event_type or "Presentación",
+                    "action_url": action_url,
+                    "app_name": APP_NAME,
+                },
+                user_id=musician_user.id,
+                meta={"booking_id": booking_id},
+            )
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(f"Error email quote_accepted: {exc}")
 
 def notify_booking_confirmed(db: Session, musician_user: User, booking_id: str, contractor_user: User = None) -> None:
     notify_user(
@@ -370,6 +449,53 @@ def notify_payment_validated(
     )
 
 
+
+    try:
+        from app.core.config import settings
+        from app.models.booking import Booking
+        from app.models.musician_profile import MusicianProfile
+        from app.services.email.defaults import APP_NAME
+        from app.services.email.service import send_templated_email
+        
+        booking = db.query(Booking).filter(Booking.id == booking_id).first()
+        if not booking: return
+        
+        musician_name = "El músico"
+        if booking.musician_id:
+            musician = db.query(MusicianProfile).filter(MusicianProfile.id == booking.musician_id).first()
+            if musician and musician.stage_name: musician_name = musician.stage_name
+        
+        if contractor_user.email and not contractor_user.email.endswith("@guest.local"):
+            action_url_cont = f"{settings.FRONTEND_URL.rstrip('/')}/contractor/bookings/{booking_id}"
+            if not contractor_user.password_hash:
+                from app.core.jwt import create_magic_token
+                magic_token = create_magic_token(subject=str(contractor_user.id), redirect_to=f"/contractor/bookings/{booking_id}")
+                action_url_cont = f"{settings.FRONTEND_URL.rstrip('/')}/api/v1/auth/magic-link/login?token={magic_token}"
+            send_templated_email(
+                db, slug="payment_validated_contractor", to=contractor_user.email,
+                context={
+                    "contractor_name": contractor_user.fullname or "Cliente",
+                    "musician_name": musician_name,
+                    "event_type": booking.event_type or "Presentación",
+                    "action_url": action_url_cont, "app_name": APP_NAME,
+                }, user_id=contractor_user.id, meta={"booking_id": booking_id}
+            )
+            
+        if musician_user.email and not musician_user.email.endswith("@guest.local"):
+            action_url_mus = f"{settings.FRONTEND_URL.rstrip('/')}/musician/bookings/{booking_id}"
+            send_templated_email(
+                db, slug="payment_validated_musician", to=musician_user.email,
+                context={
+                    "musician_name": musician_user.fullname or "Músico",
+                    "contractor_name": contractor_user.fullname or "Cliente",
+                    "event_type": booking.event_type or "Presentación",
+                    "action_url": action_url_mus, "app_name": APP_NAME,
+                }, user_id=musician_user.id, meta={"booking_id": booking_id}
+            )
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(f"Error email payment_validated: {exc}")
+
 def notify_payment_rejected(
     db: Session,
     contractor_user: User,
@@ -395,6 +521,35 @@ def notify_payment_rejected(
         booking_id=booking_id,
     )
 
+
+
+    try:
+        from app.core.config import settings
+        from app.models.booking import Booking
+        from app.services.email.defaults import APP_NAME
+        from app.services.email.service import send_templated_email
+        
+        booking = db.query(Booking).filter(Booking.id == booking_id).first()
+        if not booking: return
+        
+        if contractor_user.email and not contractor_user.email.endswith("@guest.local"):
+            action_url_cont = f"{settings.FRONTEND_URL.rstrip('/')}/contractor/bookings/{booking_id}"
+            if not contractor_user.password_hash:
+                from app.core.jwt import create_magic_token
+                magic_token = create_magic_token(subject=str(contractor_user.id), redirect_to=f"/contractor/bookings/{booking_id}")
+                action_url_cont = f"{settings.FRONTEND_URL.rstrip('/')}/api/v1/auth/magic-link/login?token={magic_token}"
+            send_templated_email(
+                db, slug="payment_rejected", to=contractor_user.email,
+                context={
+                    "user_name": contractor_user.fullname or "Cliente",
+                    "event_type": booking.event_type or "Presentación",
+                    "reason": reason, "action_url": action_url_cont, "app_name": APP_NAME,
+                }, user_id=contractor_user.id, meta={"booking_id": booking_id}
+            )
+            
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(f"Error email payment_rejected: {exc}")
 
 def notify_payment_released(db: Session, musician_user: User, booking_id: str) -> None:
     notify_user(
@@ -657,6 +812,41 @@ def notify_booking_rejected(
     )
 
 
+
+    try:
+        from app.core.config import settings
+        from app.models.booking import Booking
+        from app.services.email.defaults import APP_NAME
+        from app.services.email.service import send_templated_email
+        
+        booking = db.query(Booking).filter(Booking.id == booking_id).first()
+        if booking and target_user.email and not target_user.email.endswith("@guest.local"):
+            path = "musician" if target_user.role.value == "musician" else "contractor"
+            action_url = f"{settings.FRONTEND_URL.rstrip('/')}/{path}/bookings/{booking_id}"
+            
+            if target_user.role.value == "contractor" and not target_user.password_hash:
+                from app.core.jwt import create_magic_token
+                magic_token = create_magic_token(subject=str(target_user.id), redirect_to=f"/contractor/bookings/{booking_id}")
+                action_url = f"{settings.FRONTEND_URL.rstrip('/')}/api/v1/auth/magic-link/login?token={magic_token}"
+
+            send_templated_email(
+                db,
+                slug="booking_rejected",
+                to=target_user.email,
+                context={
+                    "user_name": target_user.fullname or "Usuario",
+                    "role_label": role_label,
+                    "event_type": booking.event_type or "Presentación",
+                    "action_url": action_url,
+                    "app_name": APP_NAME,
+                },
+                user_id=target_user.id,
+                meta={"booking_id": booking_id},
+            )
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(f"Error email booking_rejected: {exc}")
+
 def notify_booking_cancelled(
     db: Session,
     target_user: User,
@@ -674,6 +864,41 @@ def notify_booking_cancelled(
         booking_id=booking_id,
     )
 
+
+
+    try:
+        from app.core.config import settings
+        from app.models.booking import Booking
+        from app.services.email.defaults import APP_NAME
+        from app.services.email.service import send_templated_email
+        
+        booking = db.query(Booking).filter(Booking.id == booking_id).first()
+        if booking and target_user.email and not target_user.email.endswith("@guest.local"):
+            path = "musician" if target_user.role.value == "musician" else "contractor"
+            action_url = f"{settings.FRONTEND_URL.rstrip('/')}/{path}/bookings/{booking_id}"
+            
+            if target_user.role.value == "contractor" and not target_user.password_hash:
+                from app.core.jwt import create_magic_token
+                magic_token = create_magic_token(subject=str(target_user.id), redirect_to=f"/contractor/bookings/{booking_id}")
+                action_url = f"{settings.FRONTEND_URL.rstrip('/')}/api/v1/auth/magic-link/login?token={magic_token}"
+
+            send_templated_email(
+                db,
+                slug="booking_cancelled",
+                to=target_user.email,
+                context={
+                    "user_name": target_user.fullname or "Usuario",
+                    "role_label": role_label,
+                    "event_type": booking.event_type or "Presentación",
+                    "action_url": action_url,
+                    "app_name": APP_NAME,
+                },
+                user_id=target_user.id,
+                meta={"booking_id": booking_id},
+            )
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(f"Error email booking_cancelled: {exc}")
 
 def notify_profile_submitted(
     db: Session,
