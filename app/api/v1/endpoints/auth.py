@@ -992,8 +992,8 @@ def guest_register(
             existing_user.email_verified_at = datetime.utcnow()
             db.commit()
         
-        access_token = create_access_token(data={"sub": str(existing_user.id)})
-        set_auth_cookie(response, access_token)
+        access_token = create_access_token(subject=str(existing_user.id), role=existing_user.role.value)
+        _set_auth_cookie(response, access_token)
         return serialize_user(existing_user)
 
     # Create new guest user (shadow account)
@@ -1020,8 +1020,8 @@ def guest_register(
     db.commit()
     db.refresh(new_user)
 
-    access_token = create_access_token(data={"sub": str(new_user.id)})
-    set_auth_cookie(response, access_token)
+    access_token = create_access_token(subject=str(new_user.id), role=new_user.role.value)
+    _set_auth_cookie(response, access_token)
 
     return serialize_user(new_user)
 
@@ -1064,8 +1064,8 @@ def magic_link_login(
     if not user:
         return RedirectResponse(url=f"{settings.FRONTEND_URL}/login?error=user_not_found")
         
-    access_token = create_access_token(data={"sub": str(user.id)})
-    set_auth_cookie(response, access_token)
+    access_token = create_access_token(subject=str(user.id), role=user.role.value)
+    _set_auth_cookie(response, access_token)
     
     redirect_to = payload.get("redirect_to", "/")
     return RedirectResponse(url=f"{settings.FRONTEND_URL}{redirect_to}")
