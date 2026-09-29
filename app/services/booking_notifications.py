@@ -422,7 +422,7 @@ def notify_admins_payment_submitted(
     notify_admins(
         db,
         type="admin_payment_review_requested",
-        title="Comprobante por validar",
+        title="Nuevo pago registrado",
         message=f"Un contratista subiÃ³ el comprobante de {label}. RevÃ­salo en TesorerÃ­a.",
         meta={"booking_id": booking_id, "kind": kind},
     )
@@ -508,7 +508,7 @@ def notify_payment_rejected(
         db,
         user=contractor_user,
         type="payment_rejected",
-        title="Comprobante rechazado",
+        title="Pago rechazado",
         message=f"El administrador rechazÃ³ tu comprobante: {reason}. Vuelve a firmar y subir la evidencia.",
         booking_id=booking_id,
     )
@@ -516,7 +516,7 @@ def notify_payment_rejected(
         db,
         user=musician_user,
         type="payment_rejected",
-        title="Comprobante rechazado",
+        title="Pago rechazado",
         message="El administrador rechazÃ³ el comprobante del anticipo de tu contratista.",
         booking_id=booking_id,
     )
