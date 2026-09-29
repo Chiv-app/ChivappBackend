@@ -82,3 +82,15 @@ class GoogleAuthResponse(BaseModel):
     access_token: str | None = None
     redirect_url: str | None = None
     role: str | None = None
+
+
+class GuestRegisterRequest(BaseModel):
+    email: EmailStr
+    fullname: str
+    phone: str
+    role: str = "contractor"
+
+class MagicLinkSendRequest(BaseModel):
+    email: EmailStr
+    redirect_to: str | None = None
+

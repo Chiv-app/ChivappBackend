@@ -22,6 +22,8 @@ from app.models.oauth_account import OAuthAccount, OAuthProvider
 from app.models.profile_status import ProfileStatus
 from app.models.user import User, UserRole
 from app.schemas.auth import (
+    GuestRegisterRequest,
+    MagicLinkSendRequest,
     ChangePasswordRequest,
     GoogleAuthResponse,
     GoogleCredentialRequest,
@@ -960,4 +962,104 @@ def change_password(
 
 
 
+
+
+
+@router.post("/guest-register", response_model=UserOut, status_code=201)
+@limiter.limit(settings.RATE_LIMIT_REGISTER)
+def guest_register(
+    payload: GuestRegisterRequest,
+    response: Response,
+    request: Request,
+    db: Session = Depends(deps.get_db)
+):
+    email = payload.email.lower().strip()
+    
+    # Check if user already exists
+    existing_user = db.query(User).filter(User.email == email).first()
+    if existing_user:
+        # If user exists but has no password, they are already a guest, we can just log them in
+        # If they have a password, they should use normal login or Google
+        if existing_user.password_hash is not None:
+            raise HTTPException(
+                status_code=400, 
+                detail="Este correo ya tiene una cuenta registrada. Por favor, inicia sesión con tu contraseña o con Google."
+            )
+        
+        # They are a guest, issue token
+        access_token = create_access_token(data={"sub": str(existing_user.id)})
+        set_auth_cookie(response, access_token)
+        return serialize_user(existing_user)
+
+    # Create new guest user (shadow account)
+    phone = assert_phone_unique(db, payload.phone) if payload.phone else None
+    cleaned_fullname = payload.fullname.strip() if payload.fullname else "Invitado"
+
+    new_user = User(
+        email=email,
+        password_hash=None, # NO PASSWORD = Shadow Account
+        fullname=cleaned_fullname,
+        role=UserRole(payload.role),
+        phone=phone,
+        is_verified=False,
+    )
+    db.add(new_user)
+    db.flush()
+
+    if payload.role == UserRole.contractor.value:
+        profile = ContractorProfile(user_id=new_user.id)
+        db.add(profile)
+        
+    db.commit()
+    db.refresh(new_user)
+
+    access_token = create_access_token(data={"sub": str(new_user.id)})
+    set_auth_cookie(response, access_token)
+
+    return serialize_user(new_user)
+
+@router.post("/magic-link/send")
+@limiter.limit("5/minute")
+def send_magic_link(
+    payload: MagicLinkSendRequest,
+    request: Request,
+    db: Session = Depends(deps.get_db)
+):
+    # In a real app, this would generate a short-lived JWT with the email and redirectTo,
+    # save it or just sign it, and send an email using background tasks.
+    # For now, we will simulate the creation and return the token.
+    user = db.query(User).filter(User.email == payload.email.lower().strip()).first()
+    if not user:
+        raise HTTPException(404, "Usuario no encontrado")
+        
+    magic_token = create_access_token(
+        data={"sub": str(user.id), "magic": True, "redirect_to": payload.redirect_to or "/"},
+        expires_delta=timedelta(hours=24)
+    )
+    
+    # TODO: Send email via Brevo with link: https://chiv.app/api/v1/auth/magic-link/login?token=...
+    
+    return {"message": "Enlace mágico enviado.", "debug_token": magic_token}
+
+
+@router.get("/magic-link/login")
+def magic_link_login(
+    token: str,
+    response: Response,
+    db: Session = Depends(deps.get_db)
+):
+    from fastapi.responses import RedirectResponse
+    payload = decode_access_token(token)
+    if not payload or not payload.get("sub") or not payload.get("magic"):
+        return RedirectResponse(url=f"{settings.FRONTEND_URL}/login?error=invalid_magic_link")
+        
+    user = db.query(User).filter(User.id == payload.get("sub")).first()
+    if not user:
+        return RedirectResponse(url=f"{settings.FRONTEND_URL}/login?error=user_not_found")
+        
+    access_token = create_access_token(data={"sub": str(user.id)})
+    set_auth_cookie(response, access_token)
+    
+    redirect_to = payload.get("redirect_to", "/")
+    return RedirectResponse(url=f"{settings.FRONTEND_URL}{redirect_to}")
 
