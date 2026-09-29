@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+﻿from datetime import datetime, timedelta
 
 from jose import JWTError, jwt
 
@@ -11,6 +11,16 @@ def create_access_token(subject: str, role: str) -> str:
     )
 
     to_encode = {"sub": subject, "role": role, "exp": expire}
+    return jwt.encode(
+        to_encode,
+        settings.JWT_SECRET_KEY,
+        algorithm=settings.JWT_ALGORITHM,
+    )
+
+
+def create_magic_token(subject: str, redirect_to: str) -> str:
+    expire = datetime.utcnow() + timedelta(hours=24)
+    to_encode = {"sub": subject, "magic": True, "redirect_to": redirect_to, "exp": expire}
     return jwt.encode(
         to_encode,
         settings.JWT_SECRET_KEY,
