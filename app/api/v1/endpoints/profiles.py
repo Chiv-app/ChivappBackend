@@ -1,4 +1,4 @@
-from datetime import datetime
+﻿from datetime import datetime
 from typing import List
 from uuid import UUID
 
@@ -71,7 +71,7 @@ def check_username(
         norm = normalize_username(username)
         existing = db.query(User).filter(User.username == norm, User.id != current_user.id).first()
         if existing:
-            return {"available": False, "message": "El nombre de usuario ya está en uso."}
+            return {"available": False, "message": "El nombre de usuario ya estÃ¡ en uso."}
         return {"available": True, "message": "Nombre de usuario disponible.", "normalized": norm}
     except ValueError as e:
         return {"available": False, "message": str(e)}
@@ -81,7 +81,7 @@ def get_latest_platform_reviews(
     db: Session = Depends(deps.get_db),
     limit: int = 6
 ):
-    """Devuelve las reseñas más recientes de toda la plataforma."""
+    """Devuelve las reseÃ±as mÃ¡s recientes de toda la plataforma."""
     rows = (
         db.query(BookingReview, Booking)
         .join(Booking, Booking.id == BookingReview.booking_id)
@@ -96,7 +96,7 @@ def get_latest_platform_reviews(
     )
     reviews: list[MusicianPublicReviewOut] = []
     for review, booking in rows:
-        author_label = "Anónimo"
+        author_label = "AnÃ³nimo"
         if review.guest_name:
             author_label = review.guest_name
         elif review.author and review.author.fullname:
@@ -292,7 +292,7 @@ def _get_contractor_profile_or_404(db: Session, current_user: User) -> Contracto
     status_code=status.HTTP_200_OK,
 )
 def get_platform_stats(db: Session = Depends(deps.get_db)):
-    """Cifras reales y públicas para la landing (sin datos inventados)."""
+    """Cifras reales y pÃºblicas para la landing (sin datos inventados)."""
     candidates = _published_musician_query(db).all()
     listed = [p for p in candidates if is_musician_listed_publicly(db, p)]
 
@@ -346,7 +346,7 @@ def get_my_musician_profile(
     if current_user.role != UserRole.musician:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Solo los músicos pueden acceder a su perfil de músico",
+            detail="Solo los mÃºsicos pueden acceder a su perfil de mÃºsico",
         )
     return _get_musician_profile_or_404(db, current_user)
 
@@ -361,7 +361,7 @@ def get_my_musician_profile_status(
     db: Session = Depends(deps.get_db),
 ):
     if current_user.role != UserRole.musician:
-        raise HTTPException(status_code=403, detail="Solo los músicos pueden acceder")
+        raise HTTPException(status_code=403, detail="Solo los mÃºsicos pueden acceder")
     profile = _get_musician_profile_or_404(db, current_user)
     return _validation_out(validate_musician_profile(db, profile))
 
@@ -376,7 +376,7 @@ def submit_musician_profile(
     db: Session = Depends(deps.get_db),
 ):
     if current_user.role != UserRole.musician:
-        raise HTTPException(status_code=403, detail="Solo los músicos pueden enviar su perfil")
+        raise HTTPException(status_code=403, detail="Solo los mÃºsicos pueden enviar su perfil")
 
     profile = _get_musician_profile_or_404(db, current_user)
     validation = validate_musician_profile(db, profile)
@@ -417,7 +417,7 @@ def generate_my_musician_contract(
     db: Session = Depends(deps.get_db),
 ):
     if current_user.role != UserRole.musician:
-        raise HTTPException(status_code=403, detail="Solo los músicos pueden generar contratos")
+        raise HTTPException(status_code=403, detail="Solo los mÃºsicos pueden generar contratos")
 
     profile = _get_musician_profile_or_404(db, current_user)
     if contract_html_text_length(profile.contract_template_body) < 50:
@@ -443,7 +443,7 @@ def generate_my_contractor_contract(
 ):
     raise HTTPException(
         status_code=403,
-        detail="Solo los músicos pueden diseñar plantillas PDF de contrato",
+        detail="Solo los mÃºsicos pueden diseÃ±ar plantillas PDF de contrato",
     )
 
 
@@ -471,7 +471,7 @@ def create_musician_profile(
     if existing:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="El perfil de músico ya existe. Debes actualizarlo.",
+            detail="El perfil de mÃºsico ya existe. Debes actualizarlo.",
         )
 
     data = prepare_musician_updates(payload.model_dump())
@@ -603,7 +603,7 @@ def onboard_musician_profile(
     db: Session = Depends(deps.get_db),
 ):
     if current_user.role != UserRole.musician:
-        raise HTTPException(status_code=403, detail="Solo los músicos pueden realizar el onboarding")
+        raise HTTPException(status_code=403, detail="Solo los mÃºsicos pueden realizar el onboarding")
 
     profile = _get_musician_profile_or_404(db, current_user)
     
@@ -911,3 +911,4 @@ def update_contractor_profile(
     db.refresh(profile)
 
     return profile
+

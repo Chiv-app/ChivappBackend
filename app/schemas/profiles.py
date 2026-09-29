@@ -1,4 +1,4 @@
-from datetime import datetime
+﻿from datetime import datetime
 from uuid import UUID
 from decimal import Decimal
 
@@ -385,3 +385,4 @@ class ContractorProfileAdminOut(ContractorProfileOut):
     user_email: str | None = None
     user_fullname: str | None = None
     user_phone: str | None = None
+
