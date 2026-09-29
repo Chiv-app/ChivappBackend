@@ -987,6 +987,11 @@ def guest_register(
             )
         
         # They are a guest, issue token
+        if not existing_user.is_verified or not existing_user.email_verified_at:
+            existing_user.is_verified = True
+            existing_user.email_verified_at = datetime.utcnow()
+            db.commit()
+        
         access_token = create_access_token(data={"sub": str(existing_user.id)})
         set_auth_cookie(response, access_token)
         return serialize_user(existing_user)
@@ -1001,7 +1006,9 @@ def guest_register(
         fullname=cleaned_fullname,
         role=UserRole(payload.role),
         phone=phone,
-        is_verified=False,
+        is_verified=True,
+        email_verified_at=datetime.utcnow(),
+        terms_accepted_at=datetime.utcnow(),
     )
     db.add(new_user)
     db.flush()
