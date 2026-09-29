@@ -994,7 +994,7 @@ def guest_register(
         
         access_token = create_access_token(subject=str(existing_user.id), role=existing_user.role.value)
         _set_auth_cookie(response, access_token)
-        return serialize_user(existing_user)
+        return existing_user
 
     # Create new guest user (shadow account)
     phone = assert_phone_unique(db, payload.phone) if payload.phone else None
@@ -1023,7 +1023,7 @@ def guest_register(
     access_token = create_access_token(subject=str(new_user.id), role=new_user.role.value)
     _set_auth_cookie(response, access_token)
 
-    return serialize_user(new_user)
+    return new_user
 
 @router.post("/magic-link/send")
 @limiter.limit("5/minute")
