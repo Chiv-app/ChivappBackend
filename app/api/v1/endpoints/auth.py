@@ -1066,10 +1066,13 @@ def magic_link_login(
         db.commit()
         
     access_token = create_access_token(subject=str(user.id), role=user.role.value)
-    _set_auth_cookie(response, access_token)
     
     redirect_to = payload.get("redirect_to", "/")
-    return RedirectResponse(url=f"{settings.FRONTEND_URL}{redirect_to}")
+    # Important: Create RedirectResponse first, then set the cookie on it
+    # Otherwise the cookie is set on the injected response but dropped by the returned redirect
+    redirect_response = RedirectResponse(url=f"{settings.FRONTEND_URL}{redirect_to}")
+    _set_auth_cookie(redirect_response, access_token)
+    return redirect_response
 
 
 
