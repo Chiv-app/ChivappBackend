@@ -196,6 +196,41 @@ Responde aquí: {{action_url}}
 """.strip(),
     },
     {
+        "slug": "booking_request_received",
+        "name": "Solicitud de reserva recibida",
+        "description": "Se envia al cliente cuando genera una solicitud de reserva confirmando la recepcion.",
+        "subject": "Solicitud de reserva enviada al músico para {{event_type}}",
+        "available_variables": [
+            "contractor_name",
+            "musician_name",
+            "app_name",
+            "event_type",
+            "event_date",
+            "action_url",
+        ],
+        "html_body": build_email_layout(
+            category_badge="Solicitud Recibida",
+            badge_bg="#E0F2FE",
+            badge_color="#0369A1",
+            title="¡Hemos recibido tu solicitud!",
+            greeting="Hola {{contractor_name}},",
+            lead_text="Hemos notificado a <strong>{{musician_name}}</strong> sobre tu interés para el evento de {{event_type}} programado para el {{event_date}}.",
+            cta_label="Ver estado de mi solicitud",
+            cta_url="{{action_url}}",
+            secondary_note="Te avisaremos por este medio en cuanto el músico responda con su cotización.",
+        ),
+        "text_body": """
+Hola {{contractor_name}},
+
+Hemos notificado a {{musician_name}} sobre tu solicitud para {{event_type}} el {{event_date}}.
+
+Puedes ver el estado de tu solicitud aquí:
+{{action_url}}
+
+Te avisaremos cuando el músico responda.
+""".strip(),
+    },
+    {
         "slug": "booking_new_request",
         "name": "Nueva solicitud de reserva",
         "description": "Se envía al músico cuando un cliente genera una solicitud de reserva.",

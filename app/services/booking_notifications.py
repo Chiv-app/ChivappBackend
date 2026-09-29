@@ -123,7 +123,69 @@ def notify_booking_created(db: Session, musician_user: User, booking_id: str) ->
 
 
 
+
+def notify_booking_requested_contractor(db: Session, contractor_user: User, booking_id: str) -> None:
+    # Envío de correo transaccional al cliente confirmando la recepcion
+    try:
+        from app.core.config import settings
+        from app.models.booking import Booking
+        from app.models.musician_profile import MusicianProfile
+        from app.services.email.defaults import APP_NAME
+        from app.services.email.service import send_templated_email
+
+        booking = db.query(Booking).filter(Booking.id == booking_id).first()
+        if booking and contractor_user.email and not contractor_user.email.endswith("@guest.local"):
+            musician_name = "El músico"
+            if booking.musician_id:
+                musician = (
+                    db.query(MusicianProfile)
+                    .filter(MusicianProfile.id == booking.musician_id)
+                    .first()
+                )
+                if musician and musician.stage_name:
+                    musician_name = musician.stage_name
+
+            event_date_str = (
+                booking.event_date.strftime("%d/%m/%Y")
+                if booking.event_date
+                else "Fecha por definir"
+            )
+
+            action_url = f"{settings.FRONTEND_URL.rstrip('/')}/contractor/bookings/{booking_id}"
+            
+            # Link magico para guests
+            if not contractor_user.password_hash:
+                from app.core.jwt import create_access_token
+                from datetime import timedelta
+                magic_token = create_access_token(
+                    data={"sub": str(contractor_user.id), "magic": True, "redirect_to": f"/contractor/bookings/{booking_id}"},
+                    expires_delta=timedelta(hours=24)
+                )
+                action_url = f"{settings.FRONTEND_URL.rstrip('/')}/api/v1/auth/magic-link/login?token={magic_token}"
+
+            send_templated_email(
+                db,
+                slug="booking_request_received",
+                to=contractor_user.email,
+                context={
+                    "contractor_name": contractor_user.fullname or "Cliente",
+                    "musician_name": musician_name,
+                    "event_type": booking.event_type or "Presentación musical",
+                    "event_date": event_date_str,
+                    "action_url": action_url,
+                    "app_name": APP_NAME,
+                },
+                user_id=contractor_user.id,
+                meta={"booking_id": booking_id},
+            )
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Error enviando correo de confirmacion de solicitud al cliente: %s", exc
+        )
+
 def notify_booking_updated(db: Session, musician_user: User, booking_id: str) -> None:
+
     notify_user(
         db,
         user=musician_user,

@@ -50,6 +50,7 @@ from app.services.booking_notifications import (
     notify_booking_cancelled,
     notify_booking_confirmed,
     notify_booking_created,
+    notify_booking_requested_contractor,
     notify_booking_quote_accepted,
     notify_booking_quote_updated,
     notify_booking_quoted,
@@ -161,7 +162,12 @@ def create_booking(
     musician_user = musician.user or _load_musician_user(db, musician)
     if musician_user:
         notify_booking_created(db, musician_user, str(booking.id))
-        db.commit()
+        
+    contractor_user = current_user
+    if contractor_user:
+        notify_booking_requested_contractor(db, contractor_user, str(booking.id))
+        
+    db.commit()
 
     return booking
 
