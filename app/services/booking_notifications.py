@@ -224,7 +224,7 @@ def notify_booking_quoted(db: Session, contractor_user: User, booking_id: str) -
                 if musician and (musician.stage_name or (musician.user and musician.user.fullname)):
                     musician_name = musician.stage_name or musician.user.fullname
 
-            price_str = f"{booking.price:.2f}" if booking.price else "0.00"
+            price_str = f"{booking.price_agreed:.2f}" if booking.price_agreed else "0.00"
             action_url = f"{settings.FRONTEND_URL.rstrip('/')}/contractor/bookings/{booking_id}"
             send_templated_email(
                 db,
@@ -275,7 +275,7 @@ def notify_booking_quote_updated(db: Session, contractor_user: User, booking_id:
                 if musician and musician.stage_name:
                     musician_name = musician.stage_name
             
-            price_str = f"{booking.price:.2f}" if booking.price else "0.00"
+            price_str = f"{booking.price_agreed:.2f}" if booking.price_agreed else "0.00"
             action_url = f"{settings.FRONTEND_URL.rstrip('/')}/contractor/bookings/{booking_id}"
             
             if not contractor_user.password_hash:
@@ -339,6 +339,7 @@ def notify_booking_quote_accepted(db: Session, musician_user: User, booking_id: 
                     "musician_name": musician_user.fullname or "Músico",
                     "contractor_name": contractor_name,
                     "event_type": booking.event_type or "Presentación",
+                    "price": f"{booking.price_agreed:.2f}" if booking.price_agreed else "0.00",
                     "action_url": action_url,
                     "app_name": APP_NAME,
                 },
@@ -835,8 +836,9 @@ def notify_booking_rejected(
                 to=target_user.email,
                 context={
                     "user_name": target_user.fullname or "Usuario",
-                    "role_label": role_label,
+                    "other_party_name": role_label,
                     "event_type": booking.event_type or "Presentación",
+                    "price": f"{booking.price_agreed:.2f}" if booking.price_agreed else "0.00",
                     "action_url": action_url,
                     "app_name": APP_NAME,
                 },
@@ -888,8 +890,9 @@ def notify_booking_cancelled(
                 to=target_user.email,
                 context={
                     "user_name": target_user.fullname or "Usuario",
-                    "role_label": role_label,
+                    "other_party_name": role_label,
                     "event_type": booking.event_type or "Presentación",
+                    "price": f"{booking.price_agreed:.2f}" if booking.price_agreed else "0.00",
                     "action_url": action_url,
                     "app_name": APP_NAME,
                 },
