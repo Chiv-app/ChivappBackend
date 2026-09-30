@@ -156,7 +156,7 @@ def _frontend_redirect(path: str, params: dict | None = None) -> RedirectRespons
 def _post_login_path(user: User) -> str:
     if user.role == UserRole.admin:
         return "/admin"
-    # MÃºsico y contratista aterrizan en el landing pÃºblico.
+    # Músico y contratista aterrizan en el landing público.
     if user.role in (UserRole.musician, UserRole.contractor):
         return "/"
     return "/"
@@ -270,14 +270,14 @@ def _client_ip(request: Request) -> str:
 def register_user(payload: RegisterRequest, request: Request, db: Session = Depends(deps.get_db)):
     email = assert_email_unique(db, payload.email)
     if not email:
-        raise HTTPException(400, "El correo electrÃ³nico es obligatorio")
+        raise HTTPException(400, "El correo electrónico es obligatorio")
     phone = assert_phone_unique(db, payload.phone)
 
     if payload.role not in (UserRole.contractor.value, UserRole.musician.value):
-        raise HTTPException(400, "Rol invÃ¡lido")
+        raise HTTPException(400, "Rol inválido")
 
     if not payload.accepted_terms:
-        raise HTTPException(400, "Debes aceptar los TÃ©rminos y Condiciones")
+        raise HTTPException(400, "Debes aceptar los Términos y Condiciones")
 
     normalized_username: str | None = None
     if payload.username and payload.username.strip():
@@ -320,17 +320,17 @@ def login(payload: LoginRequest, request: Request, response: Response, db: Sessi
     if user and not user.password_hash:
         raise HTTPException(
             status_code=403,
-            detail="No se puede utilizar este correo porque ya estÃ¡ en uso.",
+            detail="No se puede utilizar este correo porque ya está en uso.",
         )
 
     if not user or not user.password_hash:
-        raise HTTPException(status_code=401, detail="Credenciales invÃ¡lidas")
+        raise HTTPException(status_code=401, detail="Credenciales inválidas")
 
     if not verify_password(payload.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Credenciales invÃ¡lidas")
+        raise HTTPException(status_code=401, detail="Credenciales inválidas")
 
     if getattr(user, "is_active", True) is False:
-        raise HTTPException(status_code=403, detail="Tu cuenta estÃ¡ desactivada")
+        raise HTTPException(status_code=403, detail="Tu cuenta está desactivada")
 
     token = _issue_login(response, user)
     db.commit()
@@ -367,7 +367,7 @@ def preview_password_setup(token: str, db: Session = Depends(deps.get_db)):
     if not user:
         raise HTTPException(404, "Cuenta no encontrada")
 
-    # Si ya tiene contraseÃ±a, activar el integrante al abrir el enlace.
+    # Si ya tiene contraseña, activar el integrante al abrir el enlace.
     if user.password_hash:
         activate_member_after_password(db, member)
         mark_email_verified(user)
@@ -390,10 +390,10 @@ def set_password(
     request: Request,
     db: Session = Depends(deps.get_db),
 ):
-    """Crea contraseÃ±a vÃ­a token de invitaciÃ³n o sesiÃ³n autenticada sin password."""
+    """Crea contraseña vía token de invitación o sesión autenticada sin password."""
     password = payload.password.strip()
     if len(password) < 8:
-        raise HTTPException(400, "La contraseÃ±a debe tener al menos 8 caracteres")
+        raise HTTPException(400, "La contraseña debe tener al menos 8 caracteres")
 
     user: User | None = None
     member = None
@@ -407,14 +407,14 @@ def set_password(
         if not user:
             raise HTTPException(
                 401,
-                "Debes iniciar sesiÃ³n o usar el enlace de invitaciÃ³n para crear tu contraseÃ±a",
+                "Debes iniciar sesión o usar el enlace de invitación para crear tu contraseña",
             )
 
     if not user:
         raise HTTPException(404, "Cuenta no encontrada")
 
     if user.password_hash and not token:
-        raise HTTPException(400, "Tu cuenta ya tiene contraseÃ±a")
+        raise HTTPException(400, "Tu cuenta ya tiene contraseña")
 
     if not user.password_hash:
         user.password_hash = hash_password(password)
@@ -472,7 +472,7 @@ def oauth_start(
     if intent == "link":
         user = _optional_user(request, db)
         if not user:
-            raise HTTPException(401, "Debes iniciar sesiÃ³n para vincular una cuenta")
+            raise HTTPException(401, "Debes iniciar sesión para vincular una cuenta")
         link_user_id = str(user.id)
 
     state = create_oauth_state(intent, link_user_id)
@@ -626,7 +626,7 @@ def oauth_complete(
         raise HTTPException(401, "Registro social expirado. Intenta de nuevo.")
 
     if payload.role not in (UserRole.contractor.value, UserRole.musician.value):
-        raise HTTPException(400, "Rol invÃ¡lido")
+        raise HTTPException(400, "Rol inválido")
 
     provider = OAuthProvider(pending["provider"])
     provider_user_id = pending["provider_user_id"]
@@ -636,7 +636,7 @@ def oauth_complete(
     if not email:
         raise HTTPException(
             400,
-            "Tu cuenta social no compartiÃ³ un email. Usa otro mÃ©todo o habilita el email.",
+            "Tu cuenta social no compartió un email. Usa otro método o habilita el email.",
         )
 
     phone = assert_phone_unique(db, payload.phone)
@@ -650,7 +650,7 @@ def oauth_complete(
         .first()
     )
     if already:
-        raise HTTPException(400, "Esta cuenta social ya estÃ¡ registrada")
+        raise HTTPException(400, "Esta cuenta social ya está registrada")
 
     normalized_username: str | None = None
     if payload.role == UserRole.musician.value:
@@ -697,7 +697,7 @@ async def oauth_google_credential(
     if payload.intent == "link":
         user = _optional_user(request, db)
         if not user:
-            raise HTTPException(401, "Debes iniciar sesiÃ³n para vincular tu cuenta")
+            raise HTTPException(401, "Debes iniciar sesión para vincular tu cuenta")
         _link_oauth_account(
             db,
             user=user,
@@ -813,7 +813,7 @@ def unlink_oauth_account(
     try:
         p = OAuthProvider(provider)
     except ValueError as exc:
-        raise HTTPException(400, "Proveedor invÃ¡lido") from exc
+        raise HTTPException(400, "Proveedor inválido") from exc
 
     account = (
         db.query(OAuthAccount)
@@ -837,7 +837,7 @@ def unlink_oauth_account(
     if not current_user.password_hash and other_count == 0:
         raise HTTPException(
             400,
-            "No puedes desvincular tu Ãºnico mÃ©todo de acceso. Agrega una contraseÃ±a u otra cuenta social primero.",
+            "No puedes desvincular tu único método de acceso. Agrega una contraseña u otra cuenta social primero.",
         )
 
     db.delete(account)
@@ -852,8 +852,8 @@ def verify_email(token: str, db: Session = Depends(deps.get_db)):
     except ValueError as exc:
         code = str(exc)
         if code == "expired":
-            raise HTTPException(410, "El enlace de verificaciÃ³n expirÃ³. Solicita uno nuevo.") from exc
-        raise HTTPException(400, "Enlace de verificaciÃ³n no vÃ¡lido") from exc
+            raise HTTPException(410, "El enlace de verificación expiró. Solicita uno nuevo.") from exc
+        raise HTTPException(400, "Enlace de verificación no válido") from exc
     db.commit()
     return EmailVerificationResult(
         message=f"Correo {user.email} verificado correctamente.",
@@ -868,13 +868,13 @@ def resend_verification(
 ):
     if current_user.email_verified_at:
         return EmailVerificationResult(
-            message="Tu correo ya estÃ¡ verificado.",
+            message="Tu correo ya está verificado.",
             email_verified=True,
         )
     send_email_verification(db, current_user)
     db.commit()
     return EmailVerificationResult(
-        message="Te enviamos un nuevo enlace de verificaciÃ³n.",
+        message="Te enviamos un nuevo enlace de verificación.",
         email_verified=False,
     )
 
@@ -890,7 +890,7 @@ def forgot_password(payload: ForgotPasswordRequest, request: Request, db: Sessio
         send_password_reset_email(db, user)
         db.commit()
     return {
-        "message": "Si el correo existe en nuestra plataforma, recibirÃ¡s instrucciones para restablecer tu contraseÃ±a.",
+        "message": "Si el correo existe en nuestra plataforma, recibirás instrucciones para restablecer tu contraseña.",
     }
 
 
@@ -901,8 +901,8 @@ def preview_password_reset(token: str, db: Session = Depends(deps.get_db)):
     except ValueError as exc:
         code = str(exc)
         if code == "expired":
-            raise HTTPException(410, "El enlace expirÃ³. Solicita uno nuevo.") from exc
-        raise HTTPException(404, "Enlace no vÃ¡lido") from exc
+            raise HTTPException(410, "El enlace expiró. Solicita uno nuevo.") from exc
+        raise HTTPException(404, "Enlace no válido") from exc
     return PasswordResetPreviewOut(email=user.email, fullname=user.fullname)
 
 
@@ -919,8 +919,8 @@ def reset_password(
     except ValueError as exc:
         code = str(exc)
         if code == "expired":
-            raise HTTPException(410, "El enlace expirÃ³. Solicita uno nuevo.") from exc
-        raise HTTPException(404, "Enlace no vÃ¡lido") from exc
+            raise HTTPException(410, "El enlace expiró. Solicita uno nuevo.") from exc
+        raise HTTPException(404, "Enlace no válido") from exc
 
     user.password_hash = hash_password(payload.password.strip())
     user.updated_at = datetime.utcnow()
@@ -937,16 +937,16 @@ def change_password(
     current_user: User = Depends(deps.get_current_user),
     db: Session = Depends(deps.get_db),
 ):
-    """Permite al usuario autenticado cambiar su contraseÃ±a o crearla si no tiene."""
+    """Permite al usuario autenticado cambiar su contraseña o crearla si no tiene."""
     new_password = payload.new_password.strip()
 
     if current_user.password_hash:
         if not payload.current_password:
-            raise HTTPException(400, "Debes ingresar tu contraseÃ±a actual")
+            raise HTTPException(400, "Debes ingresar tu contraseña actual")
         if not verify_password(payload.current_password, current_user.password_hash):
-            raise HTTPException(400, "La contraseÃ±a actual es incorrecta")
+            raise HTTPException(400, "La contraseña actual es incorrecta")
         if payload.current_password == new_password:
-            raise HTTPException(400, "La nueva contraseÃ±a debe ser diferente a la actual")
+            raise HTTPException(400, "La nueva contraseña debe ser diferente a la actual")
 
     try:
         validate_password_strength(new_password)
@@ -957,7 +957,7 @@ def change_password(
     current_user.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(current_user)
-    return {"message": "ContraseÃ±a actualizada exitosamente"}
+    return {"message": "Contraseña actualizada exitosamente"}
 
 
 
@@ -983,7 +983,7 @@ def guest_register(
         if existing_user.password_hash is not None:
             raise HTTPException(
                 status_code=400, 
-                detail="Este correo ya tiene una cuenta registrada. Por favor, inicia sesiÃ³n con tu contraseÃ±a o con Google."
+                detail="Este correo ya tiene una cuenta registrada. Por favor, inicia sesión con tu contraseña o con Google."
             )
         
         # They are a guest, issue token
@@ -1042,7 +1042,7 @@ def send_magic_link(
     
     # TODO: Send email via Brevo with link: https://chiv.app/api/v1/auth/magic-link/login?token=...
     
-    return {"message": "Enlace mÃ¡gico enviado.", "debug_token": magic_token}
+    return {"message": "Enlace mágico enviado.", "debug_token": magic_token}
 
 
 @router.get("/magic-link/login")

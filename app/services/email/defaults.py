@@ -487,5 +487,167 @@ Hola {{leader_name}},
 {{member_name}} ha aceptado participar en tu evento de {{event_type}} el {{event_date}} a las {{event_time}}.
 """,
     },
-]
+    {
+        "slug": "booking_quote_updated",
+        "name": "Cotización de reserva actualizada",
+        "description": "Se envía al contratista cuando el músico actualiza la cotización.",
+        "subject": "¡{{musician_name}} ha actualizado la cotización en {{app_name}}!",
+        "available_variables": ["contractor_name", "musician_name", "app_name", "event_type", "price", "action_url"],
+        "html_body": build_email_layout(
+            category_badge="Cotización Actualizada",
+            title="Cotización actualizada",
+            greeting="Hola {{contractor_name}},",
+            lead_text="<strong>{{musician_name}}</strong> ha actualizado la cotización para el evento <strong>{{event_type}}</strong>.",
+            info_items=[
+                ("Músico / Agrupación", "{{musician_name}}"),
+                ("Tipo de evento", "{{event_type}}"),
+                ("Monto actualizado", "S/ {{price}}"),
+            ],
+            cta_label="Ver cotización y confirmar",
+            cta_url="{{action_url}}",
+        ),
+        "text_body": """Hola {{contractor_name}},
 
+{{musician_name}} ha actualizado la cotización para tu evento de {{event_type}} a S/ {{price}}.
+
+Revisa la cotización y confirma tu reserva aquí:
+{{action_url}}"""
+    },
+    {
+        "slug": "booking_quote_accepted",
+        "name": "Cotización de reserva aceptada",
+        "description": "Se envía al músico cuando el contratista acepta la cotización.",
+        "subject": "¡{{contractor_name}} ha aceptado tu cotización en {{app_name}}!",
+        "available_variables": ["musician_name", "contractor_name", "app_name", "event_type", "price", "action_url"],
+        "html_body": build_email_layout(
+            category_badge="Cotización Aceptada",
+            title="¡Cotización aceptada!",
+            greeting="Hola {{musician_name}},",
+            lead_text="<strong>{{contractor_name}}</strong> ha aceptado tu cotización para el evento <strong>{{event_type}}</strong> por S/ {{price}}.",
+            body_extra_html="<p>El contratista está procediendo con el pago.</p>",
+            cta_label="Ver reserva",
+            cta_url="{{action_url}}",
+        ),
+        "text_body": """Hola {{musician_name}},
+
+{{contractor_name}} ha aceptado tu cotización para el evento {{event_type}}.
+
+Está procediendo con el pago.
+
+Ver detalles:
+{{action_url}}"""
+    },
+    {
+        "slug": "payment_validated_contractor",
+        "name": "Pago exitoso (Contratista)",
+        "description": "Se envía al contratista después de procesar su pago.",
+        "subject": "Pago exitoso - Reserva confirmada",
+        "available_variables": ["contractor_name", "event_type", "app_name", "action_url"],
+        "html_body": build_email_layout(
+            category_badge="Confirmado",
+            title="¡Tu evento está asegurado!",
+            greeting="Hola {{contractor_name}},",
+            lead_text="Hemos recibido tu pago para el evento de {{event_type}} exitosamente.",
+            body_extra_html="<p>Tu dinero está seguro. El músico ya fue notificado.</p>",
+            cta_label="Ver mi reserva",
+            cta_url="{{action_url}}",
+        ),
+        "text_body": """Hola {{contractor_name}},
+
+Hemos recibido tu pago para el evento de {{event_type}}.
+
+Revisa los detalles aquí:
+{{action_url}}"""
+    },
+    {
+        "slug": "payment_validated_musician",
+        "name": "Pago validado (Músico)",
+        "description": "Se envía al músico cuando se valida el pago del evento.",
+        "subject": "¡Pago validado y reserva confirmada! {{event_type}}",
+        "available_variables": ["musician_name", "event_type", "app_name", "action_url"],
+        "html_body": build_email_layout(
+            category_badge="Confirmado",
+            title="¡Tienes un nuevo evento confirmado!",
+            greeting="Hola {{musician_name}},",
+            lead_text="El pago para tu evento de {{event_type}} ha sido procesado exitosamente. ¡La reserva está confirmada!",
+            cta_label="Ver evento",
+            cta_url="{{action_url}}",
+        ),
+        "text_body": """Hola {{musician_name}},
+
+El pago para tu evento de {{event_type}} ha sido procesado. ¡La reserva está confirmada!
+
+Ver detalles:
+{{action_url}}"""
+    },
+    {
+        "slug": "payment_rejected",
+        "name": "Pago rechazado",
+        "description": "Se envía al contratista cuando falla el pago.",
+        "subject": "Problema con tu pago de reserva - {{event_type}}",
+        "available_variables": ["user_name", "event_type", "app_name", "action_url"],
+        "html_body": build_email_layout(
+            category_badge="Atención",
+            badge_bg="#FEF2F2",
+            badge_color="#991B1B",
+            title="Hubo un problema con tu pago",
+            greeting="Hola {{user_name}},",
+            lead_text="Tuvimos un inconveniente al procesar tu pago para el evento de {{event_type}}.",
+            body_extra_html="<p>Por favor, intenta realizar el pago nuevamente para asegurar tu reserva.</p>",
+            cta_label="Reintentar pago",
+            cta_url="{{action_url}}",
+        ),
+        "text_body": """Hola {{user_name}},
+
+Tuvimos un inconveniente al procesar tu pago para el evento de {{event_type}}.
+
+Por favor, inténtalo nuevamente aquí:
+{{action_url}}"""
+    },
+    {
+        "slug": "booking_rejected",
+        "name": "Reserva rechazada",
+        "description": "Se envía cuando se rechaza una solicitud de reserva.",
+        "subject": "Actualización sobre tu reserva de {{event_type}}",
+        "available_variables": ["user_name", "other_party_name", "event_type", "app_name", "action_url"],
+        "html_body": build_email_layout(
+            category_badge="Reserva Rechazada",
+            badge_bg="#F1F5F9",
+            badge_color="#475569",
+            title="Reserva rechazada",
+            greeting="Hola {{user_name}},",
+            lead_text="La solicitud de reserva para el evento de {{event_type}} con <strong>{{other_party_name}}</strong> ha sido rechazada.",
+            cta_label="Ver detalles",
+            cta_url="{{action_url}}",
+        ),
+        "text_body": """Hola {{user_name}},
+
+La solicitud de reserva para el evento de {{event_type}} con {{other_party_name}} ha sido rechazada.
+
+Ver detalles:
+{{action_url}}"""
+    },
+    {
+        "slug": "booking_cancelled",
+        "name": "Reserva cancelada",
+        "description": "Se envía cuando se cancela una reserva confirmada.",
+        "subject": "Reserva cancelada - {{event_type}}",
+        "available_variables": ["user_name", "other_party_name", "event_type", "app_name", "action_url"],
+        "html_body": build_email_layout(
+            category_badge="Cancelado",
+            badge_bg="#FEF2F2",
+            badge_color="#991B1B",
+            title="Reserva cancelada",
+            greeting="Hola {{user_name}},",
+            lead_text="La reserva para el evento de {{event_type}} con <strong>{{other_party_name}}</strong> ha sido cancelada.",
+            cta_label="Ver detalles",
+            cta_url="{{action_url}}",
+        ),
+        "text_body": """Hola {{user_name}},
+
+La reserva para el evento de {{event_type}} con {{other_party_name}} ha sido cancelada.
+
+Ver detalles:
+{{action_url}}"""
+    },
+]
