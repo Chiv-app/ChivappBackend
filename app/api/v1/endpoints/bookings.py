@@ -26,6 +26,7 @@ from app.api.booking_helpers import (
 )
 from app.api.profile_helpers import get_or_create_contractor_profile
 from app.models.user import User, UserRole
+from app.services.booking_state_machine import assert_can_execute_action, BookingAction
 from app.models.booking import Booking, BookingStatus
 from app.models.contract import Contract
 from app.models.musician_profile import MusicianProfile
@@ -300,11 +301,7 @@ def update_booking(
     booking = get_booking_or_404(db, booking_id)
     assert_booking_contractor_owner(db, booking, current_user)
 
-    if booking.status != BookingStatus.requested:
-        raise HTTPException(
-            status_code=400,
-            detail="Solo puedes editar solicitudes en estado 'requested'",
-        )
+    assert_can_execute_action(booking, BookingAction.UPDATE_REQUEST, current_user)
 
     update_data = payload.model_dump(exclude_unset=True)
     if "event_date" in update_data and update_data["event_date"] < get_lima_today():
@@ -338,11 +335,7 @@ def reject_booking(
     booking = get_booking_or_404(db, booking_id)
     assert_booking_musician_owner(db, booking, current_user)
 
-    if booking.status != BookingStatus.requested:
-        raise HTTPException(
-            status_code=400,
-            detail="Solo puedes rechazar solicitudes en estado 'requested'",
-        )
+    assert_can_execute_action(booking, BookingAction.REJECT_REQUEST, current_user)
 
     booking.status = BookingStatus.cancelled
     booking.cancelled_by = "musician"
@@ -371,11 +364,7 @@ def quote_booking(
     booking = get_booking_or_404(db, booking_id)
     musician = assert_booking_musician_owner(db, booking, current_user)
 
-    if booking.status not in (BookingStatus.requested, BookingStatus.accepted):
-        raise HTTPException(
-            status_code=400,
-            detail="Solo puedes cotizar solicitudes pendientes o actualizar cotizaciones aún no aceptadas",
-        )
+    assert_can_execute_action(booking, BookingAction.QUOTE, current_user)
 
     is_update = booking.status == BookingStatus.accepted
 
@@ -422,11 +411,7 @@ def reject_quote(
     booking = get_booking_or_404(db, booking_id)
     assert_booking_contractor_owner(db, booking, current_user)
 
-    if booking.status != BookingStatus.accepted:
-        raise HTTPException(
-            status_code=400,
-            detail="Solo puedes rechazar cotizaciones en estado 'accepted'",
-        )
+    assert_can_execute_action(booking, BookingAction.REJECT_QUOTE, current_user)
 
     booking.status = BookingStatus.cancelled
     booking.cancelled_by = "contractor"
@@ -459,11 +444,7 @@ def accept_quote(
     booking = get_booking_or_404(db, booking_id)
     contractor = assert_booking_contractor_owner(db, booking, current_user)
 
-    if booking.status != BookingStatus.accepted:
-        raise HTTPException(
-            status_code=400,
-            detail="Solo puedes aceptar cotizaciones en estado 'accepted'",
-        )
+    assert_can_execute_action(booking, BookingAction.ACCEPT_QUOTE, current_user)
 
     musician = db.query(MusicianProfile).filter(
         MusicianProfile.id == booking.musician_id
@@ -587,14 +568,7 @@ def reopen_quote(
     booking = get_booking_or_404(db, booking_id)
     assert_booking_contractor_owner(db, booking, current_user)
 
-    if booking.status not in (
-        BookingStatus.accepted,
-        BookingStatus.contract_pending,
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail="Solo puedes editar y reabrir cotización en estados accepted o contract_pending",
-        )
+    assert_can_execute_action(booking, BookingAction.REOPEN_QUOTE, current_user)
 
     data = payload.model_dump(exclude_unset=True)
     repertoire = data.pop("requested_repertoire", None)

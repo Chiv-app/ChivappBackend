@@ -17,6 +17,7 @@ from app.models.booking import Booking, BookingMessage, BookingReview, BookingSt
 from app.models.musician_profile import MusicianProfile
 from app.models.payment import Payment, PaymentStatus
 from app.models.user import User, UserRole
+from app.services.booking_state_machine import assert_can_execute_action, BookingAction
 from app.models.contractor_recommendation import ContractorRecommendation
 from app.schemas.booking import (
     BookingChangeDecision,
@@ -151,11 +152,7 @@ def post_booking_message(
     booking = get_booking_or_404(db, booking_id)
     assert_booking_collaborator(db, booking, current_user)
 
-    if booking.status in {BookingStatus.completed, BookingStatus.cancelled}:
-        raise HTTPException(
-            400,
-            "La conversación no está disponible en reservas finalizadas o canceladas",
-        )
+    assert_can_execute_action(booking, BookingAction.CHAT_MESSAGE, current_user)
 
     if booking.status not in {
         BookingStatus.payment_retained,
@@ -207,12 +204,7 @@ def request_booking_change(
     if current_user.role not in {UserRole.contractor, UserRole.musician}:
         raise HTTPException(403, "No autorizado")
 
-    if booking.status != BookingStatus.payment_retained:
-        raise HTTPException(
-            400,
-            "Solo puedes pedir cambios cuando la reserva está confirmada "
-            "(antes de iniciar el evento)",
-        )
+    assert_can_execute_action(booking, BookingAction.REQUEST_CHANGE, current_user)
     if not is_pre_event(booking):
         raise HTTPException(400, "Ya no se pueden editar detalles: el evento ya comenzó")
 
@@ -313,8 +305,10 @@ def decide_booking_change(
     booking = get_booking_or_404(db, booking_id)
     assert_booking_participant(db, booking, current_user)
 
-    if booking.status != BookingStatus.change_pending:
-        raise HTTPException(400, "No hay un cambio pendiente para esta reserva")
+    if payload.decision == "accept":
+        assert_can_execute_action(booking, BookingAction.ACCEPT_CHANGE, current_user)
+    else:
+        assert_can_execute_action(booking, BookingAction.REJECT_CHANGE, current_user)
 
     if current_user.role != UserRole.musician:
         raise HTTPException(403, "Solo el músico puede validar estos cambios")
@@ -354,8 +348,7 @@ def start_event_phase(
     booking = get_booking_or_404(db, booking_id)
     assert_booking_participant(db, booking, current_user)
 
-    if booking.status != BookingStatus.payment_retained:
-        raise HTTPException(400, "La reserva debe estar confirmada")
+    assert_can_execute_action(booking, BookingAction.MARK_IN_PROGRESS, current_user)
 
     booking.status = BookingStatus.in_progress
     other = (
