@@ -1,4 +1,6 @@
-﻿from datetime import datetime
+﻿import hmac
+import secrets
+from datetime import datetime
 from urllib.parse import urlencode
 from uuid import UUID
 
@@ -9,12 +11,15 @@ from sqlalchemy.orm import Session
 from app.api import deps
 from app.core.config import settings
 from app.core.hashing import hash_password, validate_password_strength, verify_password
-from app.core.limiter import limiter
+from app.core.limiter import get_client_ip, limiter
 from app.core.jwt import (
     create_access_token,
     create_oauth_pending_token,
+    create_signed_state,
     decode_access_token,
     decode_session_token,
+    decode_signed_state,
+    session_version,
 )
 from app.models.contractor_profile import ContractorProfile
 from app.models.ensemble_member import EnsembleMember, EnsembleMemberStatus
@@ -61,10 +66,8 @@ from app.services.ensemble_members import (
 from app.services.oauth import (
     _provider_or_400,
     build_authorize_url,
-    create_oauth_state,
     exchange_code_for_profile,
     oauth_configured,
-    parse_oauth_state,
     verify_google_id_token,
 )
 from app.services.uniqueness import (
@@ -81,6 +84,7 @@ from app.services.uniqueness import (
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
 OAUTH_PENDING_COOKIE = "oauth_pending"
+OAUTH_STATE_COOKIE = "oauth_state"
 
 
 def _is_secure_cookie() -> bool:
@@ -164,10 +168,23 @@ def _post_login_path(user: User) -> str:
 
 def _issue_login(response: Response, user: User) -> str:
     user.last_login_at = datetime.utcnow()
-    token = create_access_token(subject=str(user.id), role=user.role.value)
+    token = create_access_token(subject=str(user.id), role=user.role.value, version=user.token_version or 0)
     _set_auth_cookie(response, token)
     _clear_oauth_pending_cookie(response)
     return token
+
+
+def _revoke_sessions(user: User) -> None:
+    """Invalida todas las sesiones activas del usuario (incluida la actual:
+    quien llame debe emitir una cookie nueva con _issue_login si corresponde)."""
+    user.token_version = (user.token_version or 0) + 1
+
+
+def _assert_strong_password(password: str) -> None:
+    try:
+        validate_password_strength(password)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 def _link_oauth_account(
@@ -251,18 +268,18 @@ def _optional_user(request: Request, db: Session) -> User | None:
     if not payload or not payload.get("sub"):
         return None
     try:
-        return db.get(User, UUID(str(payload["sub"])))
+        user = db.get(User, UUID(str(payload["sub"])))
     except ValueError:
         return None
+    if not user or getattr(user, "is_active", True) is False:
+        return None
+    if session_version(payload) != (user.token_version or 0):
+        return None
+    return user
 
 
 def _client_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    if request.client and request.client.host:
-        return request.client.host
-    return "unknown"
+    return get_client_ip(request)
 
 
 @router.post("/register", response_model=UserOut, status_code=201)
@@ -278,6 +295,8 @@ def register_user(payload: RegisterRequest, request: Request, db: Session = Depe
 
     if not payload.accepted_terms:
         raise HTTPException(400, "Debes aceptar los Términos y Condiciones")
+
+    _assert_strong_password(payload.password)
 
     normalized_username: str | None = None
     if payload.username and payload.username.strip():
@@ -332,9 +351,10 @@ def login(payload: LoginRequest, request: Request, response: Response, db: Sessi
     if getattr(user, "is_active", True) is False:
         raise HTTPException(status_code=403, detail="Tu cuenta está desactivada")
 
-    token = _issue_login(response, user)
+    _issue_login(response, user)
     db.commit()
-    return {"access_token": token}
+    # El token viaja solo en la cookie httponly; no se expone a JavaScript.
+    return {"message": "Sesión iniciada"}
 
 
 @router.post("/logout")
@@ -342,6 +362,19 @@ def logout(response: Response):
     _clear_auth_cookie(response)
     _clear_oauth_pending_cookie(response)
     return {"message": "Logout exitoso"}
+
+
+@router.post("/logout-all")
+def logout_all(
+    response: Response,
+    current_user: User = Depends(deps.get_current_user),
+    db: Session = Depends(deps.get_db),
+):
+    """Cierra la sesión en todos los dispositivos."""
+    _revoke_sessions(current_user)
+    db.commit()
+    _clear_auth_cookie(response)
+    return {"message": "Se cerró la sesión en todos los dispositivos"}
 
 
 @router.get("/me", response_model=UserOut)
@@ -360,7 +393,8 @@ def get_me(
 
 
 @router.get("/password-setup/{token}", response_model=PasswordSetupPreviewOut)
-def preview_password_setup(token: str, db: Session = Depends(deps.get_db)):
+@limiter.limit(settings.RATE_LIMIT_PUBLIC)
+def preview_password_setup(token: str, request: Request, db: Session = Depends(deps.get_db)):
     member = find_password_setup_member(db, token)
     user = db.get(User, member.member_user_id)
     leader = db.get(User, member.leader_user_id)
@@ -384,6 +418,7 @@ def preview_password_setup(token: str, db: Session = Depends(deps.get_db)):
 
 
 @router.post("/set-password", response_model=UserOut)
+@limiter.limit(settings.RATE_LIMIT_PASSWORD_RESET)
 def set_password(
     payload: SetPasswordRequest,
     response: Response,
@@ -392,8 +427,7 @@ def set_password(
 ):
     """Crea contraseña vía token de invitación o sesión autenticada sin password."""
     password = payload.password.strip()
-    if len(password) < 8:
-        raise HTTPException(400, "La contraseña debe tener al menos 8 caracteres")
+    _assert_strong_password(password)
 
     user: User | None = None
     member = None
@@ -413,11 +447,12 @@ def set_password(
     if not user:
         raise HTTPException(404, "Cuenta no encontrada")
 
-    if user.password_hash and not token:
-        raise HTTPException(400, "Tu cuenta ya tiene contraseña")
+    if user.password_hash:
+        # Un enlace de invitación nunca inicia sesión en una cuenta con contraseña.
+        raise HTTPException(400, "Tu cuenta ya tiene contraseña. Inicia sesión con ella.")
 
-    if not user.password_hash:
-        user.password_hash = hash_password(password)
+    user.password_hash = hash_password(password)
+    _revoke_sessions(user)
 
     user.updated_at = datetime.utcnow()
 
@@ -468,16 +503,29 @@ def oauth_start(
     except HTTPException:
         return _frontend_redirect("/login", {"oauth_error": "unsupported_provider"})
 
-    link_user_id = None
+    state_payload = {"intent": intent, "nonce": secrets.token_urlsafe(24)}
     if intent == "link":
         user = _optional_user(request, db)
         if not user:
             raise HTTPException(401, "Debes iniciar sesión para vincular una cuenta")
-        link_user_id = str(user.id)
+        state_payload["uid"] = str(user.id)
 
-    state = create_oauth_state(intent, link_user_id)
+    # El state va firmado y su nonce queda en una cookie de este navegador: un
+    # callback con un state ajeno (CSRF / login forzado) no coincide.
+    state = create_signed_state("oauth_state", state_payload)
     url = build_authorize_url(provider, intent=intent, state=state)
-    return RedirectResponse(url=url, status_code=302)
+    redirect = RedirectResponse(url=url, status_code=302)
+    redirect.set_cookie(
+        key=OAUTH_STATE_COOKIE,
+        value=state_payload["nonce"],
+        httponly=True,
+        secure=_is_secure_cookie(),
+        samesite="lax",
+        path="/",
+        domain=_get_cookie_domain(),
+        max_age=10 * 60,
+    )
+    return redirect
 
 
 @router.get("/oauth/{provider}/callback")
@@ -490,24 +538,58 @@ async def oauth_callback(
     error: str | None = None,
     db: Session = Depends(deps.get_db),
 ):
+    result = await _oauth_callback(provider, request, code, state, error, db)
+    result.delete_cookie(OAUTH_STATE_COOKIE, path="/", domain=_get_cookie_domain())
+    return result
+
+
+def _verified_state(request: Request, state: str | None) -> dict | None:
+    payload = decode_signed_state(state, "oauth_state")
+    cookie_nonce = request.cookies.get(OAUTH_STATE_COOKIE) or ""
+    if not payload or not cookie_nonce:
+        return None
+    if not hmac.compare_digest(cookie_nonce, str(payload.get("nonce") or "")):
+        return None
+    if payload.get("intent") not in {"login", "link"}:
+        return None
+    return payload
+
+
+def _can_link_by_email(user: User, profile) -> bool:
+    """Vincular por email solo si el proveedor verificó el email y la cuenta local
+    no es una cuenta con contraseña cuyo email nunca se verificó (evita que alguien
+    pre-registre el correo de otra persona y luego herede su login social)."""
+    if not profile.email_verified:
+        return False
+    if user.password_hash and not user.email_verified_at:
+        return False
+    return True
+
+
+async def _oauth_callback(provider, request, code, state, error, db):
     if error:
         return _frontend_redirect("/login", {"oauth_error": error})
     if not code or not state:
         return _frontend_redirect("/login", {"oauth_error": "missing_code"})
 
+    state_payload = _verified_state(request, state)
+    if not state_payload:
+        return _frontend_redirect("/login", {"oauth_error": "invalid_state"})
+    intent = state_payload["intent"]
+    link_user_id = state_payload.get("uid")
+
     try:
-        intent, link_user_id = parse_oauth_state(state)
         profile = await exchange_code_for_profile(provider, code)
     except HTTPException as exc:
         detail = exc.detail if isinstance(exc.detail, str) else "oauth_failed"
         return _frontend_redirect("/login", {"oauth_error": detail})
 
     if intent == "link":
-        if not link_user_id:
+        # La cuenta a vincular es la de la sesión actual, y debe ser la misma
+        # que inició el flujo.
+        user = _optional_user(request, db)
+        if not user or not link_user_id or str(user.id) != link_user_id:
             return _frontend_redirect("/login", {"oauth_error": "link_session"})
-        user = db.get(User, UUID(link_user_id))
-        if not user:
-            return _frontend_redirect("/login", {"oauth_error": "user_not_found"})
         try:
             _link_oauth_account(
                 db,
@@ -563,6 +645,8 @@ async def oauth_callback(
         user_by_email = db.query(User).filter(User.email == profile.email).first()
 
     if user_by_email:
+        if not _can_link_by_email(user_by_email, profile):
+            return _frontend_redirect("/login", {"oauth_error": "email_in_use"})
         _link_oauth_account(
             db,
             user=user_by_email,
@@ -576,6 +660,8 @@ async def oauth_callback(
             user_by_email.email_verified_at = datetime.utcnow()
         if user_by_email.role == UserRole.contractor and not user_by_email.is_verified:
             user_by_email.is_verified = True
+        # Invalida sesiones previas (p. ej. de una cuenta sombra creada por otro).
+        _revoke_sessions(user_by_email)
         redirect = _frontend_redirect(_post_login_path(user_by_email))
         _issue_login(redirect, user_by_email)
         db.commit()
@@ -680,9 +766,9 @@ def oauth_complete(
         provider_user_id=provider_user_id,
         email=email,
     )
-    access = _issue_login(response, user)
+    _issue_login(response, user)
     db.commit()
-    return {"access_token": access}
+    return {"message": "Sesión iniciada"}
 
 
 @router.post("/oauth/google/credential", response_model=GoogleAuthResponse)
@@ -727,11 +813,10 @@ async def oauth_google_credential(
             user.email_verified_at = datetime.utcnow()
         if user.role == UserRole.contractor and not user.is_verified:
             user.is_verified = True
-        token = _issue_login(response, user)
+        _issue_login(response, user)
         db.commit()
         return GoogleAuthResponse(
             status="logged_in",
-            access_token=token,
             redirect_url=_post_login_path(user),
             role=user.role.value,
         )
@@ -742,6 +827,11 @@ async def oauth_google_credential(
         user_by_email = db.query(User).filter(User.email == profile.email).first()
 
     if user_by_email:
+        if not _can_link_by_email(user_by_email, profile):
+            raise HTTPException(
+                409,
+                "Este correo ya tiene una cuenta. Inicia sesión con tu contraseña y vincula Google desde tu perfil.",
+            )
         _link_oauth_account(
             db,
             user=user_by_email,
@@ -753,11 +843,11 @@ async def oauth_google_credential(
             user_by_email.profile_picture_url = profile.picture_url
         if not user_by_email.email_verified_at:
             user_by_email.email_verified_at = datetime.utcnow()
-        token = _issue_login(response, user_by_email)
+        _revoke_sessions(user_by_email)
+        _issue_login(response, user_by_email)
         db.commit()
         return GoogleAuthResponse(
             status="logged_in",
-            access_token=token,
             redirect_url=_post_login_path(user_by_email),
             role=user_by_email.role.value,
         )
@@ -895,7 +985,8 @@ def forgot_password(payload: ForgotPasswordRequest, request: Request, db: Sessio
 
 
 @router.get("/password-reset/{token}", response_model=PasswordResetPreviewOut)
-def preview_password_reset(token: str, db: Session = Depends(deps.get_db)):
+@limiter.limit(settings.RATE_LIMIT_PUBLIC)
+def preview_password_reset(token: str, request: Request, db: Session = Depends(deps.get_db)):
     try:
         user = find_password_reset_user(db, token)
     except ValueError as exc:
@@ -922,9 +1013,12 @@ def reset_password(
             raise HTTPException(410, "El enlace expiró. Solicita uno nuevo.") from exc
         raise HTTPException(404, "Enlace no válido") from exc
 
-    user.password_hash = hash_password(payload.password.strip())
+    new_password = payload.password.strip()
+    _assert_strong_password(new_password)
+    user.password_hash = hash_password(new_password)
     user.updated_at = datetime.utcnow()
     clear_password_reset(user)
+    _revoke_sessions(user)
     _issue_login(response, user)
     db.commit()
     db.refresh(user)
@@ -934,6 +1028,7 @@ def reset_password(
 @router.post("/change-password")
 def change_password(
     payload: ChangePasswordRequest,
+    response: Response,
     current_user: User = Depends(deps.get_current_user),
     db: Session = Depends(deps.get_db),
 ):
@@ -955,6 +1050,9 @@ def change_password(
 
     current_user.password_hash = hash_password(new_password)
     current_user.updated_at = datetime.utcnow()
+    # Cierra las demás sesiones y mantiene abierta la de este dispositivo.
+    _revoke_sessions(current_user)
+    _issue_login(response, current_user)
     db.commit()
     db.refresh(current_user)
     return {"message": "Contraseña actualizada exitosamente"}
@@ -1006,7 +1104,7 @@ def guest_register(
     db.commit()
     db.refresh(new_user)
 
-    access_token = create_access_token(subject=str(new_user.id), role=new_user.role.value)
+    access_token = create_access_token(subject=str(new_user.id), role=new_user.role.value, version=new_user.token_version or 0)
     _set_auth_cookie(response, access_token)
 
     return new_user
@@ -1044,7 +1142,7 @@ def magic_link_login(
         user.email_verified_at = datetime.utcnow()
         db.commit()
 
-    access_token = create_access_token(subject=str(user.id), role=user.role.value)
+    access_token = create_access_token(subject=str(user.id), role=user.role.value, version=user.token_version or 0)
 
     redirect_to = _safe_redirect_path(payload.get("redirect_to"))
     # Important: Create RedirectResponse first, then set the cookie on it

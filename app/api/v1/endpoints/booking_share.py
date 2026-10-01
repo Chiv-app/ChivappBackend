@@ -3,9 +3,11 @@ from __future__ import annotations
 import secrets
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
+from app.core.limiter import limiter
 from app.api import deps
 from app.api.booking_helpers import (
     assert_booking_collaborator,
@@ -182,7 +184,9 @@ def list_public_share_reviews(token: str, db: Session = Depends(deps.get_db)):
 
 
 @router.post("/public/share/{token}/reviews", response_model=BookingReviewOut)
+@limiter.limit(settings.RATE_LIMIT_PUBLIC)
 def create_public_share_review(
+    request: Request,
     token: str,
     payload: BookingGuestReviewCreate,
     db: Session = Depends(deps.get_db),
@@ -231,7 +235,9 @@ def create_public_share_review(
 
 
 @router.post("/public/share/{token}/upload")
+@limiter.limit(settings.RATE_LIMIT_PUBLIC)
 async def upload_public_share_file(
+    request: Request,
     token: str,
     file: UploadFile = File(...),
     db: Session = Depends(deps.get_db),

@@ -1,10 +1,13 @@
+from app.core.config import settings
+from app.core.limiter import limiter
+from app.core.hashing import validate_password_strength
 from app.services.email.auth_emails import send_welcome_email
 from app.core.hashing import hash_password
 from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session, joinedload
 
 from app.api import deps
@@ -659,7 +662,9 @@ def preview_booking_invite(token: str, db: Session = Depends(deps.get_db)):
     "/invites/member/{token}/respond",
     response_model=BookingMemberInvitePreviewOut,
 )
+@limiter.limit(settings.RATE_LIMIT_PUBLIC)
 def respond_booking_invite(
+    request: Request,
     token: str,
     payload: BookingMemberRespondRequest,
     db: Session = Depends(deps.get_db),
@@ -685,6 +690,10 @@ def respond_booking_invite(
     ):
         if not payload.password:
             raise HTTPException(400, "Debes crear una contraseña para aceptar la convocatoria.")
+        try:
+            validate_password_strength(payload.password)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
         member_user.password_hash = hash_password(payload.password)
         member_user.email_verified_at = datetime.utcnow()
         db.add(member_user)

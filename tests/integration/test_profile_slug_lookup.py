@@ -9,7 +9,7 @@ def _register_and_login(client, fullname: str, email: str, username: str | None 
         "/api/v1/auth/register",
         json={
             "email": email,
-            "password": "SuperSecreta123",
+            "password": "SuperSecreta123!",
             "fullname": fullname,
             "username": uname,
             "role": "musician",
@@ -17,7 +17,7 @@ def _register_and_login(client, fullname: str, email: str, username: str | None 
             "accepted_terms": True,
         },
     )
-    client.post("/api/v1/auth/login", json={"email": email, "password": "SuperSecreta123"})
+    client.post("/api/v1/auth/login", json={"email": email, "password": "SuperSecreta123!"})
     return resp
 
 
@@ -38,7 +38,7 @@ def test_colliding_stage_names_rejected_on_registration(client):
         "/api/v1/auth/register",
         json={
             "email": "reales2@example.com",
-            "password": "SuperSecreta123",
+            "password": "SuperSecreta123!",
             "fullname": "Los Mariachis Reales",
             "username": "los-mariachis-reales",
             "role": "musician",

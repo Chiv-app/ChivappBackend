@@ -6,7 +6,7 @@ pytestmark = pytest.mark.db
 def _register_payload(**overrides):
     payload = {
         "email": "mariachi.test@example.com",
-        "password": "SuperSecreta123",
+        "password": "SuperSecreta123!",
         "fullname": "Mariachi de Prueba",
         "username": "mariachi-prueba",
         "role": "musician",
@@ -20,7 +20,7 @@ def _register_payload(**overrides):
 def test_register_creates_user_and_returns_201(client):
     response = client.post("/api/v1/auth/register", json={
         "email": "mariachi.test@example.com",
-        "password": "SuperSecreta123",
+        "password": "SuperSecreta123!",
         "role": "musician",
         "accepted_terms": True,
     })
@@ -33,7 +33,7 @@ def test_register_creates_user_and_returns_201(client):
 def test_register_musician_does_not_require_username_at_register(client):
     response = client.post("/api/v1/auth/register", json={
         "email": "nuevo.musico@example.com",
-        "password": "SuperSecreta123",
+        "password": "SuperSecreta123!",
         "role": "musician",
         "accepted_terms": True,
     })
@@ -84,10 +84,10 @@ def test_login_with_correct_credentials_returns_token(client):
     client.post("/api/v1/auth/register", json=_register_payload())
     response = client.post(
         "/api/v1/auth/login",
-        json={"email": "mariachi.test@example.com", "password": "SuperSecreta123"},
+        json={"email": "mariachi.test@example.com", "password": "SuperSecreta123!"},
     )
     assert response.status_code == 200
-    assert response.json()["access_token"]
+    assert "access_token" not in response.json()  # solo en cookie httponly
     assert "access_token" in response.cookies
 
 
@@ -103,7 +103,7 @@ def test_login_with_wrong_password_returns_401(client):
 def test_newly_registered_musician_can_get_profile_and_update_profile(client):
     reg = client.post("/api/v1/auth/register", json={
         "email": "nuevo.musico.profile@example.com",
-        "password": "SuperSecreta123",
+        "password": "SuperSecreta123!",
         "role": "musician",
         "accepted_terms": True,
     })
@@ -111,11 +111,10 @@ def test_newly_registered_musician_can_get_profile_and_update_profile(client):
 
     login_resp = client.post(
         "/api/v1/auth/login",
-        json={"email": "nuevo.musico.profile@example.com", "password": "SuperSecreta123"},
+        json={"email": "nuevo.musico.profile@example.com", "password": "SuperSecreta123!"},
     )
     assert login_resp.status_code == 200
-    token = login_resp.json()["access_token"]
-    headers = {"Authorization": f"Bearer {token}"}
+    headers = {}  # sesión por cookie
 
     # Get profile (previously crashed with 500 ResponseValidationError)
     prof_resp = client.get("/api/v1/profiles/musician/me", headers=headers)

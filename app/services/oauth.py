@@ -18,6 +18,9 @@ class OAuthProfile:
     email: str | None
     fullname: str
     picture_url: str | None = None
+    # Solo se vincula una cuenta existente por email si el proveedor confirma
+    # que el email pertenece a quien inicia sesión.
+    email_verified: bool = False
 
 
 def _provider_or_400(provider: str) -> OAuthProvider:
@@ -69,25 +72,6 @@ def build_authorize_url(provider: str, *, intent: str, state: str) -> str:
     return f"https://www.facebook.com/v19.0/dialog/oauth?{urlencode(params)}"
 
 
-def create_oauth_state(intent: str, link_user_id: str | None = None) -> str:
-    nonce = secrets.token_urlsafe(24)
-    parts = [intent, nonce]
-    if link_user_id:
-        parts.append(link_user_id)
-    return ".".join(parts)
-
-
-def parse_oauth_state(state: str) -> tuple[str, str | None]:
-    parts = state.split(".")
-    if len(parts) < 2:
-        raise HTTPException(400, "Estado OAuth inválido")
-    intent = parts[0]
-    if intent not in {"login", "link"}:
-        raise HTTPException(400, "Intent OAuth inválido")
-    link_user_id = parts[2] if len(parts) >= 3 else None
-    return intent, link_user_id
-
-
 async def exchange_code_for_profile(provider: str, code: str) -> OAuthProfile:
     p = _provider_or_400(provider)
     if p == OAuthProvider.google:
@@ -133,6 +117,7 @@ async def _google_profile(code: str) -> OAuthProfile:
         email=email.lower().strip() if email else None,
         fullname=name,
         picture_url=data.get("picture"),
+        email_verified=data.get("email_verified") is True,
     )
 
 
@@ -211,4 +196,5 @@ async def verify_google_id_token(id_token: str) -> OAuthProfile:
         email=email.lower().strip() if email else None,
         fullname=name,
         picture_url=data.get("picture"),
+        email_verified=str(data.get("email_verified")).lower() == "true",
     )

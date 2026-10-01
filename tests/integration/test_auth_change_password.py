@@ -12,8 +12,9 @@ def _register_and_login(client, email="change.pwd@example.com", password="Passwo
         "email": email,
         "password": password,
     })
-    token = login_res.json()["access_token"]
-    return {"Authorization": f"Bearer {token}"}
+    assert login_res.status_code == 200
+    # La sesión viaja en la cookie httponly que guarda el TestClient.
+    return {}
 
 
 def test_change_password_requires_auth(client):
@@ -90,4 +91,4 @@ def test_change_password_successful(client):
         "password": "BrandNewPass2#",
     })
     assert login_new.status_code == 200
-    assert login_new.json()["access_token"]
+    assert "access_token" in login_new.cookies

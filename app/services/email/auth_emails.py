@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+
 import secrets
 from datetime import datetime, timedelta
 from uuid import UUID
@@ -20,9 +22,14 @@ def _frontend_url(path: str) -> str:
     return f"{base}{path}"
 
 
+def hash_token(token: str) -> str:
+    """En BD solo se guarda el hash: un volcado de la BD no permite usar los enlaces."""
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
 def issue_email_verification_token(user: User) -> str:
     token = secrets.token_urlsafe(32)
-    user.email_verification_token = token
+    user.email_verification_token = hash_token(token)
     user.email_verification_expires_at = datetime.utcnow() + timedelta(
         hours=EMAIL_VERIFICATION_TTL_HOURS
     )
@@ -31,7 +38,7 @@ def issue_email_verification_token(user: User) -> str:
 
 def issue_password_reset_token(user: User) -> str:
     token = secrets.token_urlsafe(32)
-    user.password_reset_token = token
+    user.password_reset_token = hash_token(token)
     user.password_reset_expires_at = datetime.utcnow() + timedelta(
         hours=PASSWORD_RESET_TTL_HOURS
     )
@@ -192,7 +199,7 @@ def send_booking_member_accepted_to_leader_email(
 def verify_email_token(db: Session, token: str) -> User:
     user = (
         db.query(User)
-        .filter(User.email_verification_token == token)
+        .filter(User.email_verification_token == hash_token(token))
         .first()
     )
     if not user:
@@ -207,7 +214,7 @@ def verify_email_token(db: Session, token: str) -> User:
 
 
 def find_password_reset_user(db: Session, token: str) -> User:
-    user = db.query(User).filter(User.password_reset_token == token).first()
+    user = db.query(User).filter(User.password_reset_token == hash_token(token)).first()
     if not user:
         raise ValueError("invalid")
     if (

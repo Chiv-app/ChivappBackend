@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from app.api import deps
 from app.models.user import User
 from app.core.config import settings
+from app.core.jwt import create_signed_state, decode_signed_state
 import httpx
 from urllib.parse import urlencode
 
@@ -21,6 +22,8 @@ def get_auth_url(current_user: User = Depends(deps.get_current_user)):
         "scope": "https://www.googleapis.com/auth/calendar.events",
         "access_type": "offline",
         "prompt": "consent",
+        # Ligado al usuario: un callback con el state de otra cuenta se rechaza.
+        "state": create_signed_state("calendar_state", {"uid": str(current_user.id)}),
     }
     
     url = f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}"
@@ -29,10 +32,14 @@ def get_auth_url(current_user: User = Depends(deps.get_current_user)):
 @router.post("/callback")
 def handle_callback(
     code: str = Query(...),
+    state: str = Query(...),
     current_user: User = Depends(deps.get_current_user),
     db: Session = Depends(deps.get_db)
 ):
     """Exchanges the authorization code for a refresh token."""
+    payload = decode_signed_state(state, "calendar_state")
+    if not payload or payload.get("uid") != str(current_user.id):
+        raise HTTPException(400, "La solicitud de conexión no es válida o expiró. Vuelve a intentarlo.")
     if not settings.GOOGLE_CLIENT_ID or not settings.GOOGLE_CLIENT_SECRET or not getattr(settings, 'GOOGLE_OAUTH_REDIRECT_URI', None):
         raise HTTPException(500, "Google OAuth no configurado.")
 

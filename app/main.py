@@ -19,26 +19,41 @@ from app.db.session import Base, engine
 from app.services.uploads import ensure_upload_dir
 import app.models  # noqa: F401 — registra modelos antes de create_all
 from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+
+DEV_CORS_ORIGIN_REGEX = (
+    r"https?://(localhost|127\.0\.0\.1|.*\.ngrok-free\.app|.*\.ngrok\.io|.*\.loca\.lt)(:\d+)?"
+)
 
 run_migrations(engine)
+
+IS_PRODUCTION = settings.ENVIRONMENT.lower() == "production"
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version="1.0.0",
+    # En producción no se publica el mapa completo de la API.
+    docs_url=None if IS_PRODUCTION else "/docs",
+    redoc_url=None if IS_PRODUCTION else "/redoc",
+    openapi_url=None if IS_PRODUCTION else "/openapi.json",
 )
+# Solo para el esquema (x-forwarded-proto). La IP del cliente para rate limit y
+# auditoría se resuelve en app.core.limiter.get_client_ip.
 app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
+# Aplica RATE_LIMIT_DEFAULT a todos los endpoints sin límite propio.
+app.add_middleware(SlowAPIMiddleware)
 
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.BACKEND_CORS_ORIGINS,
-    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|chiv\.app|.*\.chiv\.app|.*\.ngrok-free\.app|.*\.ngrok\.io|.*\.loca\.lt)(:\d+)?",
+    # En producción solo la lista explícita; en desarrollo también túneles y localhost.
+    allow_origin_regex=None if IS_PRODUCTION else DEV_CORS_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["*"],
 )
 
 ensure_upload_dir()

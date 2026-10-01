@@ -44,8 +44,8 @@ class PasswordSetupPreviewOut(BaseModel):
 
 
 class TokenOut(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
+    # El token de sesión solo viaja en la cookie httponly.
+    message: str = "Sesión iniciada"
 
 
 class OAuthCompleteRequest(BaseModel):

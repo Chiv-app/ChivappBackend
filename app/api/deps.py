@@ -3,7 +3,7 @@ from uuid import UUID
 from fastapi import Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 
-from app.core.jwt import decode_session_token
+from app.core.jwt import decode_session_token, session_version
 from app.db.session import SessionLocal
 from app.models.user import User, UserRole
 
@@ -57,6 +57,12 @@ def get_current_user(
             detail="Usuario no encontrado",
         )
 
+    if session_version(payload) != (user.token_version or 0):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Tu sesión expiró. Inicia sesión de nuevo.",
+        )
+
     if getattr(user, "is_active", True) is False:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -91,6 +97,8 @@ def get_current_user_optional(
 
     user = db.get(User, user_uuid)
     if not user or getattr(user, "is_active", True) is False:
+        return None
+    if session_version(payload) != (user.token_version or 0):
         return None
 
     return user

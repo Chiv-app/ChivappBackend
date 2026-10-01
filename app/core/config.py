@@ -3,7 +3,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    PROJECT_NAME: str = "MusicLink API"
+    PROJECT_NAME: str = "Chivapp API"
+    # "production" desactiva /docs y los orígenes CORS de desarrollo (ngrok, localhost).
+    ENVIRONMENT: str = "development"
     API_V1_STR: str = "/api/v1"
 
     SQLALCHEMY_DATABASE_URI: str
@@ -21,6 +23,8 @@ class Settings(BaseSettings):
 
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
+    # TODO: mover a la variable de entorno GOOGLE_CALENDAR_ID en producción y
+    # quitar este valor por defecto (es un correo personal).
     GOOGLE_CALENDAR_ID: str = "miguel2cto@gmail.com"
     GOOGLE_CREDENTIALS_JSON: str = ""
     GOOGLE_OAUTH_REDIRECT_URI: str = "http://localhost:3000/calendar/callback"
@@ -40,6 +44,12 @@ class Settings(BaseSettings):
     RATE_LIMIT_REGISTER: str = "10/minute"
     RATE_LIMIT_PASSWORD_RESET: str = "5/minute"
     RATE_LIMIT_DEFAULT: str = "100/minute"
+    RATE_LIMIT_PUBLIC: str = "30/minute"
+    # memory:// es por proceso; en producción con varias instancias usar redis://...
+    RATE_LIMIT_STORAGE_URI: str = "memory://"
+    # Secreto compartido con el proxy de Next.js para confiar en la IP del cliente
+    # que reenvía (cabecera x-chivapp-client-ip).
+    PROXY_SHARED_SECRET: str = ""
 
     # Security Headers
     ENABLE_HSTS: bool = False

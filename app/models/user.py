@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, DateTime, Boolean, Enum
+from sqlalchemy import Column, String, DateTime, Boolean, Enum, Integer
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -42,6 +42,9 @@ class User(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     last_login_at = Column(DateTime, nullable=True)
+    # Se incrementa para invalidar todas las sesiones (cambio/reset de contraseña,
+    # vinculación de cuenta social por email, "cerrar sesión en todos lados").
+    token_version = Column(Integer, nullable=False, default=0, server_default="0")
     
     google_calendar_refresh_token = Column(String, nullable=True)
 

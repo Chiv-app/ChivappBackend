@@ -629,12 +629,9 @@ def reopen_quote(
 
 
 def _client_ip(request: Request, fallback: str | None = None) -> str:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    if request.client and request.client.host:
-        return request.client.host
-    return fallback or "unknown"
+    from app.core.limiter import get_client_ip
+
+    return get_client_ip(request) or fallback or "unknown"
 
 
 def _assert_upload_exists(upload_url: str, label: str) -> None:

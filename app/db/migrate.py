@@ -250,6 +250,7 @@ MIGRATION_STATEMENTS = [
     """,
     # Email verification & password reset on user
     'ALTER TABLE "user" ADD COLUMN IF NOT EXISTS email_verified_at TIMESTAMP',
+    'ALTER TABLE "user" ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0',
     'ALTER TABLE "user" ADD COLUMN IF NOT EXISTS email_verification_token VARCHAR',
     'ALTER TABLE "user" ADD COLUMN IF NOT EXISTS email_verification_expires_at TIMESTAMP',
     'ALTER TABLE "user" ADD COLUMN IF NOT EXISTS password_reset_token VARCHAR',
