@@ -98,10 +98,16 @@ def create_booking_event(
         logger.warning("GOOGLE_CALENDAR_ID no está configurado. Se usará 'primary' (puede fallar para Service Accounts).")
         calendar_id = "primary"
 
-    # Calcular fecha de fin (UTC)
-    end_date = event_date
     import datetime as dt
-    end_date = end_date + dt.timedelta(hours=duration_hours)
+    from zoneinfo import ZoneInfo
+    
+    lima_tz = ZoneInfo("America/Lima")
+    if event_date.tzinfo is None:
+        start_dt = event_date.replace(tzinfo=lima_tz)
+    else:
+        start_dt = event_date.astimezone(lima_tz)
+        
+    end_dt = start_dt + dt.timedelta(hours=duration_hours)
 
     event_summary = f"Chivapp: {event_type} - {musician_name}"
     
@@ -122,12 +128,12 @@ def create_booking_event(
         'location': f"{location_address}, {location_zone}, {location_city}",
         'description': "".join(description_lines),
         'start': {
-            'dateTime': event_date.isoformat() + 'Z',
-            'timeZone': 'UTC',
+            'dateTime': start_dt.isoformat(),
+            'timeZone': 'America/Lima',
         },
         'end': {
-            'dateTime': end_date.isoformat() + 'Z',
-            'timeZone': 'UTC',
+            'dateTime': end_dt.isoformat(),
+            'timeZone': 'America/Lima',
         },
         # 'attendees': [] # Bloqueado por Google,
         'reminders': {
@@ -258,12 +264,6 @@ def sync_booking_calendar(db, booking_id: str, include_contractor: bool, ensembl
         'summary': event_summary,
         'location': f"{booking.location_address}, {booking.location_reference or ''}, {booking.location_city or ''}",
         'description': "".join(description_lines),
-        'start': {
-            'dateTime': start_dt.isoformat() + 'Z', # timezone issue? need local timezone...
-        },
-        'end': {
-            'dateTime': end_dt.isoformat() + 'Z',
-        },
         'attendees': attendees, # Ahora funciona porque usamos OAuth del usuario
         'reminders': {
             'useDefault': False,

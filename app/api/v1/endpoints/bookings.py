@@ -1,5 +1,10 @@
 import logging
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
+
+def get_lima_today() -> date:
+    return datetime.now(ZoneInfo("America/Lima")).date()
+
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session, joinedload
@@ -134,7 +139,7 @@ def create_booking(
     if not musician:
         raise HTTPException(404, "El músico no existe o no está verificado")
 
-    if payload.event_date < date.today():
+    if payload.event_date < get_lima_today():
         raise HTTPException(400, "La fecha del evento no puede ser anterior a hoy")
 
     assert_musician_available(
@@ -301,7 +306,11 @@ def update_booking(
             detail="Solo puedes editar solicitudes en estado 'requested'",
         )
 
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    update_data = payload.model_dump(exclude_unset=True)
+    if "event_date" in update_data and update_data["event_date"] < get_lima_today():
+        raise HTTPException(400, "La fecha del evento no puede ser anterior a hoy")
+
+    for field, value in update_data.items():
         setattr(booking, field, value)
 
     musician = (

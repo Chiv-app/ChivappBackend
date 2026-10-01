@@ -5,6 +5,11 @@ firma y paga por Mercado Pago. El músico no puede firmar ni validar pagos.
 """
 
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
+
+def get_lima_today() -> date:
+    return datetime.now(ZoneInfo("America/Lima")).date()
+
 from decimal import Decimal
 from uuid import uuid4
 
@@ -148,7 +153,7 @@ def create_musician_booking(
             detail="Configura tu plantilla de contrato antes de crear contratas",
         )
 
-    if payload.event_date < date.today():
+    if payload.event_date < get_lima_today():
         raise HTTPException(400, "La fecha del evento no puede ser anterior a hoy")
 
     contractor, contractor_user = resolve_or_create_contractor_client(
