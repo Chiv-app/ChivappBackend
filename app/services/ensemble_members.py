@@ -6,7 +6,7 @@ from uuid import UUID
 
 from fastapi import HTTPException
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from app.core.config import settings
 from app.models.ensemble_member import (
@@ -17,6 +17,7 @@ from app.models.ensemble_member import (
     EnsembleMemberStatus,
 )
 from app.models.musician_profile import AvailabilityType, MusicianProfile
+from app.models.oauth_account import OAuthAccount
 from app.models.profile_status import ProfileStatus
 from app.models.user import User, UserRole
 from app.services.booking_notifications import notify_user
@@ -68,6 +69,22 @@ def get_leader_musician_or_403(db: Session, user: User) -> MusicianProfile:
     return profile
 
 
+def is_leader_managed_account(user: User | None) -> bool:
+    """True solo si la cuenta es una cuenta sombra creada por la invitación del
+    líder (sin contraseña, sin OAuth y con perfil solo de agrupación). Para
+    cualquier cuenta real, el líder nunca debe ver enlaces con tokens: con ellos
+    podría fijar la contraseña y tomar la cuenta."""
+    if user is None or user.password_hash:
+        return False
+    db = object_session(user)
+    if db is None:
+        return False
+    if db.query(OAuthAccount.id).filter(OAuthAccount.user_id == user.id).first():
+        return False
+    profile = db.query(MusicianProfile).filter(MusicianProfile.user_id == user.id).first()
+    return bool(profile and profile.is_ensemble_only)
+
+
 def serialize_member(member: EnsembleMember, *, include_invite_url: bool = False) -> dict:
     linked = member.member_user
     has_password = bool(linked and linked.password_hash)
@@ -81,7 +98,7 @@ def serialize_member(member: EnsembleMember, *, include_invite_url: bool = False
         invite_expired = bool(
             invite_expires_at and invite_expires_at < datetime.utcnow()
         )
-        if include_invite_url:
+        if include_invite_url and is_leader_managed_account(linked):
             invite_url = password_setup_url(member.password_setup_token)
     return {
         "id": member.id,
@@ -227,6 +244,8 @@ def serialize_booking_invite(invite: BookingMemberInvite) -> dict:
         "status": invite.status.value if hasattr(invite.status, "value") else invite.status,
         "respond_url": booking_respond_url(invite.response_token)
         if invite.status == BookingMemberInviteStatus.pending
+        and member
+        and is_leader_managed_account(member.member_user)
         else None,
         "invited_at": invite.invited_at,
         "responded_at": invite.responded_at,

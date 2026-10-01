@@ -88,9 +88,4 @@ class GuestRegisterRequest(BaseModel):
     email: EmailStr
     fullname: str
     phone: str
-    role: str = "contractor"
-
-class MagicLinkSendRequest(BaseModel):
-    email: EmailStr
-    redirect_to: str | None = None
 

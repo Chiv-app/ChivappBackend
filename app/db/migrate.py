@@ -281,7 +281,6 @@ MIGRATION_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS ix_email_log_recipient ON email_log (recipient)",
     "CREATE INDEX IF NOT EXISTS ix_email_log_status ON email_log (status)",
     "CREATE INDEX IF NOT EXISTS ix_email_log_created_at ON email_log (created_at)",
-    'UPDATE "user" SET email_verified_at = created_at WHERE email_verified_at IS NULL',
     """
     DO $$ BEGIN
         CREATE TYPE bookingcomplaintstatus AS ENUM (

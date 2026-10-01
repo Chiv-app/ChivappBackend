@@ -82,3 +82,12 @@ def test_musician_portion_of_paid_all_to_musician_when_no_fee():
     # M=500, g=0, F=1.18, p=0.0412 -> C_unico = (500 + 1.18) / 0.9588 = 522.72
     booking = _booking(price_agreed=Decimal("500"), platform_fee_amount=None, platform_fee_percent=Decimal("0"))
     assert musician_portion_of_paid(booking, Decimal("522.72")) == Decimal("500.00")
+
+
+def test_expected_payment_amount_is_server_side_single_payment():
+    from app.services.mercadopago_service import expected_payment_amount
+
+    booking = _booking(price_agreed=Decimal("500"), platform_fee_percent=Decimal("2"))
+    total = contractor_payable_total(booking)
+    assert expected_payment_amount(None, booking, "full") == total
+    assert expected_payment_amount(None, booking, "advance") == total

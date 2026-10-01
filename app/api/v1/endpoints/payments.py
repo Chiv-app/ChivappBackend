@@ -421,12 +421,12 @@ def create_payment(
 @router.post("/{payment_id}/retain", response_model=PaymentOut)
 def retain_payment(
     payment_id: str,
-    current_user: User = Depends(deps.get_current_user),
+    current_user: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
 ):
+    # Solo admin: los pagos se confirman por el webhook de Mercado Pago.
     payment = _get_payment_or_404(db, payment_id)
     booking = get_booking_or_404(db, str(payment.booking_id))
-    assert_booking_contractor_owner(db, booking, current_user)
 
     if payment.status != PaymentStatus.initiated:
         raise HTTPException(400, "El pago no está en estado 'initiated'")
@@ -444,12 +444,12 @@ def retain_payment(
 @router.post("/{payment_id}/release", response_model=PaymentOut)
 def release_payment(
     payment_id: str,
-    current_user: User = Depends(deps.get_current_user),
+    current_user: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
 ):
+    # Solo admin: los pagos se confirman por el webhook de Mercado Pago.
     payment = _get_payment_or_404(db, payment_id)
     booking = get_booking_or_404(db, str(payment.booking_id))
-    assert_booking_contractor_owner(db, booking, current_user)
 
     if payment.status != PaymentStatus.retained:
         raise HTTPException(400, "El pago debe estar retenido antes de liberarse")
@@ -474,6 +474,37 @@ def release_payment(
     return payment
 
 
+PAYABLE_STATUSES = {
+    "advance": (BookingStatus.contract_pending, BookingStatus.contract_signed, BookingStatus.payment_pending),
+    "full": (BookingStatus.contract_pending, BookingStatus.contract_signed, BookingStatus.payment_pending),
+    "balance": (BookingStatus.payment_retained, BookingStatus.balance_pending),
+}
+
+
+def _server_amount(db: Session, booking: Booking, payment_type: str, client_amount) -> float:
+    """Calcula el monto en el servidor. El monto del cliente solo se usa para
+    detectar que la pantalla quedó desactualizada, nunca para cobrar."""
+    allowed = PAYABLE_STATUSES.get(payment_type)
+    if allowed is None:
+        raise HTTPException(400, "Tipo de pago no soportado")
+    if booking.status not in allowed:
+        raise HTTPException(400, "La reserva no está en un estado que permita este pago")
+    try:
+        expected = mercadopago_service.expected_payment_amount(db, booking, payment_type)
+    except ValueError as exc:
+        raise HTTPException(400, detail=str(exc)) from exc
+    if expected <= 0:
+        detail = (
+            "No hay saldo pendiente por pagar para esta reserva"
+            if payment_type == "balance"
+            else "El monto a pagar debe ser mayor a cero"
+        )
+        raise HTTPException(400, detail)
+    if client_amount and abs(Decimal(str(client_amount)) - expected) > mercadopago_service.AMOUNT_TOLERANCE:
+        raise HTTPException(409, "El monto de la reserva cambió. Recarga la página e inténtalo de nuevo.")
+    return float(expected)
+
+
 @router.get("/mercadopago/public-key")
 def get_mercadopago_public_key():
     return {
@@ -496,7 +527,7 @@ def create_mercadopago_preference(
     assert_booking_contractor_owner(db, booking, current_user)
 
     # Si se envía firma del contrato durante la confirmación inicial
-    if payload.signature_image_url:
+    if payload.signature_image_url and booking.status == BookingStatus.contract_pending:
         contract = db.query(Contract).filter(Contract.booking_id == booking.id).first()
         if contract:
             now = datetime.utcnow()
@@ -519,30 +550,7 @@ def create_mercadopago_preference(
 
             db.commit()
 
-    # Cálculo del monto según el tipo de pago
-    if payload.payment_type == "advance":
-        if booking.advance_amount is not None:
-            base_amount = booking.advance_amount
-        else:
-            base_amount = booking.price_agreed or Decimal("0")
-        total_amount = float(base_amount)
-    elif payload.payment_type == "full":
-        base_amount = booking.price_agreed or Decimal("0")
-        fee_amount = booking.platform_fee_amount or Decimal("0")
-        total_amount = float(base_amount + fee_amount)
-    elif payload.payment_type == "balance":
-        due = remaining_balance(db, booking)
-        if due <= 0:
-            raise HTTPException(400, "No hay saldo pendiente por pagar para esta reserva")
-        total_amount = float(due)
-    else:
-        raise HTTPException(400, "Tipo de pago no soportado")
-
-    if payload.amount and payload.amount > 0:
-        total_amount = float(payload.amount)
-
-    if total_amount <= 0:
-        raise HTTPException(400, "El monto a pagar debe ser mayor a cero")
+    total_amount = _server_amount(db, booking, payload.payment_type, payload.amount)
 
     try:
         pref = mercadopago_service.create_preference(
@@ -572,7 +580,7 @@ def process_mercadopago_direct_payment(
     assert_booking_contractor_owner(db, booking, current_user)
 
     # Si se envía firma del contrato durante la confirmación inicial
-    if payload.signature_image_url:
+    if payload.signature_image_url and booking.status == BookingStatus.contract_pending:
         contract = db.query(Contract).filter(Contract.booking_id == booking.id).first()
         if contract:
             now = datetime.utcnow()
@@ -595,31 +603,7 @@ def process_mercadopago_direct_payment(
 
             db.commit()
 
-    # Cálculo del monto según el tipo de pago
-    if payload.payment_type == "advance":
-        if booking.advance_amount is not None:
-            base_amount = booking.advance_amount
-        else:
-            base_amount = booking.price_agreed or Decimal("0")
-        total_amount = float(base_amount)
-    elif payload.payment_type == "full":
-        base_amount = booking.price_agreed or Decimal("0")
-        fee_amount = booking.platform_fee_amount or Decimal("0")
-        total_amount = float(base_amount + fee_amount)
-    elif payload.payment_type == "balance":
-        due = remaining_balance(db, booking)
-        if due <= 0:
-            raise HTTPException(400, "No hay saldo pendiente por pagar para esta reserva")
-        total_amount = float(due)
-    else:
-        raise HTTPException(400, "Tipo de pago no soportado")
-
-    # Si el frontend envió el monto exacto autorizado en el brick o Yape, lo respetamos
-    if payload.amount and payload.amount > 0:
-        total_amount = float(payload.amount)
-
-    if total_amount <= 0:
-        raise HTTPException(400, "El monto a pagar debe ser mayor a cero")
+    total_amount = _server_amount(db, booking, payload.payment_type, payload.amount)
 
     payment_data = payload.model_dump()
     payment_data["amount"] = total_amount

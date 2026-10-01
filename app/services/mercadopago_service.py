@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.booking import Booking, BookingStatus
+from app.models.contractor_profile import ContractorProfile
 from app.models.payment import Payment, PaymentStatus
 from app.models.user import User
 from app.models.musician_profile import MusicianProfile
@@ -196,7 +197,11 @@ def verify_webhook_signature(
 ) -> bool:
     secret = settings.MERCADO_PAGO_WEBHOOK_SECRET.strip()
     if not secret:
-        return True
+        # Sin secreto solo se acepta en sandbox; en producción el webhook se rechaza.
+        if settings.MERCADO_PAGO_SANDBOX:
+            return True
+        logger.error("MERCADO_PAGO_WEBHOOK_SECRET no configurado: webhook rechazado")
+        return False
 
     if not x_signature or not data_id:
         return False
@@ -213,6 +218,24 @@ def verify_webhook_signature(
         return hmac.compare_digest(computed, v1)
     except Exception:
         return False
+
+
+AMOUNT_TOLERANCE = Decimal("0.01")
+
+
+def expected_payment_amount(db: Session, booking: Booking, payment_type: str) -> Decimal:
+    """Monto que la reserva debe pagar según el tipo. Única fuente de verdad:
+    nunca se usa el monto que envía el cliente."""
+    if payment_type in ("advance", "full"):
+        # Cobro único del 100 %: precio + comisión de plataforma + costo de pasarela.
+        from app.services.platform_payment import contractor_payable_total
+
+        return contractor_payable_total(booking) or Decimal("0")
+    if payment_type == "balance":
+        from app.services.booking_lifecycle import remaining_balance
+
+        return Decimal(str(remaining_balance(db, booking)))
+    raise ValueError("Tipo de pago no soportado")
 
 
 def process_approved_mercadopago_payment(db: Session, payment_data: dict[str, Any]) -> Payment | None:
@@ -237,9 +260,28 @@ def process_approved_mercadopago_payment(db: Session, payment_data: dict[str, An
         logger.warning("Reserva no encontrada para pago %s: %s", payment_id, booking_id_str)
         return None
 
+    transaction_amount = payment_data.get("transaction_amount")
+    amount = Decimal(str(transaction_amount)) if transaction_amount is not None else Decimal("0")
+    payment_type = metadata.get("payment_type") or "advance"
     existing = db.query(Payment).filter(Payment.gateway_payment_id == payment_id).first()
+
+    is_approved = (status == "approved")
+    if is_approved and not (existing and existing.status == PaymentStatus.retained):
+        currency = payment_data.get("currency_id") or "PEN"
+        try:
+            expected = expected_payment_amount(db, booking, payment_type)
+        except ValueError:
+            expected = None
+        if currency != "PEN" or expected is None or amount + AMOUNT_TOLERANCE < expected:
+            # Se registra el pago para conciliación, pero no confirma la reserva.
+            logger.error(
+                "Pago MP %s aprobado con monto/moneda inválidos (%s %s, esperado %s) para reserva %s",
+                payment_id, amount, currency, expected, booking.id,
+            )
+            is_approved = False
+
     if existing:
-        if status == "approved" and existing.status != PaymentStatus.retained:
+        if is_approved and existing.status != PaymentStatus.retained:
             existing.status = PaymentStatus.retained
             existing.retained_at = existing.retained_at or datetime.utcnow()
             existing.gateway_metadata = payment_data
@@ -249,11 +291,6 @@ def process_approved_mercadopago_payment(db: Session, payment_data: dict[str, An
             db.refresh(existing)
         return existing
 
-    transaction_amount = payment_data.get("transaction_amount")
-    amount = Decimal(str(transaction_amount)) if transaction_amount is not None else Decimal("0")
-    payment_type = metadata.get("payment_type") or "advance"
-
-    is_approved = (status == "approved")
     new_payment_status = PaymentStatus.retained if is_approved else PaymentStatus.initiated
 
     active_payment = (
@@ -538,4 +575,4 @@ def issue_refund(payment_id: str, amount: float) -> dict[str, Any]:
         raise ValueError(f"Error HTTP: {exc}")
     except Exception as exc:
         logger.error("Excepción en reembolso: %s", exc)
-        raise ValueError(f"Excepción al reembolsar: {exc}")
+        raise ValueError(f"Excepción al reembolsar: {exc}")

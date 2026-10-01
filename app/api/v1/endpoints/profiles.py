@@ -607,9 +607,9 @@ def onboard_musician_profile(
 
     profile = _get_musician_profile_or_404(db, current_user)
     
-    if profile.status == ProfileStatus.published:
+    if profile.status in (ProfileStatus.published, ProfileStatus.pending_review):
         return profile
-        
+
     missing = []
     if not profile.stage_name:
         missing.append("stage_name")
@@ -621,13 +621,20 @@ def onboard_musician_profile(
     if missing:
         raise HTTPException(
             status_code=400,
-            detail=f"Completa tu perfil antes de publicar. Faltan: {', '.join(missing)}",
+            detail=f"Completa tu perfil antes de enviarlo. Faltan: {', '.join(missing)}",
         )
-        
-    profile.status = ProfileStatus.published
-    profile.published_at = datetime.utcnow()
+
+    # El perfil solo se publica cuando el admin lo aprueba.
+    profile.status = ProfileStatus.pending_review
+    profile.submitted_at = datetime.utcnow()
     profile.rejection_reason = None
-    
+    notify_profile_submitted(
+        db,
+        user=current_user,
+        profile_role="musician",
+        profile_id=str(profile.id),
+        display_name=profile.stage_name or current_user.fullname,
+    )
     db.commit()
     db.refresh(profile)
     return profile

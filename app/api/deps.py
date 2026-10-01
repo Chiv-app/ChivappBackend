@@ -3,7 +3,7 @@ from uuid import UUID
 from fastapi import Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 
-from app.core.jwt import decode_access_token
+from app.core.jwt import decode_session_token
 from app.db.session import SessionLocal
 from app.models.user import User, UserRole
 
@@ -28,7 +28,7 @@ def get_current_user(
             detail="No autenticado",
         )
 
-    payload = decode_access_token(token)
+    payload = decode_session_token(token)
     if not payload:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -76,7 +76,7 @@ def get_current_user_optional(
     if not token:
         return None
 
-    payload = decode_access_token(token)
+    payload = decode_session_token(token)
     if not payload:
         return None
 

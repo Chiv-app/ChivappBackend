@@ -47,3 +47,12 @@ def decode_access_token(token: str) -> dict | None:
         )
     except JWTError:
         return None
+
+
+def decode_session_token(token: str) -> dict | None:
+    """Decodifica un token de sesión. Rechaza magic links y tokens OAuth
+    pendientes, que comparten secreto pero no deben servir como cookie."""
+    payload = decode_access_token(token)
+    if not payload or payload.get("magic") or payload.get("typ"):
+        return None
+    return payload

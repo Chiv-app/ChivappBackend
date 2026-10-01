@@ -56,6 +56,7 @@ from app.services.ensemble_members import (
     get_leader_musician_or_403,
     get_member_for_leader,
     issue_password_setup_token,
+    is_leader_managed_account,
     new_token,
     password_setup_url,
     serialize_booking_invite,
@@ -673,7 +674,14 @@ def respond_booking_invite(
     member = invite.ensemble_member
     member_user = db.get(User, member.member_user_id) if member and member.member_user_id else None
     
-    if payload.action == "accept" and member_user and not member_user.password_hash:
+    # Solo se puede fijar contraseña desde la convocatoria en cuentas sombra
+    # creadas por el líder; nunca en cuentas reales (p. ej. registradas con Google).
+    if (
+        payload.action == "accept"
+        and member_user
+        and not member_user.password_hash
+        and is_leader_managed_account(member_user)
+    ):
         if not payload.password:
             raise HTTPException(400, "Debes crear una contraseña para aceptar la convocatoria.")
         member_user.password_hash = hash_password(payload.password)

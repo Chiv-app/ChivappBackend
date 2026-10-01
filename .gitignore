@@ -1,4 +1,4 @@
-﻿# OS & Editor
+# OS & Editor
 .DS_Store
 Thumbs.db
 .idea/
@@ -40,8 +40,9 @@ google_credentials.json
 
 
 
-check_*.py
-patch_*.py
-fix_*.py
-test_*.py
+# Scripts sueltos en la raíz (con / para no ignorar tests/ ni app/)
+/check_*.py
+/patch_*.py
+/fix_*.py
+/test_*.py
 output.txt

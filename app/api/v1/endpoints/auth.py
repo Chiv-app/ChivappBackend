@@ -14,6 +14,7 @@ from app.core.jwt import (
     create_access_token,
     create_oauth_pending_token,
     decode_access_token,
+    decode_session_token,
 )
 from app.models.contractor_profile import ContractorProfile
 from app.models.ensemble_member import EnsembleMember, EnsembleMemberStatus
@@ -23,7 +24,6 @@ from app.models.profile_status import ProfileStatus
 from app.models.user import User, UserRole
 from app.schemas.auth import (
     GuestRegisterRequest,
-    MagicLinkSendRequest,
     ChangePasswordRequest,
     GoogleAuthResponse,
     GoogleCredentialRequest,
@@ -247,7 +247,7 @@ def _optional_user(request: Request, db: Session) -> User | None:
     token = request.cookies.get("access_token")
     if not token:
         return None
-    payload = decode_access_token(token)
+    payload = decode_session_token(token)
     if not payload or not payload.get("sub"):
         return None
     try:
@@ -978,18 +978,12 @@ def guest_register(
     # Check if user already exists
     existing_user = db.query(User).filter(User.email == email).first()
     if existing_user:
-        # If user exists but has no password, they are already a guest, we can just log them in
-        # If they have a password, they should use normal login or Google
-        if existing_user.password_hash is not None:
-            raise HTTPException(
-                status_code=400, 
-                detail="Este correo ya tiene una cuenta registrada. Por favor, inicia sesión con tu contraseña o con Google."
-            )
-        
-        # They are a guest, issue token
-        access_token = create_access_token(subject=str(existing_user.id), role=existing_user.role.value)
-        _set_auth_cookie(response, access_token)
-        return existing_user
+        # Nunca iniciar sesión solo con conocer el email: la cuenta puede ser de
+        # otra persona (Google, integrante invitado, invitado previo).
+        raise HTTPException(
+            status_code=409,
+            detail="Este correo ya tiene una cuenta. Inicia sesión para continuar con tu reserva.",
+        )
 
     # Create new guest user (shadow account)
     phone = assert_phone_unique(db, payload.phone) if payload.phone else None
@@ -999,7 +993,8 @@ def guest_register(
         email=email,
         password_hash=None, # NO PASSWORD = Shadow Account
         fullname=cleaned_fullname,
-        role=UserRole(payload.role),
+        # El checkout sin cuenta es solo para contratistas.
+        role=UserRole.contractor,
         phone=phone,
         is_verified=False,
         email_verified_at=None,
@@ -1007,11 +1002,7 @@ def guest_register(
     )
     db.add(new_user)
     db.flush()
-
-    if payload.role == UserRole.contractor.value:
-        profile = ContractorProfile(user_id=new_user.id)
-        db.add(profile)
-        
+    db.add(ContractorProfile(user_id=new_user.id))
     db.commit()
     db.refresh(new_user)
 
@@ -1020,31 +1011,15 @@ def guest_register(
 
     return new_user
 
-@router.post("/magic-link/send")
-@limiter.limit("5/minute")
-def send_magic_link(
-    payload: MagicLinkSendRequest,
-    request: Request,
-    db: Session = Depends(deps.get_db)
-):
-    # In a real app, this would generate a short-lived JWT with the email and redirectTo,
-    # save it or just sign it, and send an email using background tasks.
-    # For now, we will simulate the creation and return the token.
-    user = db.query(User).filter(User.email == payload.email.lower().strip()).first()
-    if not user:
-        raise HTTPException(404, "Usuario no encontrado")
-        
-    from app.core.jwt import create_magic_token
-    magic_token = create_magic_token(
-        subject=str(user.id),
-        redirect_to=payload.redirect_to or "/"
-    )
-    
-    # TODO: Send email via Brevo with link: https://chiv.app/api/v1/auth/magic-link/login?token=...
-    
-    return {"message": "Enlace mágico enviado.", "debug_token": magic_token}
+def _safe_redirect_path(path: str | None) -> str:
+    """Solo rutas internas relativas (evita open redirect tipo '@evil.com' o '//evil.com')."""
+    if not path or not path.startswith("/") or path.startswith("//") or "\\" in path:
+        return "/"
+    return path
 
 
+# Los magic links solo se generan dentro de los emails de notificación
+# (booking_notifications). No existe endpoint público para pedirlos.
 @router.get("/magic-link/login")
 def magic_link_login(
     token: str,
@@ -1060,14 +1035,18 @@ def magic_link_login(
     if not user:
         return RedirectResponse(url=f"{settings.FRONTEND_URL}/login?error=user_not_found")
         
-    if not user.is_verified:
-        user.is_verified = True
+    if getattr(user, "is_active", True) is False:
+        return RedirectResponse(url=f"{settings.FRONTEND_URL}/login?error=invalid_magic_link")
+
+    # Abrir el enlace prueba que el email es suyo, pero NO aprueba la cuenta:
+    # is_verified es la aprobación del admin.
+    if user.email_verified_at is None:
         user.email_verified_at = datetime.utcnow()
         db.commit()
-        
+
     access_token = create_access_token(subject=str(user.id), role=user.role.value)
-    
-    redirect_to = payload.get("redirect_to", "/")
+
+    redirect_to = _safe_redirect_path(payload.get("redirect_to"))
     # Important: Create RedirectResponse first, then set the cookie on it
     # Otherwise the cookie is set on the injected response but dropped by the returned redirect
     redirect_response = RedirectResponse(url=f"{settings.FRONTEND_URL}{redirect_to}")

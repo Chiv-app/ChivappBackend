@@ -20,3 +20,20 @@ tests/
 .env.*
 !.env.example
 !.env.production.example
+
+# Secretos: en producción usar GOOGLE_CREDENTIALS_JSON (Secret Manager)
+google_credentials.json
+*.pem
+*.key
+
+# Scripts y artefactos locales que no deben ir en la imagen
+/check*.py
+/fix_*.py
+/patch*.py
+/test_*.py
+/run_templates.py
+/generate_preview.py
+*.log
+output.txt
+preview_emails.html
+.github/

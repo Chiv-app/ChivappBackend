@@ -40,15 +40,18 @@ def test_verify_webhook_signature_invalid():
         assert result is False
 
 
-def test_verify_webhook_signature_allows_empty_secret():
-    # If no secret is configured, verification passes gracefully
-    with patch.object(settings, "MERCADO_PAGO_WEBHOOK_SECRET", ""):
-        result = verify_webhook_signature(
-            x_signature=None,
-            x_request_id=None,
-            data_id="123456",
-        )
-        assert result is True
+def test_verify_webhook_signature_empty_secret_allowed_only_in_sandbox():
+    with patch.object(settings, "MERCADO_PAGO_WEBHOOK_SECRET", ""), patch.object(
+        settings, "MERCADO_PAGO_SANDBOX", True
+    ):
+        assert verify_webhook_signature(x_signature=None, x_request_id=None, data_id="123456") is True
+
+
+def test_verify_webhook_signature_empty_secret_rejected_in_production():
+    with patch.object(settings, "MERCADO_PAGO_WEBHOOK_SECRET", ""), patch.object(
+        settings, "MERCADO_PAGO_SANDBOX", False
+    ):
+        assert verify_webhook_signature(x_signature=None, x_request_id=None, data_id="123456") is False
 
 
 def test_get_webhook_url_uses_configured_base():
