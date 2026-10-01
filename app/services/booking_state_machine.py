@@ -130,7 +130,7 @@ ACTION_RULES: Dict[BookingAction, TransitionRule] = {
         ],
         allowed_roles=[UserRole.admin, UserRole.contractor],
         error_message="La reserva no esta en curso ni confirmada como para finalizarla"
-    )
+    ),
     BookingAction.CHAT_MESSAGE: TransitionRule(
         from_statuses=[
             BookingStatus.requested,
