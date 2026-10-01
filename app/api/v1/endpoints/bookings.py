@@ -41,7 +41,7 @@ from app.schemas.booking import (
 )
 from app.services.cancellation_policy import (
     CANCELLABLE_STATUSES,
-    execute_cancellation_refund,
+    REFUND_PENDING_APPROVAL,
     quote_cancellation,
     record_cancellation,
 )
@@ -53,6 +53,7 @@ from app.services.payment_evidence import (
     normalize_evidence_urls,
 )
 from app.services.booking_notifications import (
+    notify_admins,
     notify_admins_payment_submitted,
     notify_booking_cancelled,
     notify_booking_confirmed,
@@ -713,9 +714,19 @@ def cancel_booking(
             by_role=cancelled_by,
         )
 
+    if booking.cancellation_refund_status == REFUND_PENDING_APPROVAL:
+        notify_admins(
+            db,
+            type="admin_refund_approval_requested",
+            title="Reembolso por aprobar",
+            message=(
+                f"Se canceló una reserva con un reembolso de S/ {booking.cancellation_refund_amount:.2f}. "
+                "Revísalo y apruébalo en Reservas."
+            ),
+            meta={"booking_id": str(booking.id)},
+        )
+
     db.commit()
-    if booking.cancellation_refund_status == "processing":
-        execute_cancellation_refund(db, booking)
     db.refresh(booking)
     return booking
 

@@ -7,6 +7,7 @@ from decimal import Decimal
 from typing import Any
 
 import httpx
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -126,9 +127,11 @@ def create_preference(
 
     try:
         with httpx.Client(timeout=15.0) as client:
+            headers = _mp_headers()
+            headers["X-Idempotency-Key"] = f"pref-{booking.id}-{payment_type}-{round(float(amount), 2)}"
             resp = client.post(
                 f"{MERCADO_PAGO_API_BASE}/checkout/preferences",
-                headers=_mp_headers(),
+                headers=headers,
                 json=payload,
             )
             resp.raise_for_status()
@@ -255,7 +258,9 @@ def process_approved_mercadopago_payment(db: Session, payment_data: dict[str, An
         logger.warning("Booking ID inválido en pago %s: %s", payment_id, booking_id_str)
         return None
 
-    booking = db.get(Booking, booking_uuid)
+    # Bloquear la reserva: el webhook y /process pueden llegar a la vez para el
+    # mismo pago; sin el lock se registraría dos veces.
+    booking = db.get(Booking, booking_uuid, with_for_update=True)
     if not booking:
         logger.warning("Reserva no encontrada para pago %s: %s", payment_id, booking_id_str)
         return None
@@ -381,7 +386,13 @@ def process_approved_mercadopago_payment(db: Session, payment_data: dict[str, An
                 if musician_user:
                     notify_balance_submitted(db, musician_user, str(booking.id))
 
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # Otro proceso registró el mismo gateway_payment_id (índice único).
+        db.rollback()
+        logger.info("Pago MP %s ya registrado por otro proceso", payment_id)
+        return db.query(Payment).filter(Payment.gateway_payment_id == payment_id).first()
     db.refresh(payment)
     return payment
 
@@ -458,7 +469,9 @@ def process_direct_payment(
         mp_body["issuer_id"] = issuer_id
 
     headers = _mp_headers()
-    headers["X-Idempotency-Key"] = str(uuid.uuid4())
+    # El token de tarjeta/Yape es de un solo uso: si la petición se reintenta
+    # (timeout, doble clic), la misma clave evita un segundo cobro.
+    headers["X-Idempotency-Key"] = "pay-" + hashlib.sha256(f"{booking.id}:{token}".encode()).hexdigest()[:48]
     device_id = payment_payload.get("device_id")
     if device_id:
         headers["X-meli-session-id"] = device_id

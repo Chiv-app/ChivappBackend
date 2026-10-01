@@ -108,6 +108,11 @@ class AdminBookingCancel(BaseModel):
     refund_percent: int = Field(default=100, ge=0, le=100)
 
 
+class AdminApproveRefund(BaseModel):
+    # Monto a reembolsar; None = el calculado por la política, 0 = rechazar.
+    amount: Decimal | None = Field(default=None, ge=0)
+
+
 class AdminPaymentOut(BaseModel):
     id: UUID
     booking_id: UUID

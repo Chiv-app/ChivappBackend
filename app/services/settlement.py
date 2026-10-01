@@ -126,7 +126,11 @@ def settlement_state_for_booking(
     released: float,
 ) -> str:
     if booking.status == BookingStatus.cancelled:
-        # Cancelación tardía: lo no reembolsado se liquida al músico.
+        from app.services.cancellation_policy import REFUND_UNRESOLVED
+
+        # Primero se resuelve el reembolso; luego lo no reembolsado se liquida al músico.
+        if booking.cancellation_refund_status in REFUND_UNRESOLVED:
+            return "awaiting_admin"
         if retained > 0:
             return "payable"
         return "settled" if released > 0 else "none"

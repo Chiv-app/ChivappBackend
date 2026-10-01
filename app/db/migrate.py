@@ -72,6 +72,9 @@ MIGRATION_STATEMENTS = [
     "ALTER TABLE booking ADD COLUMN IF NOT EXISTS cancellation_refund_status VARCHAR",
     "ALTER TABLE booking ADD COLUMN IF NOT EXISTS cancellation_refund_error VARCHAR",
     "ALTER TABLE booking ADD COLUMN IF NOT EXISTS cancellation_refunded_at TIMESTAMP",
+    # Falla (y se registra) si ya hay pagos duplicados: limpiarlos y reiniciar.
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_payment_gateway_payment_id ON payment (gateway_payment_id) "
+    "WHERE gateway_payment_id IS NOT NULL AND payment_type IS DISTINCT FROM 'refund'",
     "ALTER TABLE booking ADD COLUMN IF NOT EXISTS requested_repertoire JSONB DEFAULT '[]'::jsonb",
     "ALTER TABLE contract ADD COLUMN IF NOT EXISTS terms_accepted BOOLEAN DEFAULT FALSE",
     "ALTER TABLE contract ADD COLUMN IF NOT EXISTS terms_accepted_at TIMESTAMP",

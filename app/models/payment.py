@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from sqlalchemy import (
-    Column, String, Numeric, DateTime, Enum, ForeignKey
+    Column, String, Numeric, DateTime, Enum, ForeignKey, Index, text
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
@@ -61,3 +61,14 @@ class Payment(Base):
                         onupdate=datetime.utcnow)
 
     booking = relationship("Booking")
+
+    __table_args__ = (
+        # Un pago de la pasarela se registra una sola vez. Las filas de reembolso
+        # repiten el id del pago original, por eso se excluyen.
+        Index(
+            "uq_payment_gateway_payment_id",
+            "gateway_payment_id",
+            unique=True,
+            postgresql_where=text("gateway_payment_id IS NOT NULL AND payment_type IS DISTINCT FROM 'refund'"),
+        ),
+    )

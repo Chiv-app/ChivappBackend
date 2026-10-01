@@ -9,6 +9,7 @@ Reglas (configurables en settings):
 - Cancela el músico: 100 % de lo pagado (incluido el costo de pasarela).
 - Cancela el admin: el % que indique (por defecto 100 %) sobre lo pagado.
 
+Ningún reembolso se ejecuta sin aprobación del admin (pending_approval -> processing).
 Lo que no se reembolsa queda retenido y el admin lo liquida al músico.
 """
 
@@ -46,10 +47,15 @@ CANCELLABLE_STATUSES = {
     BookingStatus.payment_pending,
 } | RETAINED_STATUSES
 
+REFUND_PENDING_APPROVAL = "pending_approval"  # calculado, espera aprobación del admin
 REFUND_PROCESSING = "processing"
 REFUND_COMPLETED = "completed"
 REFUND_FAILED = "failed"
+REFUND_REJECTED = "rejected"  # el admin decidió no reembolsar
 REFUND_NONE = "none"
+
+# Mientras el reembolso no esté resuelto, no se liquida nada al músico.
+REFUND_UNRESOLVED = {REFUND_PENDING_APPROVAL, REFUND_PROCESSING, REFUND_FAILED}
 
 
 @dataclass
@@ -148,14 +154,47 @@ def _already_refunded(db: Session, booking: Booking) -> Decimal:
     return sum((Decimal(str(p.amount)) for p in rows), Decimal("0"))
 
 
-def record_cancellation(booking: Booking, quote: CancellationQuote) -> None:
+def record_cancellation(booking: Booking, quote: CancellationQuote, *, approved: bool = False) -> None:
+    """Cancela la reserva y deja el reembolso calculado.
+
+    Ningún reembolso sale sin aprobación del admin: si cancela un participante,
+    queda en `pending_approval`. Si cancela el admin (`approved=True`), su
+    decisión ya es la aprobación y queda listo para ejecutarse.
+    """
     booking.cancelled_by = quote.cancelled_by
     booking.cancelled_at = datetime.utcnow()
     booking.status = BookingStatus.cancelled
     booking.cancellation_refund_percent = Decimal(quote.refund_percent)
     booking.cancellation_refund_amount = quote.refund_amount
-    booking.cancellation_refund_status = REFUND_PROCESSING if quote.refund_amount > 0 else REFUND_NONE
+    if quote.refund_amount <= 0:
+        booking.cancellation_refund_status = REFUND_NONE
+    else:
+        booking.cancellation_refund_status = REFUND_PROCESSING if approved else REFUND_PENDING_APPROVAL
     booking.cancellation_refund_error = None
+
+
+def approve_cancellation_refund(db: Session, booking: Booking, amount: Decimal | None) -> None:
+    """El admin aprueba el reembolso (opcionalmente ajustando el monto) y se ejecuta.
+
+    `amount=0` rechaza el reembolso: todo lo retenido queda para liquidar al músico.
+    """
+    paid = sum((Decimal(str(p.amount)) for p in _retained_payments(db, booking)), Decimal("0"))
+    if amount is not None:
+        if amount < 0 or amount > paid:
+            raise ValueError(f"El monto debe estar entre 0 y lo retenido (S/ {paid:.2f}).")
+        booking.cancellation_refund_amount = amount.quantize(CENT, rounding=ROUND_HALF_UP)
+        booking.cancellation_refund_percent = (
+            (amount / paid * 100).quantize(CENT, rounding=ROUND_HALF_UP) if paid > 0 else Decimal("0")
+        )
+
+    if Decimal(str(booking.cancellation_refund_amount or 0)) <= 0:
+        booking.cancellation_refund_status = REFUND_REJECTED
+        db.commit()
+        return
+
+    booking.cancellation_refund_status = REFUND_PROCESSING
+    db.commit()
+    execute_cancellation_refund(db, booking)
 
 
 def execute_cancellation_refund(db: Session, booking: Booking) -> None:

@@ -15,6 +15,7 @@ from app.models.support_ticket import SupportTicket, SupportTicketStatus
 from app.models.user import User, UserRole
 from app.schemas.admin import (
     AdminActivityItem,
+    AdminApproveRefund,
     AdminBookingCancel,
     AdminBookingDetailOut,
     AdminBookingOut,
@@ -54,6 +55,7 @@ from app.services.booking_notifications import (
     notify_profile_rejected,
 )
 from app.services.cancellation_policy import (
+    approve_cancellation_refund,
     execute_cancellation_refund,
     quote_cancellation,
     record_cancellation,
@@ -815,12 +817,33 @@ def cancel_booking_admin(
         raise HTTPException(400, "Esta reserva ya está cerrada")
 
     quote = quote_cancellation(db, booking, "admin", admin_refund_percent=payload.refund_percent)
-    record_cancellation(booking, quote)
+    record_cancellation(booking, quote, approved=True)
     if payload.reason:
         booking.rejection_reason = payload.reason
     db.commit()
     if booking.cancellation_refund_status == "processing":
         execute_cancellation_refund(db, booking)
+    db.refresh(booking)
+    return _booking_admin_out(booking)
+
+
+@router.post("/bookings/{booking_id}/approve-refund", response_model=AdminBookingOut)
+def approve_refund(
+    booking_id: str,
+    payload: AdminApproveRefund,
+    _: User = Depends(deps.get_current_admin),
+    db: Session = Depends(deps.get_db),
+):
+    """Aprueba (y ejecuta en Mercado Pago) el reembolso de una cancelación.
+    `amount` permite ajustar el monto; 0 rechaza el reembolso."""
+    booking = _load_booking_with_parties(db, booking_id)
+    db.refresh(booking, with_for_update=True)
+    if booking.status != BookingStatus.cancelled or booking.cancellation_refund_status != "pending_approval":
+        raise HTTPException(400, "Esta reserva no tiene un reembolso pendiente de aprobación")
+    try:
+        approve_cancellation_refund(db, booking, payload.amount)
+    except ValueError as exc:
+        raise HTTPException(400, detail=str(exc)) from exc
     db.refresh(booking)
     return _booking_admin_out(booking)
 

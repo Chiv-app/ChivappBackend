@@ -91,7 +91,7 @@ def test_partial_refund_splits_payment_and_keeps_rest_for_musician(db_session):
     booking = _booking(db_session, days_before=10)
     paid = contractor_payable_total(booking)
     quote = quote_cancellation(db_session, booking, "contractor")
-    record_cancellation(booking, quote)
+    record_cancellation(booking, quote, approved=True)
     db_session.commit()
 
     with patch("app.services.mercadopago_service.issue_refund", return_value={"id": 1}) as refund:
@@ -109,7 +109,7 @@ def test_partial_refund_splits_payment_and_keeps_rest_for_musician(db_session):
 
 def test_failed_refund_is_retryable_without_double_refund(db_session):
     booking = _booking(db_session, days_before=30)
-    record_cancellation(booking, quote_cancellation(db_session, booking, "contractor"))
+    record_cancellation(booking, quote_cancellation(db_session, booking, "contractor"), approved=True)
     db_session.commit()
 
     with patch("app.services.mercadopago_service.issue_refund", side_effect=ValueError("MP caído")):
@@ -140,13 +140,89 @@ def test_cancel_endpoint_applies_policy_and_refunds(client, db_session):
     assert quote["can_cancel"] is True
     assert quote["refund_percent"] == 50
 
-    with patch("app.services.mercadopago_service.issue_refund", return_value={"id": 9}) as refund:
+    with patch("app.services.mercadopago_service.issue_refund") as refund:
         res = client.post(f"/api/v1/bookings/{booking.id}/cancel", json={"rejection_reason": "Cambio de planes"})
 
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["status"] == "cancelled"
     assert body["cancelled_by"] == "contractor"
-    assert body["cancellation_refund_status"] == "completed"
+    # Ningún reembolso sale sin aprobación del admin.
+    assert body["cancellation_refund_status"] == "pending_approval"
     assert Decimal(str(body["cancellation_refund_amount"])) == Decimal(str(quote["refund_amount"]))
+    refund.assert_not_called()
+
+    _login_admin(client, db_session)
+    with patch("app.services.mercadopago_service.issue_refund", return_value={"id": 9}) as refund:
+        res = client.post(f"/api/v1/admin/bookings/{booking.id}/approve-refund", json={})
+    assert res.status_code == 200, res.text
+    assert res.json()["cancellation_refund_status"] == "completed"
     refund.assert_called_once()
+
+
+def _login_admin(client, db_session):
+    from app.core.jwt import create_access_token
+
+    admin = User(email="admin@test.com", fullname="Admin", role=UserRole.admin)
+    db_session.add(admin)
+    db_session.commit()
+    client.cookies.clear()
+    client.cookies.set("access_token", create_access_token(subject=str(admin.id), role="admin"))
+
+
+def test_admin_can_adjust_or_reject_refund(client, db_session):
+    booking = _booking(db_session, days_before=30)
+    record_cancellation(booking, quote_cancellation(db_session, booking, "contractor"))
+    db_session.commit()
+    assert booking.cancellation_refund_status == "pending_approval"
+
+    _login_admin(client, db_session)
+    paid = contractor_payable_total(booking)
+    res = client.post(f"/api/v1/admin/bookings/{booking.id}/approve-refund", json={"amount": str(paid + 1)})
+    assert res.status_code == 400
+
+    with patch("app.services.mercadopago_service.issue_refund") as refund:
+        res = client.post(f"/api/v1/admin/bookings/{booking.id}/approve-refund", json={"amount": "0"})
+    assert res.status_code == 200, res.text
+    assert res.json()["cancellation_refund_status"] == "rejected"
+    refund.assert_not_called()
+
+
+def test_duplicate_webhook_registers_payment_once_and_checks_amount(db_session):
+    from app.services.mercadopago_service import process_approved_mercadopago_payment
+
+    booking = _booking(db_session, days_before=30, status=BookingStatus.contract_signed, pay=False)
+    total = contractor_payable_total(booking)
+    data = {
+        "id": 555,
+        "status": "approved",
+        "transaction_amount": float(total),
+        "currency_id": "PEN",
+        "metadata": {"booking_id": str(booking.id), "payment_type": "full"},
+    }
+    process_approved_mercadopago_payment(db_session, data)
+    process_approved_mercadopago_payment(db_session, data)
+
+    rows = db_session.query(Payment).filter(Payment.gateway_payment_id == "555").all()
+    assert len(rows) == 1
+    db_session.refresh(booking)
+    assert booking.status == BookingStatus.payment_retained
+
+
+def test_underpaid_webhook_does_not_confirm_booking(db_session):
+    from app.services.mercadopago_service import process_approved_mercadopago_payment
+
+    booking = _booking(db_session, days_before=30, status=BookingStatus.contract_signed, pay=False)
+    process_approved_mercadopago_payment(
+        db_session,
+        {
+            "id": 556,
+            "status": "approved",
+            "transaction_amount": 1.0,
+            "currency_id": "PEN",
+            "metadata": {"booking_id": str(booking.id), "payment_type": "full"},
+        },
+    )
+    db_session.refresh(booking)
+    assert booking.status == BookingStatus.contract_signed
+    assert db_session.query(Payment).filter(Payment.gateway_payment_id == "556").one().status == PaymentStatus.initiated
