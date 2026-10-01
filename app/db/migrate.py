@@ -67,6 +67,17 @@ MIGRATION_STATEMENTS = [
     "ALTER TABLE booking ADD COLUMN IF NOT EXISTS rejection_reason VARCHAR",
     "ALTER TABLE booking ADD COLUMN IF NOT EXISTS cancelled_by VARCHAR",
     "ALTER TABLE booking ADD COLUMN IF NOT EXISTS cancelled_at TIMESTAMP",
+    """
+    CREATE TABLE IF NOT EXISTS uploaded_file (
+        id UUID PRIMARY KEY,
+        filename VARCHAR NOT NULL UNIQUE,
+        owner_user_id UUID NOT NULL REFERENCES "user"(id),
+        content_type VARCHAR NOT NULL,
+        size_bytes INTEGER,
+        created_at TIMESTAMP DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_uploaded_file_owner_user_id ON uploaded_file (owner_user_id)",
     "ALTER TABLE booking ADD COLUMN IF NOT EXISTS cancellation_refund_percent NUMERIC",
     "ALTER TABLE booking ADD COLUMN IF NOT EXISTS cancellation_refund_amount NUMERIC",
     "ALTER TABLE booking ADD COLUMN IF NOT EXISTS cancellation_refund_status VARCHAR",

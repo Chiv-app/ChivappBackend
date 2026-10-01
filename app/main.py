@@ -11,6 +11,7 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from app.api import deps
 from app.api.v1.api import api_router
+from app.api.v1.endpoints import private_files
 from app.core.config import settings
 from app.core.limiter import limiter, rate_limit_exceeded_handler
 from app.core.security import SecurityHeadersMiddleware
@@ -55,6 +56,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.middleware("http")
+async def harden_upload_responses(request, call_next):
+    """Los archivos subidos nunca se interpretan como HTML/JS en nuestro origen."""
+    response = await call_next(request)
+    if request.url.path.startswith("/uploads/"):
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox"
+        )
+    return response
+
+
+# Debe registrarse antes del mount estático de /uploads.
+app.include_router(private_files.router)
 
 ensure_upload_dir()
 app.mount("/uploads", StaticFiles(directory=str(Path(__file__).resolve().parents[1] / "uploads")), name="uploads")

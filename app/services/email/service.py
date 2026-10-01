@@ -77,7 +77,7 @@ def render_email_template(
 ) -> dict[str, str]:
     return {
         "subject": render_template(subject or template.subject, context),
-        "html": render_template(html_body or template.html_body, context),
+        "html": render_template(html_body or template.html_body, context, escape_html=True),
         "text": render_template(text_body or template.text_body, context),
     }
 
@@ -139,7 +139,7 @@ def send_templated_email(
         return log
 
     subject = render_template(template.subject, context)
-    html = render_template(template.html_body, context)
+    html = render_template(template.html_body, context, escape_html=True)
     text = render_template(template.text_body, context)
 
     # Si se pasó recipient_name o está en context (user_name, member_name, musician_name)

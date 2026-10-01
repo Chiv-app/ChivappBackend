@@ -5,12 +5,11 @@ from __future__ import annotations
 from fastapi import HTTPException
 
 from app.models.payment import Payment
-from app.services.uploads import UPLOAD_DIR
+from app.services.uploads import upload_exists
 
 
 def assert_upload_exists(upload_url: str, label: str = "comprobante") -> None:
-    filename = upload_url.rsplit("/", 1)[-1]
-    if not filename or not (UPLOAD_DIR / filename).is_file():
+    if not upload_exists(upload_url):
         raise HTTPException(
             status_code=400,
             detail=f"No se encontró el archivo de {label}. Vuelve a subirlo.",

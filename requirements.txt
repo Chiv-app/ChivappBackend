@@ -11,6 +11,7 @@ python-jose
 python-dotenv
 python-multipart
 xhtml2pdf
+nh3==0.3.7
 httpx
 alembic>=1.13.0
 slowapi>=0.1.9

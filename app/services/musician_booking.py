@@ -21,7 +21,7 @@ from app.models.user import User, UserRole
 from app.schemas.booking import MusicianBookingCreate
 from app.services.booking_contract import create_booking_contract
 from app.services.contract_pdf import contract_html_text_length
-from app.services.uploads import UPLOAD_DIR
+from app.services.uploads import upload_exists
 from app.services.uniqueness import (
     assert_document_number_unique,
     assert_phone_unique,
@@ -30,8 +30,7 @@ from app.services.uniqueness import (
 
 
 def assert_upload_exists(upload_url: str, label: str) -> None:
-    filename = upload_url.rsplit("/", 1)[-1]
-    if not filename or not (UPLOAD_DIR / filename).is_file():
+    if not upload_exists(upload_url):
         raise HTTPException(
             status_code=400,
             detail=f"No se encontró el archivo de {label}. Vuelve a subirlo.",

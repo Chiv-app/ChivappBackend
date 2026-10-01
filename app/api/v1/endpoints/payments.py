@@ -43,6 +43,7 @@ from app.services.payment_evidence import (
     normalize_evidence_urls,
 )
 from app.services import mercadopago_service
+from app.services.uploads import assert_private_upload_owned
 
 logger = logging.getLogger(__name__)
 
@@ -469,6 +470,7 @@ def create_mercadopago_preference(
 
     # Si se envía firma del contrato durante la confirmación inicial
     if payload.signature_image_url and booking.status == BookingStatus.contract_pending:
+        assert_private_upload_owned(db, payload.signature_image_url, current_user.id, "archivo de firma")
         contract = db.query(Contract).filter(Contract.booking_id == booking.id).first()
         if contract:
             now = datetime.utcnow()
@@ -522,6 +524,7 @@ def process_mercadopago_direct_payment(
 
     # Si se envía firma del contrato durante la confirmación inicial
     if payload.signature_image_url and booking.status == BookingStatus.contract_pending:
+        assert_private_upload_owned(db, payload.signature_image_url, current_user.id, "archivo de firma")
         contract = db.query(Contract).filter(Contract.booking_id == booking.id).first()
         if contract:
             now = datetime.utcnow()

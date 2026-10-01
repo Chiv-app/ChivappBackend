@@ -70,6 +70,8 @@ class Settings(BaseSettings):
 
     # Google Cloud Storage
     GCP_BUCKET_NAME: str = ""
+    # Bucket PRIVADO (sin acceso público) para DNI, firmas y comprobantes.
+    GCP_PRIVATE_BUCKET_NAME: str = ""
 
     model_config = SettingsConfigDict(
         env_file=".env",

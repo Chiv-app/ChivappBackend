@@ -46,3 +46,6 @@ google_credentials.json
 /fix_*.py
 /test_*.py
 output.txt
+
+# Archivos privados locales (DNI, firmas, comprobantes)
+uploads_private/

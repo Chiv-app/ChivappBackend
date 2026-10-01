@@ -13,21 +13,13 @@ from app.models.musician_profile import MusicianProfile
 from app.models.user import User
 from app.schemas.contract import ContractOut
 from app.services.contract_pdf import render_contract_pdf_bytes
-from app.services.uploads import UPLOAD_DIR
+from app.services.uploads import read_upload_bytes
 
 router = APIRouter(prefix="/contracts", tags=["Contracts"])
 
 
 def _legacy_pdf_bytes(upload_url: str | None) -> bytes | None:
-    if not upload_url:
-        return None
-    filename = upload_url.rsplit("/", 1)[-1]
-    if not filename or filename in {".", ".."}:
-        return None
-    path = UPLOAD_DIR / filename
-    if not path.is_file():
-        return None
-    return path.read_bytes()
+    return read_upload_bytes(upload_url)
 
 
 def _resolve_musician_signature_url(

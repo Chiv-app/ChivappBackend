@@ -64,7 +64,7 @@ from app.services.booking_notifications import (
     notify_booking_updated,
 )
 from app.services.musician_booking import create_musician_booking
-from app.services.uploads import UPLOAD_DIR
+from app.services.uploads import upload_exists
 
 
 router = APIRouter(prefix="/bookings", tags=["Bookings"])
@@ -635,8 +635,7 @@ def _client_ip(request: Request, fallback: str | None = None) -> str:
 
 
 def _assert_upload_exists(upload_url: str, label: str) -> None:
-    filename = upload_url.rsplit("/", 1)[-1]
-    if not filename or not (UPLOAD_DIR / filename).is_file():
+    if not upload_exists(upload_url):
         raise HTTPException(
             status_code=400,
             detail=f"No se encontró el archivo de {label}. Vuelve a subirlo.",

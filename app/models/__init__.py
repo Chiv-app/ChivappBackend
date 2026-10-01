@@ -24,8 +24,10 @@ from app.models.booking_location import (
     BookingLocationPing,
 )
 from app.models.support_ticket import SupportTicket, SupportTicketStatus
+from app.models.uploaded_file import UploadedFile
 
 __all__ = [
+    "UploadedFile",
     "User",
     "ContractorProfile",
     "MusicianProfile",

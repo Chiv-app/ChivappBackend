@@ -126,6 +126,13 @@ class MusicianProfileUpdate(BaseModel):
     payout_beneficiary_document: str | None = None
     payout_mp_email: str | None = None
 
+    @field_validator("contract_template_body", mode="after")
+    @classmethod
+    def _sanitize_contract_body(cls, value: str | None) -> str | None:
+        from app.services.html_sanitizer import sanitize_contract_html
+
+        return sanitize_contract_html(value)
+
 
 
 def _sync_songs_and_repertoire(
@@ -357,6 +364,13 @@ class ContractorProfileUpdate(BaseModel):
     id_document_url: str | None = None
     contract_template_title: str | None = None
     contract_template_body: str | None = None
+
+    @field_validator("contract_template_body", mode="after")
+    @classmethod
+    def _sanitize_contract_body(cls, value: str | None) -> str | None:
+        from app.services.html_sanitizer import sanitize_contract_html
+
+        return sanitize_contract_html(value)
 
 
 class ContractorProfileOut(ContractorProfileBase):

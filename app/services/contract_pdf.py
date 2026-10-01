@@ -1,6 +1,7 @@
 import base64
 import re
 from datetime import datetime
+from html import escape as html_escape
 from html import unescape
 from io import BytesIO
 from pathlib import Path
@@ -13,7 +14,8 @@ from app.models.booking import Booking
 from app.models.contractor_profile import ContractorProfile
 from app.models.musician_profile import MusicianProfile
 from app.models.user import User
-from app.services.uploads import UPLOAD_DIR, ensure_upload_dir
+from app.services.html_sanitizer import sanitize_contract_html
+from app.services.uploads import ensure_upload_dir, read_upload_bytes, sniff_content_type
 
 # Coincide con el span de resaltado que genera el editor tipo Word del frontend
 # (ver Frontend/src/components/musician/profile-wizard/rich-text-editor.tsx).
@@ -164,6 +166,8 @@ def _replace_placeholders(
     text: str,
     context: dict[str, str],
     blank_placeholders: set[str] | None = None,
+    *,
+    escape_values: bool = False,
 ) -> str:
     blanks = blank_placeholders or set()
     unwrapped = _unwrap_variable_spans(text)
@@ -171,7 +175,9 @@ def _replace_placeholders(
     def replacer(match: re.Match[str]) -> str:
         token = match.group(0)
         if token in context:
-            return context[token]
+            value = context[token]
+            # Nombres, direcciones, etc. son texto del usuario: escapar en HTML.
+            return html_escape(str(value)) if escape_values else value
         if token in blanks:
             return "________________________"
         return token
@@ -188,28 +194,26 @@ def contract_html_text_length(value: str | None) -> int:
     return len(" ".join(text.split()))
 
 
-def _resolve_upload_path(upload_url: str | None) -> Path | None:
-    if not upload_url:
+def _upload_image_data_uri(upload_url: str | None) -> str | None:
+    """Imagen subida (disco o GCS, pública o privada) como data URI, validando
+    el tipo por su contenido."""
+    data = read_upload_bytes(upload_url)
+    if not data:
         return None
-    filename = Path(upload_url).name
-    if not filename or filename in {".", ".."}:
-        return None
-    candidate = UPLOAD_DIR / filename
-    if candidate.is_file():
-        return candidate
-    return None
-
-
-def _image_data_uri(path: Path) -> str | None:
-    mime = _IMAGE_MIME_TYPES.get(path.suffix.lower())
-    if not mime:
-        return None
-    try:
-        data = path.read_bytes()
-    except OSError:
+    mime = sniff_content_type(data[:16])
+    if not mime or not mime.startswith("image/"):
         return None
     encoded = base64.b64encode(data).decode("ascii")
     return f"data:{mime};base64,{encoded}"
+
+
+def _deny_external_resources(uri: str, rel: str) -> str:
+    """link_callback de xhtml2pdf: impide que el HTML del contrato haga que el
+    servidor descargue URLs externas o lea archivos locales (SSRF / LFI).
+    Solo se permiten data URIs, que se generan del lado del servidor."""
+    if uri.startswith("data:"):
+        return uri
+    return ""
 
 
 IMG_TAG_PATTERN = re.compile(r'(<img\b[^>]*\bsrc=["\'])([^"\']+)(["\'][^>]*>)', re.IGNORECASE)
@@ -223,10 +227,7 @@ def _inline_local_images(html: str) -> str:
         prefix, src, suffix = match.group(1), match.group(2), match.group(3)
         if src.startswith("data:"):
             return match.group(0)
-        path = _resolve_upload_path(src)
-        if path is None:
-            return match.group(0)
-        data_uri = _image_data_uri(path)
+        data_uri = _upload_image_data_uri(src)
         if not data_uri:
             return match.group(0)
         return f"{prefix}{data_uri}{suffix}"
@@ -291,7 +292,9 @@ def _render_html_document(
 
 def _pdf_bytes_from_html(html: str) -> bytes:
     buffer = BytesIO()
-    result = pisa.CreatePDF(html, dest=buffer, encoding="utf-8")
+    result = pisa.CreatePDF(
+        html, dest=buffer, encoding="utf-8", link_callback=_deny_external_resources
+    )
     if result.err:
         raise RuntimeError("No se pudo generar el PDF del contrato")
     return buffer.getvalue()
@@ -360,7 +363,7 @@ def _booking_contract_content(
         raise ValueError("El músico debe tener una plantilla de contrato configurada")
 
     raw_title = profile.contract_template_title or f"Contrato de servicios - {profile.stage_name}"
-    raw_body = profile.contract_template_body
+    raw_body = sanitize_contract_html(profile.contract_template_body) or ""
     context = _build_booking_context(
         booking,
         profile,
@@ -370,7 +373,7 @@ def _booking_contract_content(
     )
     all_blanks = MUSICIAN_BLANK_PLACEHOLDERS | CONTRACTOR_BLANK_PLACEHOLDERS
     title = _replace_placeholders(raw_title, context, all_blanks)
-    body = _replace_placeholders(raw_body, context, all_blanks)
+    body = _replace_placeholders(raw_body, context, all_blanks, escape_values=True)
     return title, body, context
 
 
@@ -401,12 +404,10 @@ def _resolve_signature_data_uri(
         if required:
             raise ValueError(missing_message)
         return None
-    signature_path = _resolve_upload_path(upload_url)
-    if signature_path is None:
-        if required:
-            raise ValueError(missing_message)
-        return None
-    return _image_data_uri(signature_path)
+    data_uri = _upload_image_data_uri(upload_url)
+    if data_uri is None and required:
+        raise ValueError(missing_message)
+    return data_uri
 
 
 def render_contract_pdf_bytes(
@@ -455,8 +456,8 @@ def render_contract_pdf_bytes(
         pdf_title = f"{title} (firmado)"
 
     html = _render_html_document(
-        title=pdf_title,
-        body_html=body,
+        title=html_escape(pdf_title),
+        body_html=sanitize_contract_html(body) or "",
         left_label="EL ARTISTA",
         left_name=ctx.get("{{nombre_artista}}", "—"),
         right_label="EL CLIENTE",
