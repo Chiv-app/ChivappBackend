@@ -69,7 +69,6 @@ class AdminBookingOut(BaseModel):
     location_address: str
     location_city: str | None
     price_agreed: Decimal | None
-    advance_amount: Decimal | None
     share_enabled: bool
     change_requested_by: str | None
     musician_id: UUID
@@ -93,7 +92,6 @@ class AdminBookingDetailOut(AdminBookingOut):
 
     musician_phone: str | None = None
     contractor_phone: str | None = None
-    balance_due: float = 0
     amount_paid: float = 0
     contract: ContractOut | None = None
     payments: list[PaymentOut] = Field(default_factory=list)
@@ -132,28 +130,6 @@ class AdminPaymentOut(BaseModel):
     event_date: date | None = None
     musician_name: str | None = None
     contractor_name: str | None = None
-
-
-class AdminPaymentReviewItem(BaseModel):
-    """Item de la cola de comprobantes pendientes de validar/rechazar."""
-
-    booking_id: UUID
-    booking_status: str
-    kind: str  # "advance" | "balance"
-    payment_id: UUID
-    amount: Decimal
-    currency: str
-    evidence_urls: list[str]
-    event_type: str
-    event_date: date
-    musician_name: str | None = None
-    contractor_name: str | None = None
-    submitted_at: datetime
-    previous_rejections: int = 0
-
-
-class AdminPaymentReject(BaseModel):
-    reason: str = Field(min_length=3, max_length=500)
 
 
 class AdminReleaseSettlement(BaseModel):

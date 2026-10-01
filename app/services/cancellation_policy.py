@@ -35,6 +35,7 @@ CENT = Decimal("0.01")
 RETAINED_STATUSES = {
     BookingStatus.payment_retained,
     BookingStatus.change_pending,
+    # Legacy (unreachable) statuses from the old advance/balance flow.
     BookingStatus.balance_pending,
     BookingStatus.balance_review,
 }

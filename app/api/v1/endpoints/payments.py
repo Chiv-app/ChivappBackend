@@ -33,7 +33,6 @@ from app.schemas.payment import (
     MusicianDebtItem,
     MusicianEarningsItem,
     MusicianEarningsSummary,
-    PaymentCreate,
     PaymentOut,
 )
 from app.services.booking_notifications import notify_payment_released
@@ -43,7 +42,6 @@ from app.services.payment_evidence import (
     assert_evidence_uploads,
     normalize_evidence_urls,
 )
-from app.services.booking_lifecycle import remaining_balance
 from app.services import mercadopago_service
 
 logger = logging.getLogger(__name__)
@@ -423,10 +421,9 @@ def release_payment(
     return payment
 
 
+# Pago único (100 %) por Mercado Pago.
 PAYABLE_STATUSES = {
-    "advance": (BookingStatus.contract_pending, BookingStatus.contract_signed, BookingStatus.payment_pending),
     "full": (BookingStatus.contract_pending, BookingStatus.contract_signed, BookingStatus.payment_pending),
-    "balance": (BookingStatus.payment_retained, BookingStatus.balance_pending),
 }
 
 
@@ -443,12 +440,7 @@ def _server_amount(db: Session, booking: Booking, payment_type: str, client_amou
     except ValueError as exc:
         raise HTTPException(400, detail=str(exc)) from exc
     if expected <= 0:
-        detail = (
-            "No hay saldo pendiente por pagar para esta reserva"
-            if payment_type == "balance"
-            else "El monto a pagar debe ser mayor a cero"
-        )
-        raise HTTPException(400, detail)
+        raise HTTPException(400, "El monto a pagar debe ser mayor a cero")
     if client_amount and abs(Decimal(str(client_amount)) - expected) > mercadopago_service.AMOUNT_TOLERANCE:
         raise HTTPException(409, "El monto de la reserva cambió. Recarga la página e inténtalo de nuevo.")
     return float(expected)
@@ -469,7 +461,7 @@ def create_mercadopago_preference(
 ):
     """
     Crea una preferencia de pago en Mercado Pago (Checkout Pro) para una reserva.
-    Permite pagar anticipo, pago total o saldo final pendiente.
+    Cobro único del 100 % de la reserva.
     Si se incluye signature_image_url, valida y registra la firma del contrato.
     """
     booking = get_booking_or_404(db, payload.booking_id)
@@ -676,10 +668,12 @@ def check_mercadopago_payment_status(
         if recent_payment and recent_payment.gateway_payment_id:
             effective_payment_id = recent_payment.gateway_payment_id
 
+    mp_status: str | None = None
     if effective_payment_id:
         try:
             details = mercadopago_service.get_payment_details(effective_payment_id)
             if details:
+                mp_status = details.get("status")
                 mercadopago_service.process_approved_mercadopago_payment(db, details)
                 db.refresh(booking)
         except Exception as exc:
@@ -691,16 +685,23 @@ def check_mercadopago_payment_status(
         BookingStatus.payment_released,
         BookingStatus.completed,
     )
+    is_rejected = not is_approved and mp_status in ("rejected", "cancelled")
+
+    if is_approved:
+        status_value = "approved"
+        message = "¡Tu pago fue verificado y retenido con éxito! La reserva está confirmada."
+    elif is_rejected:
+        status_value = "rejected"
+        message = "Mercado Pago rechazó el pago. Puedes intentarlo nuevamente."
+    else:
+        status_value = "pending"
+        message = "El pago se encuentra en proceso de validación por Mercado Pago."
 
     return MercadoPagoPaymentCheckResponse(
-        status="approved" if is_approved else "pending",
+        status=status_value,
         payment_id=effective_payment_id,
         booking_status=booking.status.value,
         is_approved=is_approved,
-        message=(
-            "¡Tu pago fue verificado y retenido con éxito! La reserva está confirmada."
-            if is_approved
-            else "El pago se encuentra en proceso de validación por Mercado Pago."
-        ),
+        message=message,
     )
 

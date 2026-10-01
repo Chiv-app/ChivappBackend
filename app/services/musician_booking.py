@@ -175,7 +175,6 @@ def create_musician_booking(
         event_type=payload.event_type.strip(),
         event_description=payload.event_description,
         price_agreed=payload.price_agreed,
-        advance_amount=payload.advance_amount,
         musician_quote_notes=payload.musician_quote_notes,
         quoted_at=datetime.utcnow(),
         status=BookingStatus.accepted,

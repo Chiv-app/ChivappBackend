@@ -24,10 +24,11 @@ from app.services.platform_payment import musician_portion_of_paid
 from decimal import Decimal
 
 
+# Pago único (100 %). Pagos antiguos con payment_type="advance" se muestran
+# igual que "full"; cualquier otro tipo antiguo cae en "Pago".
 _PAYMENT_TYPE_TITLE = {
-    "advance": "Anticipo",
     "full": "Pago total",
-    "balance": "Abono final",
+    "advance": "Pago total",
 }
 
 # status → (kind, op_status, title, subtitle, cta)
@@ -50,14 +51,14 @@ _LIFECYCLE: dict[BookingStatus, tuple[str, str, str, str, str]] = {
         "contract_sign",
         "pending_me",
         "Firmar contrato y pagar",
-        "Firma el contrato y adjunta el comprobante del anticipo.",
+        "Firma el contrato y paga el 100 % con Mercado Pago.",
         "Firmar contrato",
     ),
     BookingStatus.payment_pending: (
         "payment_review",
         "pending_other",
-        "Anticipo en revisión",
-        "El músico está validando tu comprobante.",
+        "Pago en proceso",
+        "Mercado Pago está confirmando tu pago.",
         "Ver reserva",
     ),
     BookingStatus.change_pending: (
@@ -65,20 +66,6 @@ _LIFECYCLE: dict[BookingStatus, tuple[str, str, str, str, str]] = {
         "pending_other",
         "Cambio en revisión",
         "Hay un cambio pendiente de aceptación.",
-        "Ver reserva",
-    ),
-    BookingStatus.balance_pending: (
-        "balance_due",
-        "pending_me",
-        "Subir abono final",
-        "Falta el saldo del evento. Sube el comprobante.",
-        "Subir abono",
-    ),
-    BookingStatus.balance_review: (
-        "balance_review",
-        "pending_other",
-        "Abono en revisión",
-        "El músico está validando el abono final.",
         "Ver reserva",
     ),
     BookingStatus.in_progress: (
@@ -170,10 +157,8 @@ def _payment_op_status(status: PaymentStatus) -> str:
 
 
 def _payment_kind(payment_type: str | None) -> str:
-    if payment_type == "balance":
-        return "payment_balance"
-    if payment_type in {"advance", "full"}:
-        return "payment_advance"
+    if payment_type in _PAYMENT_TYPE_TITLE:
+        return "payment_full"
     return "payment_out"
 
 
@@ -287,7 +272,7 @@ def build_contractor_operations(
             amount = (
                 float(booking.price_agreed)
                 if booking.price_agreed is not None
-                and kind in {"quote_review", "contract_sign", "balance_due"}
+                and kind in {"quote_review", "contract_sign"}
                 else None
             )
             items.append(

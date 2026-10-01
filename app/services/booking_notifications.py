@@ -416,19 +416,6 @@ def notify_booking_confirmed(db: Session, musician_user: User, booking_id: str, 
         import logging
         logging.getLogger(__name__).warning("Error enviando correos de confirmacion: %s", exc)
 
-def notify_admins_payment_submitted(
-    db: Session, booking_id: str, *, kind: str
-) -> None:
-    label = "el anticipo" if kind == "advance" else "el abono final"
-    notify_admins(
-        db,
-        type="admin_payment_review_requested",
-        title="Nuevo pago registrado",
-        message=f"Un contratista subió el comprobante de {label}. Revísalo en Tesorería.",
-        meta={"booking_id": booking_id, "kind": kind},
-    )
-
-
 def notify_payment_validated(
     db: Session, contractor_user: User, musician_user: User, booking_id: str
 ) -> None:
@@ -437,7 +424,7 @@ def notify_payment_validated(
         user=contractor_user,
         type="payment_validated",
         title="Reserva confirmada",
-        message="El administrador validó tu anticipo. Ya puedes coordinar detalles del evento.",
+        message="Tu pago fue confirmado. Ya puedes coordinar detalles del evento.",
         booking_id=booking_id,
     )
     notify_user(
@@ -445,7 +432,7 @@ def notify_payment_validated(
         user=musician_user,
         type="payment_validated",
         title="Reserva confirmada",
-        message="El administrador validó el anticipo del contratista. La reserva quedó confirmada.",
+        message="El pago del contratista fue confirmado. La reserva quedó confirmada.",
         booking_id=booking_id,
     )
 
@@ -510,7 +497,7 @@ def notify_payment_rejected(
         user=contractor_user,
         type="payment_rejected",
         title="Pago rechazado",
-        message=f"El administrador rechazó tu comprobante: {reason}. Vuelve a firmar y subir la evidencia.",
+        message=f"Tu pago no pudo completarse: {reason}. Vuelve a intentarlo con Mercado Pago.",
         booking_id=booking_id,
     )
     notify_user(
@@ -518,7 +505,7 @@ def notify_payment_rejected(
         user=musician_user,
         type="payment_rejected",
         title="Pago rechazado",
-        message="El administrador rechazó el comprobante del anticipo de tu contratista.",
+        message="El pago de tu contratista no pudo completarse.",
         booking_id=booking_id,
     )
 
@@ -572,7 +559,7 @@ def notify_booking_commitment_updated(
 ) -> None:
     """Músico actualiza el compromiso: solo notifica al contratista (sin validación)."""
     base = (
-        "El músico actualizó detalles del compromiso (ubicación, precio u otros). "
+        "El músico actualizó detalles del compromiso (ubicación u otros). "
         "Revisa la reserva."
     )
     if notes and notes.strip():
@@ -648,66 +635,6 @@ def notify_booking_message(
         type="booking_message",
         title="Nuevo mensaje en tu reserva",
         message=preview[:140],
-        booking_id=booking_id,
-    )
-
-
-def notify_balance_submitted(
-    db: Session, musician_user: User, booking_id: str
-) -> None:
-    notify_user(
-        db,
-        user=musician_user,
-        type="balance_submitted",
-        title="Abono final en revisión",
-        message="El contratista subió el comprobante del saldo. Un administrador lo revisará.",
-        booking_id=booking_id,
-    )
-
-
-def notify_balance_validated(
-    db: Session, contractor_user: User, musician_user: User, booking_id: str
-) -> None:
-    notify_user(
-        db,
-        user=contractor_user,
-        type="balance_validated",
-        title="Abono final validado",
-        message="El administrador validó el pago total. Ya puedes compartir fotos y reseña del evento.",
-        booking_id=booking_id,
-    )
-    notify_user(
-        db,
-        user=musician_user,
-        type="balance_validated",
-        title="Abono final validado",
-        message="El administrador validó el pago total del contratista. Ya se habilitó la fase de evento.",
-        booking_id=booking_id,
-    )
-
-
-def notify_balance_rejected(
-    db: Session,
-    contractor_user: User,
-    musician_user: User,
-    booking_id: str,
-    *,
-    reason: str,
-) -> None:
-    notify_user(
-        db,
-        user=contractor_user,
-        type="balance_rejected",
-        title="Abono final rechazado",
-        message=f"El administrador rechazó el comprobante del saldo: {reason}. Vuelve a subirlo.",
-        booking_id=booking_id,
-    )
-    notify_user(
-        db,
-        user=musician_user,
-        type="balance_rejected",
-        title="Abono final rechazado",
-        message="El administrador rechazó el comprobante del saldo de tu contratista.",
         booking_id=booking_id,
     )
 

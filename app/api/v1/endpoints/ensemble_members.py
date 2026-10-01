@@ -66,10 +66,11 @@ from app.services.ensemble_members import (
 
 router = APIRouter(tags=["Ensemble members"])
 
-# Tras adelanto validado (reserva confirmada). Sin completed: ya no se convocan.
+# Tras el pago confirmado (reserva confirmada). Sin completed: ya no se convocan.
 INVITE_STATUSES = {
     BookingStatus.payment_retained,
     BookingStatus.change_pending,
+    # Legacy (unreachable) statuses, treated as confirmed.
     BookingStatus.balance_pending,
     BookingStatus.balance_review,
     BookingStatus.in_progress,
@@ -523,7 +524,7 @@ def create_booking_invites(
     if booking.status not in INVITE_STATUSES:
         raise HTTPException(
             400,
-            "Solo puedes elegir integrantes cuando el adelanto está confirmado "
+            "Solo puedes elegir integrantes cuando el pago está confirmado "
             "y el show aún no se cerró",
         )
 

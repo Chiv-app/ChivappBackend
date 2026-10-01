@@ -16,7 +16,7 @@ from app.models.contractor_profile import ContractorProfile
 from app.models.payment import Payment, PaymentStatus
 from app.models.user import User
 from app.models.musician_profile import MusicianProfile
-from app.services.booking_notifications import notify_booking_confirmed, notify_balance_submitted
+from app.services.booking_notifications import notify_booking_confirmed
 
 logger = logging.getLogger(__name__)
 
@@ -61,15 +61,8 @@ def create_preference(
     musician = db.query(MusicianProfile).filter(MusicianProfile.id == booking.musician_id).first()
     musician_name = musician.stage_name if musician and musician.stage_name else "Músico"
 
-    type_labels = {
-        "advance": "Anticipo",
-        "full": "Pago Total",
-        "balance": "Saldo Final",
-    }
-    type_label = type_labels.get(payment_type, "Pago")
-
     item_title = f"Chivapp: {booking.event_type} - {musician_name}"
-    item_description = f"Reserva #{str(booking.id)[:8]} ({type_label})"
+    item_description = f"Reserva #{str(booking.id)[:8]} (Pago total)"
 
     frontend_base = settings.FRONTEND_URL.rstrip("/")
     success_url = f"{frontend_base}/contractor/bookings/{booking.id}?mp_status=approved"
@@ -225,19 +218,29 @@ def verify_webhook_signature(
 
 AMOUNT_TOLERANCE = Decimal("0.01")
 
+# Único tipo de pago: cobro del 100 % por Mercado Pago.
+FULL_PAYMENT_TYPE = "full"
+# Metadata de pagos antiguos (flujo anticipo/saldo) que equivale a "full".
+LEGACY_FULL_PAYMENT_TYPES = {"advance"}
+
+
+def normalize_payment_type(payment_type: str | None) -> str | None:
+    """Normaliza el tipo de pago. "advance" (metadata antigua de MP) equivale a
+    "full"; cualquier otro valor (p. ej. el antiguo "balance") no se soporta."""
+    value = (payment_type or FULL_PAYMENT_TYPE).strip().lower()
+    if value == FULL_PAYMENT_TYPE or value in LEGACY_FULL_PAYMENT_TYPES:
+        return FULL_PAYMENT_TYPE
+    return None
+
 
 def expected_payment_amount(db: Session, booking: Booking, payment_type: str) -> Decimal:
-    """Monto que la reserva debe pagar según el tipo. Única fuente de verdad:
-    nunca se usa el monto que envía el cliente."""
-    if payment_type in ("advance", "full"):
+    """Monto que la reserva debe pagar. Única fuente de verdad: nunca se usa el
+    monto que envía el cliente."""
+    if normalize_payment_type(payment_type) == FULL_PAYMENT_TYPE:
         # Cobro único del 100 %: precio + comisión de plataforma + costo de pasarela.
         from app.services.platform_payment import contractor_payable_total
 
         return contractor_payable_total(booking) or Decimal("0")
-    if payment_type == "balance":
-        from app.services.booking_lifecycle import remaining_balance
-
-        return Decimal(str(remaining_balance(db, booking)))
     raise ValueError("Tipo de pago no soportado")
 
 
@@ -267,7 +270,9 @@ def process_approved_mercadopago_payment(db: Session, payment_data: dict[str, An
 
     transaction_amount = payment_data.get("transaction_amount")
     amount = Decimal(str(transaction_amount)) if transaction_amount is not None else Decimal("0")
-    payment_type = metadata.get("payment_type") or "advance"
+    raw_payment_type = metadata.get("payment_type") or FULL_PAYMENT_TYPE
+    # Metadata antigua "advance" se trata como "full"; "balance" ya no se soporta.
+    payment_type = normalize_payment_type(raw_payment_type) or str(raw_payment_type)
     existing = db.query(Payment).filter(Payment.gateway_payment_id == payment_id).first()
 
     is_approved = (status == "approved")
@@ -332,7 +337,7 @@ def process_approved_mercadopago_payment(db: Session, payment_data: dict[str, An
         db.add(payment)
 
     if is_approved:
-        if payment_type in ("advance", "full"):
+        if payment_type == FULL_PAYMENT_TYPE:
             booking.status = BookingStatus.payment_retained
             
             contractor = db.query(ContractorProfile).filter(ContractorProfile.id == booking.contractor_id).first()
@@ -379,12 +384,6 @@ def process_approved_mercadopago_payment(db: Session, payment_data: dict[str, An
                         except Exception as e:
                             logger.error(f"Error calling create_booking_event: {e}")
                             
-        elif payment_type == "balance":
-            musician = db.query(MusicianProfile).filter(MusicianProfile.id == booking.musician_id).first()
-            if musician:
-                musician_user = db.query(User).filter(User.id == musician.user_id).first()
-                if musician_user:
-                    notify_balance_submitted(db, musician_user, str(booking.id))
 
     try:
         db.commit()
@@ -415,7 +414,7 @@ def process_direct_payment(
         raise ValueError("El token de pago generado por Mercado Pago es obligatorio.")
 
     payment_method_id = payment_payload.get("payment_method_id", "yape")
-    payment_type = payment_payload.get("payment_type", "advance")
+    payment_type = normalize_payment_type(payment_payload.get("payment_type")) or FULL_PAYMENT_TYPE
     amount = float(payment_payload.get("amount") or payment_payload.get("transaction_amount") or 0.0)
     if amount <= 0:
         raise ValueError("El monto a pagar debe ser mayor a 0.")

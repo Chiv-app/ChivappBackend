@@ -37,8 +37,9 @@ BOOKING_STATUS_LABELS = {
     BookingStatus.payment_pending.value: "Pago pendiente",
     BookingStatus.payment_retained.value: "Confirmada",
     BookingStatus.change_pending.value: "Cambio pendiente",
-    BookingStatus.balance_pending.value: "Saldo pendiente",
-    BookingStatus.balance_review.value: "Saldo en revisión",
+    # Legacy (unreachable) statuses: shown like a confirmed booking.
+    BookingStatus.balance_pending.value: "Confirmada",
+    BookingStatus.balance_review.value: "Confirmada",
     BookingStatus.in_progress.value: "En evento",
     BookingStatus.payment_released.value: "Pago liberado",
     BookingStatus.completed.value: "Finalizada",

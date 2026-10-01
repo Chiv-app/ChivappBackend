@@ -20,8 +20,6 @@ from app.schemas.admin import (
     AdminBookingDetailOut,
     AdminBookingOut,
     AdminPaymentOut,
-    AdminPaymentReject,
-    AdminPaymentReviewItem,
     AdminProfileStatusUpdate,
     AdminSettleBooking,
     AdminStatsOut,
@@ -46,10 +44,6 @@ from app.schemas.profiles import (
     ProfileReviewAction,
 )
 from app.services.booking_notifications import (
-    notify_balance_rejected,
-    notify_balance_validated,
-    notify_payment_rejected,
-    notify_payment_validated,
     notify_profile_approved,
     notify_profile_needs_resubmit,
     notify_profile_rejected,
@@ -72,6 +66,7 @@ ACTIVE_BOOKING_STATUSES = {
     BookingStatus.payment_pending,
     BookingStatus.payment_retained,
     BookingStatus.change_pending,
+    # Legacy (unreachable) statuses from the old advance/balance flow.
     BookingStatus.balance_pending,
     BookingStatus.balance_review,
     BookingStatus.in_progress,
@@ -80,9 +75,9 @@ ACTIVE_BOOKING_STATUSES = {
 # Finalizadas, o canceladas tarde con parte del pago retenido para el músico.
 SETTLEABLE_BOOKING_STATUSES = {BookingStatus.completed, BookingStatus.cancelled}
 
+# Reservas esperando la confirmación del pago único en Mercado Pago.
 PAYMENT_REVIEW_STATUSES = {
     BookingStatus.payment_pending,
-    BookingStatus.balance_review,
 }
 
 
@@ -116,7 +111,6 @@ def _booking_admin_out(booking: Booking) -> AdminBookingOut:
         location_address=booking.location_address,
         location_city=booking.location_city,
         price_agreed=booking.price_agreed,
-        advance_amount=booking.advance_amount,
         share_enabled=bool(booking.share_enabled),
         change_requested_by=booking.change_requested_by,
         musician_id=booking.musician_id,
@@ -640,6 +634,7 @@ def list_bookings(
     _: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
     status_filter: str | None = Query(default=None, alias="status"),
+    refund_status: str | None = Query(default=None, max_length=40),
     q: str | None = None,
     skip: int = 0,
     limit: int = Query(default=50, le=200),
@@ -653,6 +648,9 @@ def list_bookings(
             query = query.filter(Booking.status == BookingStatus(status_filter))
         except ValueError as exc:
             raise HTTPException(400, "Estado de reserva inválido") from exc
+    if refund_status:
+        # p. ej. "pending_approval": cancelaciones con reembolso por aprobar.
+        query = query.filter(Booking.cancellation_refund_status == refund_status)
     if q and q.strip():
         term = f"%{q.strip().lower()}%"
         query = (
@@ -703,7 +701,7 @@ def get_booking_admin_detail(
     from app.models.booking_complaint import BookingComplaint
     from app.models.contract import Contract
     from app.schemas.booking import BookingMessageOut
-    from app.services.booking_lifecycle import remaining_balance, retained_paid_total
+    from app.services.booking_lifecycle import retained_paid_total
     from app.services.booking_share import serialize_review
     from app.services.settlement import serialize_complaint
 
@@ -713,7 +711,6 @@ def get_booking_admin_detail(
     musician = booking.musician
     contractor = booking.contractor
 
-    due = remaining_balance(db, booking)
     paid = retained_paid_total(db, booking.id)
 
     contract = db.query(Contract).filter(Contract.booking_id == booking.id).first()
@@ -772,7 +769,6 @@ def get_booking_admin_detail(
         contractor_phone=(
             contractor.user.phone if contractor and contractor.user else None
         ),
-        balance_due=float(due),
         amount_paid=float(paid),
         contract=ContractOut.model_validate(contract) if contract else None,
         payments=[PaymentOut.model_validate(p) for p in payments],

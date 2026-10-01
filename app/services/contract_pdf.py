@@ -24,6 +24,11 @@ VARIABLE_SPAN_PATTERN = re.compile(
 PLACEHOLDER_TOKEN_PATTERN = re.compile(r"\{\{[a-z_]+\}\}")
 HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
 
+# Compatibilidad: plantillas guardadas antes del pago único (100 %) pueden usar
+# este marcador del antiguo anticipo. Ya no se ofrece, pero se sigue
+# renderizando (con el monto total) para que nunca quede el marcador crudo.
+LEGACY_ADVANCE_PLACEHOLDER = "{{anticipo}}"
+
 MUSICIAN_BLANK_PLACEHOLDERS = {
     "{{nombre_cliente}}",
     "{{documento_cliente}}",
@@ -34,7 +39,7 @@ MUSICIAN_BLANK_PLACEHOLDERS = {
     "{{lugar_evento}}",
     "{{duracion_servicio}}",
     "{{monto_total}}",
-    "{{anticipo}}",
+    LEGACY_ADVANCE_PLACEHOLDER,
 }
 
 CONTRACTOR_BLANK_PLACEHOLDERS = {
@@ -50,7 +55,7 @@ CONTRACTOR_BLANK_PLACEHOLDERS = {
     "{{lugar_evento}}",
     "{{duracion_servicio}}",
     "{{monto_total}}",
-    "{{anticipo}}",
+    LEGACY_ADVANCE_PLACEHOLDER,
 }
 
 # Estilos compartidos con el editor/preview del frontend (ver .contract-doc en
@@ -337,9 +342,10 @@ def _build_booking_context(
             "{{tipo_evento}}": booking.event_type,
             "{{descripcion_evento}}": booking.event_description or "—",
             "{{monto_total}}": _format_price(booking.price_agreed) or "—",
-            "{{anticipo}}": _format_price(booking.advance_amount) or "—",
         }
     )
+    # Plantillas antiguas: el "anticipo" ahora es el pago único del total.
+    context[LEGACY_ADVANCE_PLACEHOLDER] = context["{{monto_total}}"]
     return context
 
 

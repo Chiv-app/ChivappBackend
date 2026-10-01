@@ -191,7 +191,7 @@ def sync_booking_calendar(db, booking_id: str, include_contractor: bool, ensembl
         return None
 
     # Only sync if paid (or in progress etc)
-    if booking.status not in (BookingStatus.payment_retained, BookingStatus.in_progress, BookingStatus.balance_pending, BookingStatus.balance_review):
+    if booking.status not in (BookingStatus.payment_retained, BookingStatus.in_progress):
         pass # Well, let's allow it anyway if the user wants it, or maybe limit it. Let's just create it.
 
     musician_user = db.query(User).filter(User.id == booking.musician.user_id).first()

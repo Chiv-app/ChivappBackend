@@ -19,7 +19,6 @@ from app.models.payment import Payment, PaymentStatus
 from app.models.user import User, UserRole
 from app.models.contractor_recommendation import ContractorRecommendation
 from app.schemas.booking import (
-    BookingBalancePayment,
     BookingChangeDecision,
     BookingEventChangeRequest,
     BookingFinalReviewCreate,
@@ -37,12 +36,8 @@ from app.services.booking_lifecycle import (
     apply_pending_changes,
     clear_pending_changes,
     is_pre_event,
-    remaining_balance,
-    retained_paid_total,
 )
 from app.services.booking_notifications import (
-    notify_admins_payment_submitted,
-    notify_balance_submitted,
     notify_booking_change_accepted,
     notify_booking_change_rejected,
     notify_booking_change_requested,
@@ -101,6 +96,18 @@ def _contractor_user_from_booking(db: Session, booking: Booking) -> User:
     return user
 
 
+def _assert_price_unchanged(booking: Booking, price_agreed: Decimal | None) -> None:
+    """Con pago único (100%) el precio pagado no puede cambiar tras confirmar."""
+    if price_agreed is None:
+        return
+    current = Decimal(str(booking.price_agreed)) if booking.price_agreed is not None else None
+    if current is None or Decimal(str(price_agreed)) != current:
+        raise HTTPException(
+            400,
+            "El precio no puede modificarse después del pago",
+        )
+
+
 def _message_out(message: BookingMessage, sender_name: str | None = None) -> BookingMessageOut:
     return BookingMessageOut(
         id=message.id,
@@ -153,6 +160,7 @@ def post_booking_message(
     if booking.status not in {
         BookingStatus.payment_retained,
         BookingStatus.change_pending,
+        # Legacy (unreachable) statuses, treated as confirmed.
         BookingStatus.balance_pending,
         BookingStatus.balance_review,
         BookingStatus.in_progress,
@@ -203,7 +211,7 @@ def request_booking_change(
         raise HTTPException(
             400,
             "Solo puedes pedir cambios cuando la reserva está confirmada "
-            "(antes del abono final o de iniciar el evento)",
+            "(antes de iniciar el evento)",
         )
     if not is_pre_event(booking):
         raise HTTPException(400, "Ya no se pueden editar detalles: el evento ya comenzó")
@@ -216,49 +224,13 @@ def request_booking_change(
                 payload.location_city is not None,
                 payload.location_reference is not None,
                 payload.event_description is not None,
-                payload.price_agreed is not None,
-                payload.advance_amount is not None,
             ]
         )
+        _assert_price_unchanged(booking, payload.price_agreed)
         if not has_change:
             raise HTTPException(400, "Indica al menos un cambio")
 
-        paid = retained_paid_total(db, booking.id)
-        next_price = (
-            payload.price_agreed
-            if payload.price_agreed is not None
-            else booking.price_agreed
-        )
-        next_advance = (
-            payload.advance_amount
-            if payload.advance_amount is not None
-            else booking.advance_amount
-        )
-
-        if next_price is not None:
-            from app.services.platform_payment import (
-                compute_platform_fee_amount,
-                get_or_create_platform_payment_settings,
-            )
-
-            settings = get_or_create_platform_payment_settings(db)
-            next_percent = Decimal(str(settings.platform_fee_percent or 0))
-            if booking.platform_fee_percent is not None and payload.price_agreed is None:
-                next_percent = Decimal(str(booking.platform_fee_percent))
-            next_fee = compute_platform_fee_amount(Decimal(str(next_price)), next_percent)
-            if paid > Decimal(str(next_price)) + next_fee:
-                raise HTTPException(
-                    400,
-                    "El total a pagar (precio + comisión) no puede ser menor a lo ya validado",
-                )
-        if (
-            next_price is not None
-            and next_advance is not None
-            and Decimal(str(next_advance)) > Decimal(str(next_price))
-        ):
-            raise HTTPException(400, "El anticipo no puede ser mayor al precio")
-
-        # El monto validado (pagos retained/released) no se modifica aquí.
+        # Pago único (100%): el precio ya pagado no se modifica aquí.
         apply_commitment_fields(
             booking,
             db,
@@ -266,8 +238,6 @@ def request_booking_change(
             location_city=payload.location_city,
             location_reference=payload.location_reference,
             event_description=payload.event_description,
-            price_agreed=payload.price_agreed,
-            advance_amount=payload.advance_amount,
         )
 
         notify_booking_commitment_updated(
@@ -281,10 +251,10 @@ def request_booking_change(
         return booking
 
     # --- Contratista: requiere validación del músico ---
-    if payload.price_agreed is not None or payload.advance_amount is not None:
+    if payload.price_agreed is not None:
         raise HTTPException(
             400,
-            "El contratista no puede modificar el precio ni el anticipo",
+            "El contratista no puede modificar el precio",
         )
 
     has_change = any(
@@ -319,8 +289,7 @@ def request_booking_change(
         if payload.event_description is not None
         else booking.event_description
     )
-    booking.pending_price_agreed = booking.price_agreed
-    booking.pending_advance_amount = booking.advance_amount
+    booking.pending_price_agreed = None
     booking.pending_change_notes = payload.change_notes
     booking.change_requested_by = UserRole.contractor.value
     booking.change_requested_at = datetime.utcnow()
@@ -358,45 +327,9 @@ def decide_booking_change(
 
     # Solo aceptar/rechazar: no reabre cotización ni requiere re-firma.
     if payload.accept:
-        next_price = (
-            payload.price_agreed
-            if payload.price_agreed is not None
-            else booking.pending_price_agreed
-            if booking.pending_price_agreed is not None
-            else booking.price_agreed
-        )
-        next_advance = (
-            payload.advance_amount
-            if payload.advance_amount is not None
-            else booking.pending_advance_amount
-            if booking.pending_advance_amount is not None
-            else booking.advance_amount
-        )
-
-        paid = retained_paid_total(db, booking.id)
-        if next_price is not None:
-            from app.services.platform_payment import (
-                compute_platform_fee_amount,
-            )
-
-            next_percent = Decimal(str(booking.platform_fee_percent or 0))
-            next_fee = compute_platform_fee_amount(Decimal(str(next_price)), next_percent)
-            if paid > Decimal(str(next_price)) + next_fee:
-                raise HTTPException(
-                    400,
-                    "El total a pagar (precio + comisión) no puede ser menor a lo ya validado",
-                )
-        if (
-            next_price is not None
-            and next_advance is not None
-            and Decimal(str(next_advance)) > Decimal(str(next_price))
-        ):
-            raise HTTPException(400, "El anticipo no puede ser mayor al precio")
-
-        if payload.price_agreed is not None:
-            booking.pending_price_agreed = payload.price_agreed
-        if payload.advance_amount is not None:
-            booking.pending_advance_amount = payload.advance_amount
+        _assert_price_unchanged(booking, payload.price_agreed)
+        # Pago único (100%): el precio ya pagado no cambia al aceptar.
+        booking.pending_price_agreed = None
 
         apply_pending_changes(booking)
         booking.status = BookingStatus.payment_retained
@@ -417,19 +350,12 @@ def start_event_phase(
     current_user: User = Depends(deps.get_current_user),
     db: Session = Depends(deps.get_db),
 ):
-    """Habilita fotos/reseña cuando no hay saldo pendiente (pago total previo)."""
+    """Habilita fotos/reseña una vez que la reserva está pagada (pago único)."""
     booking = get_booking_or_404(db, booking_id)
     assert_booking_participant(db, booking, current_user)
 
     if booking.status != BookingStatus.payment_retained:
         raise HTTPException(400, "La reserva debe estar confirmada")
-
-    due = remaining_balance(db, booking)
-    if due > 0:
-        raise HTTPException(
-            400,
-            f"Aún hay un saldo pendiente de S/ {due:.2f}. El contratista debe abonarlo primero.",
-        )
 
     booking.status = BookingStatus.in_progress
     other = (
@@ -500,7 +426,7 @@ def create_booking_review(
     }:
         raise HTTPException(
             400,
-            "Las reseñas se habilitan después de validar el abono total / inicio del evento",
+            "Las reseñas se habilitan después de confirmar el pago e iniciar el evento",
         )
 
     is_final = bool(payload.is_final)
@@ -587,14 +513,7 @@ def create_final_booking_review(
         }:
             raise HTTPException(
                 400,
-                "Las quejas se habilitan después de validar el abono total / inicio del evento",
-            )
-
-        due = remaining_balance(db, booking)
-        if due > 0:
-            raise HTTPException(
-                400,
-                f"Falta el paso «Abono final»: aún hay un saldo pendiente de S/ {due:.2f}.",
+                "Las quejas se habilitan después de confirmar el pago e iniciar el evento",
             )
 
         complaint = (
@@ -1037,13 +956,6 @@ def complete_booking(
             "una reseña final o registrar una queja antes de finalizar.",
         )
 
-    due = remaining_balance(db, booking)
-    if due > 0:
-        raise HTTPException(
-            400,
-            f"Falta el paso «Abono final»: aún hay un saldo pendiente de S/ {due:.2f}.",
-        )
-
     # Funds stay retained in the platform as app debt until an admin settles.
     booking.status = BookingStatus.completed
     disable_booking_share(booking)
@@ -1060,51 +972,3 @@ def complete_booking(
     db.commit()
     db.refresh(booking)
     return booking
-
-
-@router.get("/{booking_id}/balance-due")
-def get_balance_due(
-    booking_id: str,
-    current_user: User = Depends(deps.get_current_user),
-    db: Session = Depends(deps.get_db),
-):
-    booking = get_booking_or_404(db, booking_id)
-    assert_booking_viewer(db, booking, current_user)
-    due = remaining_balance(db, booking)
-    paid = retained_paid_total(db, booking.id)
-    from app.services.platform_payment import (
-        contractor_advance_due,
-        contractor_payable_total,
-        contractor_remaining_after_advance,
-    )
-
-    payable = contractor_payable_total(booking)
-    fee = (
-        float(booking.platform_fee_amount)
-        if booking.platform_fee_amount is not None
-        else 0.0
-    )
-    return {
-        "booking_id": str(booking.id),
-        "price_agreed": float(booking.price_agreed) if booking.price_agreed else None,
-        "platform_fee_percent": (
-            float(booking.platform_fee_percent)
-            if booking.platform_fee_percent is not None
-            else None
-        ),
-        "platform_fee_amount": fee if booking.price_agreed else None,
-        "contractor_total": float(payable) if payable is not None else None,
-        "suggested_advance": (
-            float(contractor_advance_due(booking) or 0)
-            if booking.price_agreed is not None
-            else None
-        ),
-        "suggested_remaining": (
-            float(contractor_remaining_after_advance(booking) or 0)
-            if booking.price_agreed is not None
-            else None
-        ),
-        "balance_due": float(due),
-        "amount_paid": float(paid),
-        "currency": "PEN",
-    }

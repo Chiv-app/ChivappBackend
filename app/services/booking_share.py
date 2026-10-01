@@ -6,7 +6,6 @@ from sqlalchemy.orm import Session
 
 from app.models.booking import Booking, BookingReview, BookingStatus
 from app.schemas.booking import BookingReviewOut
-from app.services.booking_lifecycle import remaining_balance
 
 SHAREABLE_STATUSES = {
     BookingStatus.payment_retained,
@@ -26,10 +25,7 @@ def share_eligibility(db: Session, booking: Booking) -> tuple[bool, str | None]:
     if booking.status in {BookingStatus.completed, BookingStatus.cancelled}:
         return False, "La reserva ya finalizó o fue cancelada. El enlace quedó desactivado."
     if booking.status not in SHAREABLE_STATUSES:
-        return False, "El compartir se habilita cuando el abono final está cubierto."
-    due = remaining_balance(db, booking)
-    if due > 0:
-        return False, "Debes completar el abono final antes de compartir con invitados."
+        return False, "El compartir se habilita cuando la reserva está pagada y confirmada."
     return True, None
 
 

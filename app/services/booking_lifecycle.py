@@ -11,6 +11,7 @@ from app.models.payment import Payment, PaymentStatus
 CONFIRMED_LIKE = {
     BookingStatus.payment_retained,
     BookingStatus.change_pending,
+    # Legacy (unreachable): kept so old rows behave like a confirmed booking.
     BookingStatus.balance_pending,
     BookingStatus.balance_review,
     BookingStatus.in_progress,
@@ -53,17 +54,6 @@ def retained_paid_total(db: Session, booking_id) -> Decimal:
     return total
 
 
-def remaining_balance(db: Session, booking: Booking) -> Decimal:
-    from app.services.platform_payment import contractor_payable_total
-
-    total = contractor_payable_total(booking)
-    if total is None:
-        return Decimal("0")
-    paid = retained_paid_total(db, booking.id)
-    remaining = total - paid
-    return remaining if remaining > 0 else Decimal("0")
-
-
 def clear_pending_changes(booking: Booking) -> None:
     booking.pending_location_address = None
     booking.pending_location_city = None
@@ -71,7 +61,6 @@ def clear_pending_changes(booking: Booking) -> None:
     booking.pending_event_description = None
     booking.pending_change_notes = None
     booking.pending_price_agreed = None
-    booking.pending_advance_amount = None
     booking.change_requested_by = None
     booking.change_requested_at = None
 
@@ -88,9 +77,6 @@ def apply_pending_changes(booking: Booking) -> None:
     price_changed = booking.pending_price_agreed is not None
     if booking.pending_price_agreed is not None:
         booking.price_agreed = booking.pending_price_agreed
-        booking.advance_amount = booking.pending_price_agreed  # Keep 100% upfront logic
-    elif booking.pending_advance_amount is not None:
-        booking.advance_amount = booking.pending_advance_amount
     clear_pending_changes(booking)
     if price_changed:
         from app.services.platform_payment import sync_booking_platform_fee
@@ -108,7 +94,6 @@ def apply_commitment_fields(
     location_reference: str | None = None,
     event_description: str | None = None,
     price_agreed: Decimal | None = None,
-    advance_amount: Decimal | None = None,
 ) -> None:
     """Aplica campos del compromiso de inmediato (sin flujo de validación)."""
     if location_address is not None:
@@ -122,8 +107,6 @@ def apply_commitment_fields(
     price_changed = price_agreed is not None
     if price_agreed is not None:
         booking.price_agreed = price_agreed
-    if advance_amount is not None:
-        booking.advance_amount = advance_amount
     if price_changed:
         from app.services.platform_payment import sync_booking_platform_fee
 

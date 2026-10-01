@@ -6,14 +6,6 @@ from pydantic import BaseModel, Field, model_validator
 from app.models.payment import PaymentStatus
 
 
-class PaymentCreate(BaseModel):
-    booking_id: str
-    amount: float
-    payment_type: str = Field(pattern="^(advance|full)$")
-    evidence_url: str | None = None
-    evidence_urls: list[str] = Field(default_factory=list)
-
-
 class PaymentUpdateStatus(BaseModel):
     status: PaymentStatus
 
@@ -87,7 +79,7 @@ class PaymentOut(BaseModel):
 
 class MercadoPagoPreferenceRequest(BaseModel):
     booking_id: str
-    payment_type: str = Field(pattern="^(advance|full|balance)$")
+    payment_type: str = Field(default="full", pattern="^full$")
     amount: float | None = None
     signature_image_url: str | None = None
     sign_ip: str | None = None
@@ -114,7 +106,7 @@ class MercadoPagoPaymentCheckResponse(BaseModel):
 
 class MercadoPagoProcessPaymentRequest(BaseModel):
     booking_id: str
-    payment_type: str = Field(pattern="^(advance|full|balance)$")
+    payment_type: str = Field(default="full", pattern="^full$")
     token: str
     payment_method_id: str = "yape"
     amount: float | None = None

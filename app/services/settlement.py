@@ -46,7 +46,7 @@ def released_total_for_booking(db: Session, booking_id) -> float:
 
 
 def paid_total_for_booking(db: Session, booking_id) -> float:
-    """Gross contractor deposits (advance/full/balance), excluding refund rows."""
+    """Gross contractor deposits (single full payment), excluding refund rows."""
     rows = (
         db.query(Payment)
         .filter(

@@ -44,7 +44,6 @@ class MusicianBookingCreate(BaseModel):
     event_description: str | None = Field(default=None, max_length=2000)
 
     price_agreed: Decimal = Field(gt=0)
-    advance_amount: Decimal | None = Field(default=None, ge=0)
     musician_quote_notes: str | None = Field(default=None, max_length=2000)
 
 
@@ -56,17 +55,6 @@ class MusicianBookingCreate(BaseModel):
         if isinstance(value, str) and not value.strip():
             return None
         return value
-
-    @model_validator(mode="after")
-    def validate_money(self):
-        if self.advance_amount is not None and self.advance_amount > self.price_agreed:
-            raise ValueError("El anticipo no puede superar el precio total")
-        has_evidence = bool(self.payment_evidence_url) or bool(self.payment_evidence_urls)
-        if has_evidence and not self.contractor_signature_url:
-            raise ValueError("Para adjuntar comprobante también debes incluir la firma del contratista")
-        if self.mark_payment_validated and not self.contractor_signature_url:
-            raise ValueError("Para marcar el pago como validado debes adjuntar la firma del contratista")
-        return self
 
 
 class BookingUpdate(BaseModel):
@@ -131,7 +119,6 @@ class BookingReopenQuote(BaseModel):
 class BookingQuote(BaseModel):
     """Respuesta del músico con cotización y detalle solicitado."""
     price_agreed: Decimal = Field(gt=0)
-    advance_amount: Decimal | None = Field(default=None, ge=0)
     musician_quote_notes: str | None = None
     location_address: str | None = None
     location_city: str | None = None
@@ -155,39 +142,22 @@ class CancellationQuoteOut(BaseModel):
     rule: str
 
 
-class BookingConfirm(BaseModel):
-    """Contratista acepta contrato del músico, firma y realiza el pago."""
-    terms_accepted: bool
-    payment_evidence_url: str | None = None
-    payment_evidence_urls: list[str] = Field(default_factory=list)
-    signature_image_url: str
-    amount: Decimal = Field(gt=0)
-    payment_type: str = Field(pattern="^(advance|full)$")
-    sign_ip: str | None = None
-
-
 class BookingEventChangeRequest(BaseModel):
     location_address: str | None = None
     location_city: str | None = None
     location_reference: str | None = None
     event_description: str | None = None
     change_notes: str | None = None
+    # Pago único (100%): tras el pago el precio no cambia; si se envía debe
+    # coincidir con el actual.
     price_agreed: Decimal | None = Field(default=None, gt=0)
-    advance_amount: Decimal | None = Field(default=None, ge=0)
 
 
 class BookingChangeDecision(BaseModel):
     """Aceptar o rechazar cambios pendientes (sin re-firma)."""
     accept: bool
-    # Opcionales al aceptar: el músico puede ajustar precio/anticipo o dejarlos igual.
+    # Pago único (100%): si se envía, debe coincidir con el precio actual.
     price_agreed: Decimal | None = Field(default=None, gt=0)
-    advance_amount: Decimal | None = Field(default=None, ge=0)
-
-
-class BookingBalancePayment(BaseModel):
-    amount: Decimal = Field(gt=0)
-    payment_evidence_url: str | None = None
-    payment_evidence_urls: list[str] = Field(default_factory=list)
 
 
 class BookingMessageCreate(BaseModel):
@@ -324,7 +294,6 @@ class BookingOut(BaseModel):
     event_description: str | None
     requested_repertoire: list[str] | None = None
     price_agreed: Decimal | None
-    advance_amount: Decimal | None
     platform_fee_percent: Decimal | None = None
     platform_fee_amount: Decimal | None = None
     musician_quote_notes: str | None = None
@@ -341,7 +310,6 @@ class BookingOut(BaseModel):
     pending_event_description: str | None = None
     pending_change_notes: str | None = None
     pending_price_agreed: Decimal | None = None
-    pending_advance_amount: Decimal | None = None
     change_requested_by: str | None = None
     change_requested_at: datetime | None = None
     status: BookingStatus

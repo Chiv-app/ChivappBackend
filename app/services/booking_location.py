@@ -29,7 +29,6 @@ from app.schemas.booking_location import (
     LiveLocationParticipantOut,
     LiveLocationSessionOut,
 )
-from app.services.booking_lifecycle import remaining_balance
 
 ParticipantRole = Literal["leader", "member", "contractor"]
 
@@ -59,14 +58,7 @@ def assert_event_phase(db: Session, booking: Booking) -> None:
         raise HTTPException(
             400,
             "La ubicación en vivo solo está disponible en la fase de evento "
-            "(después del pago total).",
-        )
-    due = remaining_balance(db, booking)
-    if due > 0:
-        raise HTTPException(
-            400,
-            "Aún hay saldo pendiente. La ubicación en vivo se habilita cuando "
-            "el pago total esté cubierto y la fase de evento esté activa.",
+            "(después del pago).",
         )
 
 

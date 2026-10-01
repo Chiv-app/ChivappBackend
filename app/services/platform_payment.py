@@ -84,16 +84,6 @@ def contractor_payable_total(booking: Booking) -> Decimal | None:
     return c_unico.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
-def contractor_advance_due(booking: Booking) -> Decimal | None:
-    """It's now a single 100% payment (cobro único)."""
-    return contractor_payable_total(booking)
-
-
-def contractor_remaining_after_advance(booking: Booking) -> Decimal | None:
-    """Since it is a single payment, there is no remaining balance."""
-    return Decimal("0.00")
-
-
 def musician_portion_of_paid(booking: Booking, paid_total: Decimal) -> Decimal:
     """Share of contractor payments that belongs to the musician."""
     price = Decimal(str(booking.price_agreed or 0))

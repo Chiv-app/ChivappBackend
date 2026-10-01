@@ -27,7 +27,6 @@ from app.models.musician_profile import MusicianProfile
 from app.models.payment import Payment, PaymentStatus
 from app.models.profile_status import ProfileStatus
 from app.schemas.booking import (
-    BookingConfirm,
     BookingCreate,
     BookingOut,
     BookingQuote,
@@ -54,7 +53,6 @@ from app.services.payment_evidence import (
 )
 from app.services.booking_notifications import (
     notify_admins,
-    notify_admins_payment_submitted,
     notify_booking_cancelled,
     notify_booking_confirmed,
     notify_booking_created,
@@ -379,7 +377,6 @@ def quote_booking(
         )
 
     booking.price_agreed = payload.price_agreed
-    booking.advance_amount = payload.price_agreed  # 100% upfront payment
     booking.musician_quote_notes = payload.musician_quote_notes
     booking.quoted_at = datetime.utcnow()
     booking.status = BookingStatus.accepted
@@ -615,7 +612,6 @@ def reopen_quote(
         db.delete(contract)
 
     booking.price_agreed = None
-    booking.advance_amount = None
     booking.platform_fee_percent = None
     booking.platform_fee_amount = None
     booking.musician_quote_notes = None

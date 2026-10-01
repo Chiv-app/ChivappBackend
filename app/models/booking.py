@@ -27,8 +27,11 @@ class BookingStatus(str, enum.Enum):
     contract_pending = "contract_pending"
     contract_signed = "contract_signed"
     payment_pending = "payment_pending"
-    payment_retained = "payment_retained"  # Reserva confirmada (anticipo validado)
+    payment_retained = "payment_retained"  # Reserva confirmada (pago total retenido)
     change_pending = "change_pending"
+    # Legacy/unreachable: from the old advance + balance flow. Kept only so
+    # existing DB rows still load; no code path transitions into them anymore
+    # and they are treated like payment_retained.
     balance_pending = "balance_pending"
     balance_review = "balance_review"
     in_progress = "in_progress"
@@ -61,7 +64,6 @@ class Booking(Base):
     requested_repertoire = Column(JSONB, nullable=True)
 
     price_agreed = Column(Numeric, nullable=True)
-    advance_amount = Column(Numeric, nullable=True)
     # Snapshot: comisión de plataforma sobre price_agreed (la paga el contratista).
     platform_fee_percent = Column(Numeric, nullable=True)
     platform_fee_amount = Column(Numeric, nullable=True)
@@ -86,14 +88,13 @@ class Booking(Base):
     pending_event_description = Column(String, nullable=True)
     pending_change_notes = Column(String, nullable=True)
     pending_price_agreed = Column(Numeric, nullable=True)
-    pending_advance_amount = Column(Numeric, nullable=True)
     change_requested_by = Column(String, nullable=True)  # "contractor" | "musician"
     change_requested_at = Column(DateTime, nullable=True)
 
     # Integraciones externas
     calendar_event_id = Column(String, nullable=True)
 
-    # Guest share link (enabled after final balance is covered)
+    # Guest share link (enabled once the booking is paid/confirmed)
     share_token = Column(String, unique=True, nullable=True, index=True)
     share_enabled = Column(Boolean, nullable=False, default=False)
     share_enabled_at = Column(DateTime, nullable=True)
