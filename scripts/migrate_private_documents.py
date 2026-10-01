@@ -37,16 +37,16 @@ logger.addHandler(handler)
 
 
 def get_owner_for_contractor_signature(db: Session, contract: Contract):
-    booking = db.query(Booking).filter(Booking.contract_id == contract.id).first()
-    return booking.contractor_user_id if booking else None
+    booking = db.query(Booking).filter(Booking.id == contract.booking_id).first()
+    return booking.contractor.user_id if booking else None
 
 
 def get_owner_for_musician_signature(db: Session, contract: Contract):
-    booking = db.query(Booking).filter(Booking.contract_id == contract.id).first()
+    booking = db.query(Booking).filter(Booking.id == contract.booking_id).first()
     if not booking:
         return None
     musician_profile = db.query(MusicianProfile).filter(MusicianProfile.id == booking.musician_id).first()
-    return musician_profile.user_id if musician_profile else None
+    return booking.musician.user_id if musician_profile else None
 
 
 def get_owner_for_musician_evidence(db: Session, complaint: BookingComplaint):
@@ -54,7 +54,7 @@ def get_owner_for_musician_evidence(db: Session, complaint: BookingComplaint):
     if not booking:
         return None
     musician_profile = db.query(MusicianProfile).filter(MusicianProfile.id == booking.musician_id).first()
-    return musician_profile.user_id if musician_profile else None
+    return booking.musician.user_id if musician_profile else None
 
 
 def migrate_url(db: Session, record, field_name: str, owner_user_id, execute: bool):
