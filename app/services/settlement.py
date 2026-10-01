@@ -125,6 +125,12 @@ def settlement_state_for_booking(
     retained: float,
     released: float,
 ) -> str:
+    if booking.status == BookingStatus.cancelled:
+        # Cancelación tardía: lo no reembolsado se liquida al músico.
+        if retained > 0:
+            return "payable"
+        return "settled" if released > 0 else "none"
+
     if booking.status != BookingStatus.completed:
         if retained > 0:
             return "in_progress"

@@ -70,6 +70,14 @@ class Booking(Base):
     quoted_at = Column(DateTime, nullable=True)
     rejection_reason = Column(String, nullable=True)
     cancelled_by = Column(String, nullable=True)
+    cancelled_at = Column(DateTime, nullable=True)
+    # Reembolso aplicado por la política de cancelación.
+    # cancellation_refund_status: none | processing | completed | failed
+    cancellation_refund_percent = Column(Numeric, nullable=True)
+    cancellation_refund_amount = Column(Numeric, nullable=True)
+    cancellation_refund_status = Column(String, nullable=True)
+    cancellation_refund_error = Column(String, nullable=True)
+    cancellation_refunded_at = Column(DateTime, nullable=True)
 
     # Pending event changes proposed by either party (awaiting accept/reject)
     pending_location_address = Column(String, nullable=True)

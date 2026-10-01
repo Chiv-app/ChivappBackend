@@ -545,17 +545,18 @@ def process_direct_payment(
             "message": f"Error de comunicación con la pasarela de pago: {exc}",
         }
 
-def issue_refund(payment_id: str, amount: float) -> dict[str, Any]:
+def issue_refund(payment_id: str, amount: float, idempotency_key: str | None = None) -> dict[str, Any]:
     """
     Emite un reembolso total o parcial para un pago procesado.
     Llama a: POST /v1/payments/{payment_id}/refunds
+    Con `idempotency_key` fijo, reintentar la misma operación no reembolsa dos veces.
     """
     if not is_mercadopago_configured():
         raise ValueError("Mercado Pago no está configurado.")
 
     payload = {"amount": float(amount)}
     headers = _mp_headers()
-    headers["X-Idempotency-Key"] = f"refund_{payment_id}_{amount}_{uuid.uuid4()}"
+    headers["X-Idempotency-Key"] = idempotency_key or f"refund_{payment_id}_{amount}_{uuid.uuid4()}"
 
     try:
         with httpx.Client(timeout=15.0) as client:

@@ -80,6 +80,10 @@ class AdminBookingOut(BaseModel):
     contractor_email: str | None = None
     cancelled_by: str | None = None
     rejection_reason: str | None = None
+    cancellation_refund_percent: Decimal | None = None
+    cancellation_refund_amount: Decimal | None = None
+    cancellation_refund_status: str | None = None
+    cancellation_refund_error: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -100,6 +104,8 @@ class AdminBookingDetailOut(AdminBookingOut):
 
 class AdminBookingCancel(BaseModel):
     reason: str | None = Field(default=None, max_length=500)
+    # % de reembolso al contratista si hay pago retenido (por defecto 100 %).
+    refund_percent: int = Field(default=100, ge=0, le=100)
 
 
 class AdminPaymentOut(BaseModel):

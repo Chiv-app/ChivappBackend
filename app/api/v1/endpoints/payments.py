@@ -367,57 +367,6 @@ def get_contractor_expenses(
     )
 
 
-@router.post("", response_model=PaymentOut, status_code=201)
-@router.post("/", response_model=PaymentOut, status_code=201, include_in_schema=False)
-def create_payment(
-    payload: PaymentCreate,
-    current_user: User = Depends(deps.get_current_user),
-    db: Session = Depends(deps.get_db),
-):
-    if current_user.role != UserRole.contractor:
-        raise HTTPException(403, "Solo contratistas pueden iniciar pagos")
-
-    booking = get_booking_or_404(db, payload.booking_id)
-    assert_booking_contractor_owner(db, booking, current_user)
-
-    if booking.status != BookingStatus.contract_signed:
-        raise HTTPException(
-            status_code=400,
-            detail="La reserva debe estar confirmada antes de retener el pago",
-        )
-
-    existing = (
-        db.query(Payment)
-        .filter(Payment.booking_id == booking.id)
-        .first()
-    )
-    if existing:
-        raise HTTPException(400, "Ya existe un pago para esta reserva")
-
-    evidence_urls = assert_evidence_uploads(
-        normalize_evidence_urls(
-            payment_evidence_url=payload.evidence_url,
-            payment_evidence_urls=payload.evidence_urls,
-        ),
-        require_at_least_one=False,
-    )
-
-    payment = Payment(
-        booking_id=booking.id,
-        amount=payload.amount,
-        payment_type=payload.payment_type,
-    )
-    apply_evidence_urls(payment, evidence_urls)
-
-    booking.status = BookingStatus.payment_pending
-
-    db.add(payment)
-    db.commit()
-    db.refresh(payment)
-
-    return payment
-
-
 @router.post("/{payment_id}/retain", response_model=PaymentOut)
 def retain_payment(
     payment_id: str,

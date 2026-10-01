@@ -1,3 +1,4 @@
+import logging
 from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -34,9 +35,15 @@ from app.schemas.booking import (
     BookingReopenQuote,
     BookingRequestedRepertoireUpdate,
     BookingUpdate,
-    MusicianAttachContractorSignature,
     MusicianBookingCreate,
     BookingCalendarSyncRequest,
+    CancellationQuoteOut,
+)
+from app.services.cancellation_policy import (
+    CANCELLABLE_STATUSES,
+    execute_cancellation_refund,
+    quote_cancellation,
+    record_cancellation,
 )
 from app.services.availability_match import assert_musician_available
 from app.services.booking_contract import create_booking_contract
@@ -57,10 +64,7 @@ from app.services.booking_notifications import (
     notify_booking_rejected,
     notify_booking_updated,
 )
-from app.services.musician_booking import (
-    attach_contractor_signature_as_musician,
-    create_musician_booking,
-)
+from app.services.musician_booking import create_musician_booking
 from app.services.uploads import UPLOAD_DIR
 
 
@@ -179,7 +183,7 @@ def create_booking_as_musician(
     current_user: User = Depends(deps.get_current_user),
     db: Session = Depends(deps.get_db),
 ):
-    """El músico crea una contrata con cliente, montos y firma opcional."""
+    """El músico crea una propuesta para un cliente; el cliente la acepta, firma y paga."""
     if current_user.role != UserRole.musician:
         raise HTTPException(403, "Solo los músicos pueden crear contratas desde este flujo")
 
@@ -202,30 +206,6 @@ def create_booking_as_musician(
         pass
 
     return booking
-
-
-@router.post(
-    "/{booking_id}/attach-contractor-signature",
-    response_model=BookingOut,
-)
-def attach_contractor_signature(
-    booking_id: str,
-    payload: MusicianAttachContractorSignature,
-    request: Request,
-    current_user: User = Depends(deps.get_current_user),
-    db: Session = Depends(deps.get_db),
-):
-    """El músico adjunta la firma del contratista para regularizar el contrato."""
-    booking = get_booking_or_404(db, booking_id)
-    musician = assert_booking_musician_owner(db, booking, current_user)
-    return attach_contractor_signature_as_musician(
-        db,
-        booking=booking,
-        musician=musician,
-        musician_user=current_user,
-        payload=payload,
-        sign_ip=_client_ip(request, payload.sign_ip),
-    )
 
 
 @router.get("", response_model=list[BookingOut])
@@ -669,103 +649,20 @@ def _assert_upload_exists(upload_url: str, label: str) -> None:
         )
 
 
-@router.post("/{booking_id}/confirm", response_model=BookingOut)
-def confirm_booking(
+@router.get("/{booking_id}/cancellation-quote", response_model=CancellationQuoteOut)
+def get_cancellation_quote(
     booking_id: str,
-    payload: BookingConfirm,
-    request: Request,
     current_user: User = Depends(deps.get_current_user),
     db: Session = Depends(deps.get_db),
 ):
     booking = get_booking_or_404(db, booking_id)
-    assert_booking_contractor_owner(db, booking, current_user)
-
-    if booking.status != BookingStatus.contract_pending:
-        raise HTTPException(
-            status_code=400,
-            detail="La reserva debe estar en estado 'contract_pending'",
-        )
-
-    if not payload.terms_accepted:
-        raise HTTPException(
-            status_code=400,
-            detail="Debes aceptar los términos del contrato del músico",
-        )
-
-    if not payload.signature_image_url:
-        raise HTTPException(
-            status_code=400,
-            detail="Debes firmar el contrato para aceptar los términos",
-        )
-
-    _assert_upload_exists(payload.signature_image_url, "firma")
-    evidence_urls = assert_evidence_uploads(
-        normalize_evidence_urls(
-            payment_evidence_url=payload.payment_evidence_url,
-            payment_evidence_urls=payload.payment_evidence_urls,
-        ),
-        require_at_least_one=False,
+    assert_booking_participant(db, booking, current_user)
+    cancelled_by = "musician" if current_user.role == UserRole.musician else "contractor"
+    quote = quote_cancellation(db, booking, cancelled_by)
+    return CancellationQuoteOut(
+        can_cancel=booking.status in CANCELLABLE_STATUSES,
+        **quote.__dict__,
     )
-
-    contract = db.query(Contract).filter(Contract.booking_id == booking.id).first()
-    if not contract:
-        raise HTTPException(404, "Contrato no encontrado para esta reserva")
-
-    musician = db.query(MusicianProfile).filter(
-        MusicianProfile.id == booking.musician_id
-    ).first()
-    if not musician:
-        raise HTTPException(404, "Músico no encontrado")
-    musician_user = _load_musician_user(db, musician)
-    if not musician_user:
-        raise HTTPException(404, "Usuario del músico no encontrado")
-
-    now = datetime.utcnow()
-    sign_ip = _client_ip(request, payload.sign_ip)
-
-    has_snapshot = bool(contract.title and contract.body)
-    has_legacy_pdf = bool(contract.contract_pdf_url or contract.contract_signed_pdf_url)
-    if not has_snapshot and not has_legacy_pdf:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "El contrato de esta reserva no tiene contenido. "
-                "Pide al músico que vuelva a generar el acuerdo."
-            ),
-        )
-
-    contract.terms_accepted = True
-    contract.terms_accepted_at = now
-    contract.terms_accepted_ip = sign_ip
-    contract.contractor_signed = True
-    contract.contractor_sign_timestamp = now
-    contract.contractor_sign_ip = sign_ip
-    contract.contractor_signature_url = payload.signature_image_url
-    if not contract.musician_signature_url and musician.signature_image_url:
-        contract.musician_signature_url = musician.signature_image_url
-    # Con snapshot, el PDF firmado se genera on-demand; no se persiste archivo.
-    if has_snapshot:
-        contract.contract_signed_pdf_url = None
-
-    payment = Payment(
-        booking_id=booking.id,
-        amount=payload.amount,
-        payment_type=payload.payment_type,
-        status=PaymentStatus.initiated,
-    )
-    apply_evidence_urls(payment, evidence_urls)
-
-    booking.status = BookingStatus.contract_signed
-    db.add(payment)
-    db.flush()
-    booking.status = BookingStatus.payment_pending
-
-    notify_booking_confirmed(db, musician_user, str(booking.id))
-    notify_admins_payment_submitted(db, str(booking.id), kind="advance")
-
-    db.commit()
-    db.refresh(booking)
-    return booking
 
 
 @router.post("/{booking_id}/cancel", response_model=BookingOut)
@@ -778,22 +675,19 @@ def cancel_booking(
     booking = get_booking_or_404(db, booking_id)
     assert_booking_participant(db, booking, current_user)
 
-    if booking.status in [
-        BookingStatus.completed,
-        BookingStatus.payment_released,
-        BookingStatus.contract_signed,
-        BookingStatus.payment_pending,
-        BookingStatus.payment_retained,
-    ]:
+    # Bloquear la fila evita dos cancelaciones (y dos reembolsos) simultáneas.
+    db.refresh(booking, with_for_update=True)
+    if booking.status not in CANCELLABLE_STATUSES:
         raise HTTPException(400, "No se puede cancelar en este estado")
 
     cancelled_by = "musician" if current_user.role == UserRole.musician else "contractor"
-    booking.cancelled_by = cancelled_by
+    quote = quote_cancellation(db, booking, cancelled_by)
+    record_cancellation(booking, quote)
 
     if payload and payload.rejection_reason:
         booking.rejection_reason = payload.rejection_reason
 
-    booking.status = BookingStatus.cancelled
+    _remove_calendar_event(booking)
 
     from app.services.booking_share import disable_booking_share
 
@@ -820,8 +714,22 @@ def cancel_booking(
         )
 
     db.commit()
+    if booking.cancellation_refund_status == "processing":
+        execute_cancellation_refund(db, booking)
     db.refresh(booking)
     return booking
+
+
+def _remove_calendar_event(booking: Booking) -> None:
+    if not booking.calendar_event_id:
+        return
+    from app.services.calendar_service import cancel_booking_event
+
+    try:
+        cancel_booking_event(booking.calendar_event_id)
+    except Exception:  # noqa: BLE001 - no bloquear la cancelación por Calendar
+        logging.getLogger(__name__).exception("No se pudo borrar el evento de Calendar %s", booking.calendar_event_id)
+
 
 @router.post("/{booking_id}/calendar-sync", response_model=BookingOut)
 def sync_booking_calendar_endpoint(

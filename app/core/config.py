@@ -52,6 +52,12 @@ class Settings(BaseSettings):
     # Public URL for webhooks (in production or ngrok/tunnel; falls back to OAUTH_REDIRECT_BASE_URL)
     MERCADO_PAGO_WEBHOOK_BASE_URL: str = ""
 
+    # Política de cancelación (cuando cancela el contratista con el pago retenido).
+    # Días de anticipación al evento -> % de reembolso sobre lo pagado sin el costo de pasarela.
+    CANCEL_FULL_REFUND_MIN_DAYS: int = 15  # más de 15 días: 100 %
+    CANCEL_PARTIAL_REFUND_MIN_DAYS: int = 7  # entre 7 y 15 días: % parcial
+    CANCEL_PARTIAL_REFUND_PERCENT: int = 50  # menos de 7 días: 0 %
+
     # Google Cloud Storage
     GCP_BUCKET_NAME: str = ""
 

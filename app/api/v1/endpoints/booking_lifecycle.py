@@ -411,54 +411,6 @@ def decide_booking_change(
     return booking
 
 
-@router.post("/{booking_id}/submit-balance", response_model=BookingOut)
-def submit_balance_payment(
-    booking_id: str,
-    payload: BookingBalancePayment,
-    current_user: User = Depends(deps.get_current_user),
-    db: Session = Depends(deps.get_db),
-):
-    booking = get_booking_or_404(db, booking_id)
-    assert_booking_contractor_owner(db, booking, current_user)
-
-    if booking.status not in {
-        BookingStatus.payment_retained,
-        BookingStatus.balance_pending,
-    }:
-        raise HTTPException(400, "No puedes enviar el abono final en este estado")
-
-    due = remaining_balance(db, booking)
-    if due <= 0:
-        raise HTTPException(400, "No hay saldo pendiente por pagar")
-
-    if Decimal(str(payload.amount)) <= 0:
-        raise HTTPException(400, "Monto inválido")
-
-    evidence_urls = assert_evidence_uploads(
-        normalize_evidence_urls(
-            payment_evidence_url=payload.payment_evidence_url,
-            payment_evidence_urls=payload.payment_evidence_urls,
-        ),
-        require_at_least_one=False,
-    )
-
-    payment = Payment(
-        booking_id=booking.id,
-        amount=payload.amount,
-        payment_type="balance",
-        status=PaymentStatus.initiated,
-    )
-    apply_evidence_urls(payment, evidence_urls)
-    db.add(payment)
-    booking.status = BookingStatus.balance_review
-
-    notify_balance_submitted(db, _musician_user(db, booking), str(booking.id))
-    notify_admins_payment_submitted(db, str(booking.id), kind="balance")
-    db.commit()
-    db.refresh(booking)
-    return booking
-
-
 @router.post("/{booking_id}/start-event", response_model=BookingOut)
 def start_event_phase(
     booking_id: str,

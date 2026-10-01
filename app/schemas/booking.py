@@ -47,13 +47,6 @@ class MusicianBookingCreate(BaseModel):
     advance_amount: Decimal | None = Field(default=None, ge=0)
     musician_quote_notes: str | None = Field(default=None, max_length=2000)
 
-    contractor_signature_url: str | None = None
-    # Regularización opcional al crear (también se puede hacer después)
-    payment_evidence_url: str | None = None
-    payment_evidence_urls: list[str] = Field(default_factory=list)
-    payment_amount: Decimal | None = Field(default=None, gt=0)
-    payment_type: str | None = Field(default=None, pattern="^(advance|full)$")
-    mark_payment_validated: bool = False
 
     @field_validator("contractor_email", mode="before")
     @classmethod
@@ -74,19 +67,6 @@ class MusicianBookingCreate(BaseModel):
         if self.mark_payment_validated and not self.contractor_signature_url:
             raise ValueError("Para marcar el pago como validado debes adjuntar la firma del contratista")
         return self
-
-
-class MusicianAttachContractorSignature(BaseModel):
-    """El músico adjunta la firma del contratista para regularizar el contrato."""
-
-    signature_image_url: str
-    terms_accepted: bool = True
-    payment_evidence_url: str | None = None
-    payment_evidence_urls: list[str] = Field(default_factory=list)
-    payment_amount: Decimal | None = Field(default=None, gt=0)
-    payment_type: str | None = Field(default=None, pattern="^(advance|full)$")
-    mark_payment_validated: bool = False
-    sign_ip: str | None = None
 
 
 class BookingUpdate(BaseModel):
@@ -160,6 +140,19 @@ class BookingQuote(BaseModel):
 
 class BookingReject(BaseModel):
     rejection_reason: str | None = None
+
+
+class CancellationQuoteOut(BaseModel):
+    """Vista previa del reembolso si se cancela ahora."""
+
+    can_cancel: bool
+    cancelled_by: str
+    days_before_event: int
+    paid_total: Decimal
+    refundable_base: Decimal
+    refund_percent: int
+    refund_amount: Decimal
+    rule: str
 
 
 class BookingConfirm(BaseModel):
@@ -338,6 +331,10 @@ class BookingOut(BaseModel):
     quoted_at: datetime | None = None
     rejection_reason: str | None = None
     cancelled_by: str | None = None
+    cancelled_at: datetime | None = None
+    cancellation_refund_percent: Decimal | None = None
+    cancellation_refund_amount: Decimal | None = None
+    cancellation_refund_status: str | None = None
     pending_location_address: str | None = None
     pending_location_city: str | None = None
     pending_location_reference: str | None = None

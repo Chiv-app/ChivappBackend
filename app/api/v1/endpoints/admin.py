@@ -44,7 +44,6 @@ from app.schemas.profiles import (
     MusicianProfileAdminOut,
     ProfileReviewAction,
 )
-from app.services import payment_review
 from app.services.booking_notifications import (
     notify_balance_rejected,
     notify_balance_validated,
@@ -53,6 +52,11 @@ from app.services.booking_notifications import (
     notify_profile_approved,
     notify_profile_needs_resubmit,
     notify_profile_rejected,
+)
+from app.services.cancellation_policy import (
+    execute_cancellation_refund,
+    quote_cancellation,
+    record_cancellation,
 )
 from app.services.payment_evidence import payment_evidence_list
 
@@ -70,6 +74,9 @@ ACTIVE_BOOKING_STATUSES = {
     BookingStatus.balance_review,
     BookingStatus.in_progress,
 }
+
+# Finalizadas, o canceladas tarde con parte del pago retenido para el músico.
+SETTLEABLE_BOOKING_STATUSES = {BookingStatus.completed, BookingStatus.cancelled}
 
 PAYMENT_REVIEW_STATUSES = {
     BookingStatus.payment_pending,
@@ -122,6 +129,10 @@ def _booking_admin_out(booking: Booking) -> AdminBookingOut:
         contractor_email=contractor.user.email if contractor and contractor.user else None,
         cancelled_by=booking.cancelled_by,
         rejection_reason=booking.rejection_reason,
+        cancellation_refund_percent=booking.cancellation_refund_percent,
+        cancellation_refund_amount=booking.cancellation_refund_amount,
+        cancellation_refund_status=booking.cancellation_refund_status,
+        cancellation_refund_error=booking.cancellation_refund_error,
         created_at=booking.created_at,
         updated_at=booking.updated_at,
     )
@@ -799,14 +810,33 @@ def cancel_booking_admin(
     )
     if not booking:
         raise HTTPException(404, "Reserva no encontrada")
+    db.refresh(booking, with_for_update=True)
     if booking.status in {BookingStatus.completed, BookingStatus.cancelled}:
         raise HTTPException(400, "Esta reserva ya está cerrada")
 
-    booking.status = BookingStatus.cancelled
-    booking.cancelled_by = "admin"
+    quote = quote_cancellation(db, booking, "admin", admin_refund_percent=payload.refund_percent)
+    record_cancellation(booking, quote)
     if payload.reason:
         booking.rejection_reason = payload.reason
     db.commit()
+    if booking.cancellation_refund_status == "processing":
+        execute_cancellation_refund(db, booking)
+    db.refresh(booking)
+    return _booking_admin_out(booking)
+
+
+@router.post("/bookings/{booking_id}/retry-refund", response_model=AdminBookingOut)
+def retry_cancellation_refund(
+    booking_id: str,
+    _: User = Depends(deps.get_current_admin),
+    db: Session = Depends(deps.get_db),
+):
+    """Reintenta un reembolso de cancelación que falló en Mercado Pago."""
+    booking = _load_booking_with_parties(db, booking_id)
+    db.refresh(booking, with_for_update=True)
+    if booking.status != BookingStatus.cancelled or booking.cancellation_refund_status not in {"failed", "processing"}:
+        raise HTTPException(400, "Esta reserva no tiene un reembolso pendiente")
+    execute_cancellation_refund(db, booking)
     db.refresh(booking)
     return _booking_admin_out(booking)
 
@@ -878,160 +908,6 @@ def _load_booking_with_parties(db: Session, booking_id: str) -> Booking:
     return booking
 
 
-@router.get("/payments/pending-review", response_model=list[AdminPaymentReviewItem])
-def list_pending_payment_reviews(
-    _: User = Depends(deps.get_current_admin),
-    db: Session = Depends(deps.get_db),
-):
-    bookings = (
-        db.query(Booking)
-        .options(
-            joinedload(Booking.musician).joinedload(MusicianProfile.user),
-            joinedload(Booking.contractor).joinedload(ContractorProfile.user),
-        )
-        .filter(Booking.status.in_(PAYMENT_REVIEW_STATUSES))
-        .order_by(Booking.updated_at.asc())
-        .all()
-    )
-
-    items: list[AdminPaymentReviewItem] = []
-    for booking in bookings:
-        kind = "advance" if booking.status == BookingStatus.payment_pending else "balance"
-        payment_query = db.query(Payment).filter(Payment.booking_id == booking.id)
-        if kind == "balance":
-            payment_query = payment_query.filter(Payment.payment_type == "balance")
-        payment = (
-            payment_query.filter(Payment.status == PaymentStatus.initiated)
-            .order_by(Payment.created_at.desc())
-            .first()
-        )
-        if not payment:
-            continue
-        musician = booking.musician
-        contractor = booking.contractor
-
-        rejected_query = db.query(Payment).filter(
-            Payment.booking_id == booking.id,
-            Payment.status == PaymentStatus.rejected,
-        )
-        if kind == "balance":
-            rejected_query = rejected_query.filter(Payment.payment_type == "balance")
-        else:
-            rejected_query = rejected_query.filter(Payment.payment_type != "balance")
-        previous_rejections = rejected_query.count()
-
-        items.append(
-            AdminPaymentReviewItem(
-                booking_id=booking.id,
-                booking_status=booking.status.value,
-                kind=kind,
-                payment_id=payment.id,
-                amount=payment.amount,
-                currency=payment.currency or "PEN",
-                evidence_urls=payment_evidence_list(payment),
-                event_type=booking.event_type,
-                event_date=booking.event_date,
-                musician_name=(
-                    musician.stage_name
-                    if musician and musician.stage_name
-                    else (musician.user.fullname if musician and musician.user else None)
-                ),
-                contractor_name=(
-                    contractor.user.fullname if contractor and contractor.user else None
-                ),
-                submitted_at=payment.created_at,
-                previous_rejections=previous_rejections,
-            )
-        )
-    return items
-
-
-@router.post("/bookings/{booking_id}/advance/validate", response_model=AdminBookingOut)
-def validate_advance_payment_admin(
-    booking_id: str,
-    admin_user: User = Depends(deps.get_current_admin),
-    db: Session = Depends(deps.get_db),
-):
-    booking = _load_booking_with_parties(db, booking_id)
-    payment_review.validate_advance_payment(db, booking, admin_user)
-
-    notify_payment_validated(
-        db,
-        booking.contractor.user,
-        booking.musician.user,
-        str(booking.id),
-    )
-    db.commit()
-    db.refresh(booking)
-    return _booking_admin_out(booking)
-
-
-@router.post("/bookings/{booking_id}/advance/reject", response_model=AdminBookingOut)
-def reject_advance_payment_admin(
-    booking_id: str,
-    payload: AdminPaymentReject,
-    admin_user: User = Depends(deps.get_current_admin),
-    db: Session = Depends(deps.get_db),
-):
-    booking = _load_booking_with_parties(db, booking_id)
-    reason = payload.reason.strip()
-    payment_review.reject_advance_payment(db, booking, admin_user, reason)
-
-    notify_payment_rejected(
-        db,
-        booking.contractor.user,
-        booking.musician.user,
-        str(booking.id),
-        reason=reason,
-    )
-    db.commit()
-    db.refresh(booking)
-    return _booking_admin_out(booking)
-
-
-@router.post("/bookings/{booking_id}/balance/validate", response_model=AdminBookingOut)
-def validate_balance_payment_admin(
-    booking_id: str,
-    admin_user: User = Depends(deps.get_current_admin),
-    db: Session = Depends(deps.get_db),
-):
-    booking = _load_booking_with_parties(db, booking_id)
-    payment_review.validate_balance_payment(db, booking, admin_user)
-
-    notify_balance_validated(
-        db,
-        booking.contractor.user,
-        booking.musician.user,
-        str(booking.id),
-    )
-    db.commit()
-    db.refresh(booking)
-    return _booking_admin_out(booking)
-
-
-@router.post("/bookings/{booking_id}/balance/reject", response_model=AdminBookingOut)
-def reject_balance_payment_admin(
-    booking_id: str,
-    payload: AdminPaymentReject,
-    admin_user: User = Depends(deps.get_current_admin),
-    db: Session = Depends(deps.get_db),
-):
-    booking = _load_booking_with_parties(db, booking_id)
-    reason = payload.reason.strip()
-    payment_review.reject_balance_payment(db, booking, admin_user, reason)
-
-    notify_balance_rejected(
-        db,
-        booking.contractor.user,
-        booking.musician.user,
-        str(booking.id),
-        reason=reason,
-    )
-    db.commit()
-    db.refresh(booking)
-    return _booking_admin_out(booking)
-
-
 @router.get("/payment-instructions", response_model=PlatformPaymentInstructionsOut)
 def get_admin_payment_instructions(
     _: User = Depends(deps.get_current_admin),
@@ -1094,7 +970,7 @@ def list_admin_settlements(
             joinedload(Booking.musician).joinedload(MusicianProfile.user),
             joinedload(Booking.contractor).joinedload(ContractorProfile.user),
         )
-        .filter(Booking.status == BookingStatus.completed)
+        .filter(Booking.status.in_(SETTLEABLE_BOOKING_STATUSES))
         .order_by(Booking.updated_at.desc())
         .limit(limit * 3)
         .all()
@@ -1214,7 +1090,7 @@ def export_admin_settlements(
             joinedload(Booking.musician).joinedload(MusicianProfile.user),
             joinedload(Booking.contractor).joinedload(ContractorProfile.user),
         )
-        .filter(Booking.status == BookingStatus.completed)
+        .filter(Booking.status.in_(SETTLEABLE_BOOKING_STATUSES))
         .order_by(Booking.updated_at.desc())
         .all()
     )
@@ -1358,8 +1234,8 @@ def settle_admin_booking(
     booking = db.get(Booking, UUID(booking_id))
     if not booking:
         raise HTTPException(404, "Reserva no encontrada")
-    if booking.status != BookingStatus.completed:
-        raise HTTPException(400, "Solo se liquidan reservas finalizadas")
+    if booking.status not in SETTLEABLE_BOOKING_STATUSES:
+        raise HTTPException(400, "Solo se liquidan reservas finalizadas o canceladas con fondos retenidos")
 
     complaint = (
         db.query(BookingComplaint)
@@ -1536,8 +1412,8 @@ def release_admin_settlement(
     booking = db.get(Booking, UUID(booking_id))
     if not booking:
         raise HTTPException(404, "Reserva no encontrada")
-    if booking.status != BookingStatus.completed:
-        raise HTTPException(400, "Solo se liquidan reservas finalizadas")
+    if booking.status not in SETTLEABLE_BOOKING_STATUSES:
+        raise HTTPException(400, "Solo se liquidan reservas finalizadas o canceladas con fondos retenidos")
 
     complaint = (
         db.query(BookingComplaint)
