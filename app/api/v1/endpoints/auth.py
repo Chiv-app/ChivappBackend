@@ -1,4 +1,4 @@
-﻿import hmac
+import hmac
 import secrets
 from datetime import datetime
 from urllib.parse import urlencode
@@ -61,7 +61,6 @@ from app.services.email.auth_emails import (
 from app.services.ensemble_members import (
     activate_member_after_password,
     find_password_setup_member,
-    notify_leader_member_joined,
 )
 from app.services.oauth import (
     _provider_or_400,
@@ -405,7 +404,6 @@ def preview_password_setup(token: str, request: Request, db: Session = Depends(d
     if user.password_hash:
         activate_member_after_password(db, member)
         mark_email_verified(user)
-        notify_leader_member_joined(db, member)
         db.commit()
 
     return PasswordSetupPreviewOut(
@@ -459,7 +457,6 @@ def set_password(
     if member:
         activate_member_after_password(db, member)
         mark_email_verified(user)
-        notify_leader_member_joined(db, member)
     else:
         pending_members = (
             db.query(EnsembleMember)
@@ -471,7 +468,6 @@ def set_password(
         )
         for pending in pending_members:
             activate_member_after_password(db, pending)
-            notify_leader_member_joined(db, pending)
 
     _issue_login(response, user)
     db.commit()

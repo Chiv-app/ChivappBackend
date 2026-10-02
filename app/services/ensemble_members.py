@@ -211,9 +211,6 @@ def find_password_setup_member(db: Session, token: str) -> EnsembleMember:
 
 
 def activate_member_after_password(db: Session, member: EnsembleMember) -> None:
-    member.status = EnsembleMemberStatus.active
-    if not member.joined_at:
-        member.joined_at = datetime.utcnow()
     member.password_setup_token = None
     member.password_setup_expires_at = None
 
@@ -226,8 +223,8 @@ def notify_leader_member_joined(db: Session, member: EnsembleMember) -> None:
         db,
         user=leader,
         type="ensemble_member_joined",
-        title="Integrante activó su cuenta",
-        message=f"{member.fullname} ya creó su contraseña y forma parte de tu agrupación.",
+        title="Integrante aceptó unirse",
+        message=f"{member.fullname} aceptó tu invitación y forma parte de tu agrupación.",
         meta={"ensemble_member_id": str(member.id)},
     )
 

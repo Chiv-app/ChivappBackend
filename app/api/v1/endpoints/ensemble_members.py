@@ -1189,6 +1189,56 @@ def list_member_settlements(
     return results
 
 
+
+@router.get("/musician/my-ensemble-invites", response_model=list[EnsembleMemberOut])
+def list_my_ensemble_invites(
+    db: Session = Depends(deps.get_db),
+    current_user: User = Depends(deps.get_current_user),
+):
+    invites = (
+        db.query(EnsembleMember)
+        .filter(
+            EnsembleMember.member_user_id == current_user.id,
+            EnsembleMember.status == EnsembleMemberStatus.invited,
+        )
+        .order_by(EnsembleMember.invited_at.desc())
+        .all()
+    )
+    return [serialize_member(m, include_invite_url=False) for m in invites]
+
+@router.post("/musician/my-ensemble-invites/{member_id}/respond", response_model=EnsembleMemberOut)
+def respond_ensemble_invite(
+    member_id: UUID,
+    payload: BookingMemberRespondRequest,
+    db: Session = Depends(deps.get_db),
+    current_user: User = Depends(deps.get_current_user),
+):
+    member = (
+        db.query(EnsembleMember)
+        .filter(
+            EnsembleMember.id == member_id,
+            EnsembleMember.member_user_id == current_user.id,
+        )
+        .first()
+    )
+    if not member:
+        raise HTTPException(404, "Invitación no encontrada")
+    if member.status != EnsembleMemberStatus.invited:
+        raise HTTPException(400, "Esta invitación ya fue respondida")
+        
+    if payload.action == "accept":
+        member.status = EnsembleMemberStatus.active
+        member.joined_at = datetime.utcnow()
+        from app.services.ensemble_members import notify_leader_member_joined
+        notify_leader_member_joined(db, member)
+    else:
+        member.status = EnsembleMemberStatus.inactive
+        member.joined_at = None
+        
+    db.commit()
+    db.refresh(member)
+    return serialize_member(member, include_invite_url=False)
+
 @router.get("/musician/my-income", response_model=MyMemberIncomeSummary)
 def list_my_member_income(
     db: Session = Depends(deps.get_db),
