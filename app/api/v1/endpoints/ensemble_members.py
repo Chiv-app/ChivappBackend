@@ -595,7 +595,7 @@ def create_booking_invites(
                 )
 
         # Email notification ALWAYS to the member's email (if they have one)
-        if respond_url and member.email:
+        if member.email:
             event_time = booking.start_time or "Por confirmar"
             if booking.end_time:
                 event_time = f"{booking.start_time or '?'} - {booking.end_time}"
@@ -606,6 +606,9 @@ def create_booking_invites(
             ics_file = _generate_ics_attachment(booking, current_user.fullname)
             extra_atts = [ics_file] if ics_file else None
 
+            from app.core.config import settings
+            final_respond_url = respond_url or f"{settings.FRONTEND_URL.rstrip('/')}/musician"
+
             send_booking_member_invite_email(
                 db,
                 member_email=member.email,
@@ -615,7 +618,7 @@ def create_booking_invites(
                 event_date=str(booking.event_date),
                 event_time=str(event_time),
                 event_location=", ".join(location_parts) or "Por confirmar",
-                respond_url=respond_url,
+                respond_url=final_respond_url,
                 user_id=member.member_user_id,
                 booking_id=str(booking.id),
                 extra_attachments=extra_atts,
@@ -748,7 +751,7 @@ def resend_booking_invite_email(
     # Send email ALWAYS
     invite_data = serialize_booking_invite(invite)
     respond_url = invite_data.get("respond_url")
-    if respond_url and member.email:
+    if member.email:
         event_time = booking.start_time or "Por confirmar"
         if booking.end_time:
             event_time = f"{booking.start_time or '?'} - {booking.end_time}"
@@ -758,6 +761,9 @@ def resend_booking_invite_email(
         
         ics_file = _generate_ics_attachment(booking, current_user.fullname)
         extra_atts = [ics_file] if ics_file else None
+        
+        from app.core.config import settings
+        final_respond_url = respond_url or f"{settings.FRONTEND_URL.rstrip('/')}/musician"
         
         from app.services.email.auth_emails import send_booking_member_invite_email
         send_booking_member_invite_email(
@@ -769,7 +775,7 @@ def resend_booking_invite_email(
             event_date=str(booking.event_date),
             event_time=str(event_time),
             event_location=", ".join(location_parts) or "Por confirmar",
-            respond_url=respond_url,
+            respond_url=final_respond_url,
             user_id=member.member_user_id,
             booking_id=str(booking.id),
             extra_attachments=extra_atts,
