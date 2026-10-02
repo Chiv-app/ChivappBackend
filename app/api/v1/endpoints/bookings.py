@@ -164,6 +164,8 @@ def create_booking(
         status=BookingStatus.requested,
     )
 
+    from app.services.platform_payment import sync_booking_platform_fee
+    sync_booking_platform_fee(db, booking, use_current_settings=True)
     db.add(booking)
     db.commit()
     db.refresh(booking)
@@ -595,8 +597,8 @@ def reopen_quote(
         db.delete(contract)
 
     booking.price_agreed = None
-    booking.platform_fee_percent = None
-    booking.platform_fee_amount = None
+    from app.services.platform_payment import sync_booking_platform_fee
+    sync_booking_platform_fee(db, booking, use_current_settings=True)
     booking.musician_quote_notes = None
     booking.quoted_at = None
     booking.status = BookingStatus.requested
