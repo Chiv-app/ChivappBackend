@@ -28,6 +28,7 @@ from app.api.profile_helpers import get_or_create_contractor_profile
 from app.models.user import User, UserRole
 from app.services.booking_state_machine import assert_can_execute_action, BookingAction
 from app.models.booking import Booking, BookingStatus
+from app.services.platform_payment import sync_booking_platform_fee
 from app.models.contract import Contract
 from app.models.musician_profile import MusicianProfile
 from app.models.payment import Payment, PaymentStatus
@@ -230,6 +231,9 @@ def list_bookings(
             .order_by(Booking.created_at.desc())
             .all()
         )
+        for b in bookings:
+            if getattr(b, "status", None) == BookingStatus.requested:
+                sync_booking_platform_fee(db, b, use_current_settings=True)
         return [
             serialize_booking_out(b, viewer_role="owner") for b in bookings
         ]
@@ -255,6 +259,9 @@ def list_bookings(
                 .all()
             )
 
+        for b in owned:
+            if getattr(b, "status", None) == BookingStatus.requested:
+                sync_booking_platform_fee(db, b, use_current_settings=True)
         results = [
             serialize_booking_out(b, viewer_role="owner") for b in owned
         ] + [
@@ -286,6 +293,8 @@ def get_booking(
         if viewer_role == "member"
         else None
     )
+    if getattr(booking, "status", None) == BookingStatus.requested:
+        sync_booking_platform_fee(db, booking, use_current_settings=True)
     return serialize_booking_out(
         booking,
         viewer_role=viewer_role,
