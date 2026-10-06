@@ -1,4 +1,4 @@
-﻿from datetime import datetime
+from datetime import datetime
 from typing import List
 from uuid import UUID
 
@@ -685,7 +685,7 @@ def get_public_contractor_profile(
         .join(User)
         .filter(
             ContractorProfile.id == contractor_id,
-            ContractorProfile.status == ProfileStatus.published,
+            ContractorProfile.status.in_([ProfileStatus.published, ProfileStatus.draft]),
             User.is_verified.is_(True),
         )
         .first()
@@ -720,7 +720,7 @@ def get_public_contractor_profile(
 
     return ContractorProfilePublicOut(
         id=profile.id,
-        fullname=profile.user.fullname,
+        fullname=profile.fullname or profile.user.fullname or "Cliente de Chivapp",
         bio=profile.bio,
         city=profile.city,
         rating_avg=float(profile.rating_avg) if profile.rating_avg is not None else None,
