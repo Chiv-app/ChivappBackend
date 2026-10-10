@@ -56,4 +56,6 @@ __all__ = [
     "BookingLocationPing",
     "SupportTicket",
     "SupportTicketStatus",
+    "BookingLink",
+    "BookingLinkStatus",
 ]

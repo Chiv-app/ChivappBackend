@@ -504,7 +504,34 @@ MIGRATION_STATEMENTS = [
     """,
     # Integrantes
     "ALTER TABLE musician_profile ADD COLUMN IF NOT EXISTS is_ensemble_only BOOLEAN NOT NULL DEFAULT FALSE",
+
+    "ALTER TABLE \"user\" ADD COLUMN IF NOT EXISTS login_otp_hash VARCHAR",
+    "ALTER TABLE \"user\" ADD COLUMN IF NOT EXISTS login_otp_expires_at TIMESTAMP",
+    """
+    DO $$ BEGIN
+        CREATE TYPE bookinglinkstatus AS ENUM ('active', 'completed', 'expired');
+    EXCEPTION WHEN duplicate_object THEN NULL;
+    END $$
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS booking_link (
+        id UUID PRIMARY KEY,
+        token VARCHAR NOT NULL UNIQUE,
+        musician_id UUID NOT NULL REFERENCES musician_profile(id),
+        price NUMERIC NOT NULL,
+        event_date DATE,
+        start_time TIME,
+        client_email VARCHAR,
+        status bookinglinkstatus NOT NULL DEFAULT 'active',
+        expires_at TIMESTAMP NOT NULL,
+        booking_id UUID REFERENCES booking(id),
+        created_at TIMESTAMP,
+        updated_at TIMESTAMP
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_booking_link_token ON booking_link (token)",
 ]
+
 
 
 
