@@ -34,7 +34,7 @@ def create_booking_link(
     if current_user.role != UserRole.musician:
         raise HTTPException(status_code=403, detail="Sólo los músicos pueden crear links de pago.")
         
-    musician_profile = db.query(MusicianProfile).filter(MusicianProfile.id == current_user.id).first()
+    musician_profile = db.query(MusicianProfile).filter(MusicianProfile.user_id == current_user.id).first()
     if not musician_profile:
         raise HTTPException(status_code=400, detail="Perfil de músico no encontrado.")
         
@@ -68,7 +68,7 @@ def get_my_booking_links(
         raise HTTPException(status_code=403, detail="Sólo los músicos pueden ver sus links de pago.")
         
     links = db.query(BookingLink).filter(
-        BookingLink.musician_id == current_user.id
+        BookingLink.musician.has(user_id=current_user.id)
     ).order_with_labels().order_by(BookingLink.created_at.desc()).all()
     
     return links
@@ -206,7 +206,7 @@ def reset_link_expiration(
     if not link:
         raise HTTPException(status_code=404, detail="Link de pago no encontrado.")
         
-    if link.musician_id != current_user.id:
+    if link.musician.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="No autorizado.")
         
     if link.status == BookingLinkStatus.completed:
