@@ -650,4 +650,29 @@ La reserva para el evento de {{event_type}} con {{other_party_name}} ha sido can
 Ver detalles:
 {{action_url}}"""
     },
+    {
+        "slug": "login_otp",
+        "name": "Código de Inicio de Sesión",
+        "description": "Se envía al usuario con el código temporal para iniciar sesión.",
+        "subject": "Tu código de acceso para {{app_name}}",
+        "available_variables": ["user_name", "app_name", "otp_code"],
+        "html_body": build_email_layout(
+            category_badge="Acceso",
+            badge_bg="#EFF6FF",
+            badge_color="#1E3A8A",
+            title="Código de inicio de sesión",
+            greeting="Hola {{user_name}},",
+            lead_text="Tu código de verificación de 6 dígitos para acceder a tu cuenta es:",
+            body_extra_html="<div style='text-align: center; margin: 32px 0;'><span style='font-size: 32px; font-weight: bold; letter-spacing: 8px; color: #0F172A;'>{{otp_code}}</span></div><p>Este código expira en 10 minutos. Si no solicitaste este acceso, puedes ignorar este correo.</p>",
+            cta_label=None,
+            cta_url=None,
+        ),
+        "text_body": """Hola {{user_name}},
+
+Tu código de verificación para acceder a {{app_name}} es:
+{{otp_code}}
+
+Este código expira en 10 minutos.
+"""
+    },
 ]
