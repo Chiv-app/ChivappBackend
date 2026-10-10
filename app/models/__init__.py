@@ -25,6 +25,7 @@ from app.models.booking_location import (
 )
 from app.models.support_ticket import SupportTicket, SupportTicketStatus
 from app.models.uploaded_file import UploadedFile
+from app.models.booking_link import BookingLink, BookingLinkStatus
 
 __all__ = [
     "UploadedFile",

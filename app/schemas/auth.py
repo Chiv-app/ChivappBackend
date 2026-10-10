@@ -89,3 +89,15 @@ class GuestRegisterRequest(BaseModel):
     fullname: str
     phone: str
 
+
+
+class LoginStepOneRequest(BaseModel):
+    email: EmailStr
+
+class LoginStepOneResponse(BaseModel):
+    status: str
+    message: str | None = None
+
+class LoginOtpRequest(BaseModel):
+    email: EmailStr
+    otp: str

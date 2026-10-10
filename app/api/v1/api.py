@@ -18,6 +18,7 @@ from app.api.v1.endpoints import (
     booking_location,
     support,
     calendar_auth,
+    booking_links,
 )
 
 api_router = APIRouter()
@@ -27,6 +28,7 @@ api_router.include_router(bookings.router)
 api_router.include_router(booking_lifecycle.router)
 api_router.include_router(booking_share.router)
 api_router.include_router(booking_location.router)
+api_router.include_router(booking_links.router, prefix="/booking-links", tags=["booking-links"])
 api_router.include_router(contracts.router)
 api_router.include_router(payments.router)
 api_router.include_router(notifications.router)

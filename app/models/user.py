@@ -36,6 +36,9 @@ class User(Base):
     password_reset_token = Column(String, nullable=True, unique=True, index=True)
     password_reset_expires_at = Column(DateTime, nullable=True)
 
+    login_otp_hash = Column(String, nullable=True)
+    login_otp_expires_at = Column(DateTime, nullable=True)
+
     terms_accepted_at = Column(DateTime, nullable=True)
     terms_accepted_ip = Column(String, nullable=True)
 

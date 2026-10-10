@@ -327,6 +327,82 @@ def register_user(payload: RegisterRequest, request: Request, db: Session = Depe
     return user
 
 
+
+from app.schemas.auth import LoginStepOneRequest, LoginStepOneResponse, LoginOtpRequest
+import hashlib
+
+@router.post("/login-step-one", response_model=LoginStepOneResponse)
+@limiter.limit(settings.RATE_LIMIT_LOGIN)
+def login_step_one(payload: LoginStepOneRequest, request: Request, db: Session = Depends(deps.get_db)):
+    email = payload.email.lower().strip()
+    user = db.query(User).filter(User.email == email).first()
+    
+    if not user:
+        return LoginStepOneResponse(status="not_found")
+        
+    if not user.is_verified:
+        return LoginStepOneResponse(status="requires_password")
+        
+    # User is verified. Generate OTP.
+    from app.services.email.service import send_templated_email
+    from app.services.email.defaults import APP_NAME
+    import secrets
+    from datetime import timedelta
+    
+    # Generate 6 digit numeric code
+    otp = str(secrets.randbelow(1000000)).zfill(6)
+    
+    # Hash it and store in DB
+    user.login_otp_hash = hashlib.sha256(f"{user.id}:{otp}".encode()).hexdigest()
+    user.login_otp_expires_at = datetime.utcnow() + timedelta(minutes=10)
+    db.commit()
+    
+    try:
+        send_templated_email(
+            db,
+            slug="login_otp",
+            to=user.email,
+            context={
+                "user_name": user.fullname,
+                "app_name": APP_NAME,
+                "otp_code": otp,
+            },
+            user_id=user.id,
+        )
+    except Exception as e:
+        print("Template login_otp failed to send, create it in DB.", e)
+        pass
+
+    return LoginStepOneResponse(status="otp_sent")
+
+@router.post("/login-otp", response_model=TokenOut)
+@limiter.limit(settings.RATE_LIMIT_LOGIN)
+def login_otp(payload: LoginOtpRequest, request: Request, response: Response, db: Session = Depends(deps.get_db)):
+    email = payload.email.lower().strip()
+    user = db.query(User).filter(User.email == email).first()
+    
+    if not user:
+        raise HTTPException(status_code=401, detail="Credenciales inválidas")
+        
+    if not getattr(user, "login_otp_hash", None) or not getattr(user, "login_otp_expires_at", None):
+        raise HTTPException(status_code=401, detail="Código inválido o expirado")
+        
+    if user.login_otp_expires_at < datetime.utcnow():
+        raise HTTPException(status_code=401, detail="El código ha expirado")
+        
+    expected_hash = hashlib.sha256(f"{user.id}:{payload.otp}".encode()).hexdigest()
+    if user.login_otp_hash != expected_hash:
+        raise HTTPException(status_code=401, detail="Código incorrecto")
+        
+    user.login_otp_hash = None
+    user.login_otp_expires_at = None
+    
+    _issue_login(response, user)
+    db.commit()
+    
+    return TokenOut()
+
+
 @router.post("/login", response_model=TokenOut)
 @limiter.limit(settings.RATE_LIMIT_LOGIN)
 def login(payload: LoginRequest, request: Request, response: Response, db: Session = Depends(deps.get_db)):
