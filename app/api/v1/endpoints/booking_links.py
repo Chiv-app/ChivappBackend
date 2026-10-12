@@ -157,18 +157,20 @@ def checkout_booking_link(
         db.flush()
         
         contractor = ContractorProfile(
-            id=user.id,
-            fullname=payload.fullname,
+            user_id=user.id,
             document_number=payload.document_number,
         )
         db.add(contractor)
         db.flush()
     else:
         # Existing user. Ensure contractor profile exists.
-        contractor = db.query(ContractorProfile).filter(ContractorProfile.id == user.id).first()
+        contractor = db.query(ContractorProfile).filter(ContractorProfile.user_id == user.id).first()
         if not contractor:
-            contractor = ContractorProfile(id=user.id, fullname=payload.fullname)
+            contractor = ContractorProfile(user_id=user.id, document_number=payload.document_number)
             db.add(contractor)
+            db.flush()
+        elif payload.document_number and not contractor.document_number:
+            contractor.document_number = payload.document_number
             db.flush()
             
     from app.services.platform_payment import sync_booking_platform_fee
@@ -176,7 +178,7 @@ def checkout_booking_link(
     # 2. Create the Booking
     booking = Booking(
         musician_id=link.musician_id,
-        contractor_id=user.id,
+        contractor_id=contractor.id,
         event_date=payload.event_date,
         start_time=payload.start_time,
         event_type=payload.event_type,
