@@ -171,6 +171,8 @@ def checkout_booking_link(
             db.add(contractor)
             db.flush()
             
+    from app.services.platform_payment import sync_booking_platform_fee
+    
     # 2. Create the Booking
     booking = Booking(
         musician_id=link.musician_id,
@@ -184,6 +186,7 @@ def checkout_booking_link(
         status=BookingStatus.contract_pending,
     )
     db.add(booking)
+    sync_booking_platform_fee(db, booking, use_current_settings=True)
     db.flush()
     
     # 3. Mark link as completed
