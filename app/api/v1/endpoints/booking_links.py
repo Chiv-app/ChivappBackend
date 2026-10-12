@@ -139,7 +139,7 @@ def checkout_booking_link(
     
     if not user:
         
-        from app.core.security import get_password_hash
+        from app.core.hashing import hash_password
         import uuid
         
         user = User(
@@ -149,7 +149,7 @@ def checkout_booking_link(
             role=UserRole.contractor,
             is_active=True,
             is_verified=False, # Unverified until they confirm email or login OTP
-            password_hash=get_password_hash(secrets.token_urlsafe(32)), # Random password
+            password_hash=hash_password(secrets.token_urlsafe(32)), # Random password
             email_verification_token=secrets.token_urlsafe(32),
             email_verification_expires_at=datetime.utcnow() + timedelta(hours=24)
         )
