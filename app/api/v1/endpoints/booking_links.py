@@ -203,7 +203,10 @@ def checkout_booking_link(
         )
     except ValueError as e:
         db.rollback()
-        raise HTTPException(status_code=400, detail=str(e))
+        error_msg = str(e)
+        if "Configura tu firma digital" in error_msg:
+            error_msg = "El músico aún no ha configurado su firma digital obligatoria. Por favor contáctalo para que pueda recibir reservas."
+        raise HTTPException(status_code=400, detail=error_msg)
     
     db.commit()
     
