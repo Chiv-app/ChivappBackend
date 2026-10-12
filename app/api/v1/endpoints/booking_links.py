@@ -173,6 +173,11 @@ def checkout_booking_link(
             contractor.document_number = payload.document_number
             db.flush()
             
+        if payload.phone and user.phone != payload.phone:
+            existing_phone = db.query(User).filter(User.phone == payload.phone).first()
+            if existing_phone and existing_phone.id != user.id:
+                raise HTTPException(status_code=400, detail="Este celular ya está registrado a otra cuenta.")
+            
     from app.services.platform_payment import sync_booking_platform_fee
     
     # 2. Create the Booking
