@@ -27,7 +27,7 @@ class BookingLinkOut(BaseModel):
 class MusicianLinkProfile(BaseModel):
     id: UUID
     stage_name: str
-    profile_picture_url: str | None
+    profile_image_url: str | None
     
     class Config:
         from_attributes = True
