@@ -138,7 +138,7 @@ def checkout_booking_link(
     user = db.query(User).filter(User.email == email).first()
     
     if not user:
-        from app.services.auth import generate_verification_token
+        
         from app.core.security import get_password_hash
         import uuid
         
@@ -150,7 +150,7 @@ def checkout_booking_link(
             is_active=True,
             is_verified=False, # Unverified until they confirm email or login OTP
             password_hash=get_password_hash(secrets.token_urlsafe(32)), # Random password
-            email_verification_token=generate_verification_token(email),
+            email_verification_token=secrets.token_urlsafe(32),
             email_verification_expires_at=datetime.utcnow() + timedelta(hours=24)
         )
         db.add(user)
