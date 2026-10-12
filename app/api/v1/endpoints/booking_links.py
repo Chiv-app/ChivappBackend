@@ -189,7 +189,7 @@ def checkout_booking_link(
         event_type=payload.event_type,
         location_address=payload.location_address,
         location_city=payload.location_city,
-        agreed_price=link.price,
+        price_agreed=link.price,
         status=BookingStatus.contract_pending,
     )
     db.add(booking)
