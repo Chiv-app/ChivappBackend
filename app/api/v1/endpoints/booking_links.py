@@ -2,7 +2,9 @@ import secrets
 from datetime import datetime, timedelta
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
+from app.api.v1.endpoints.auth import _issue_login
+from app.services.booking_contract import create_booking_contract
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 
@@ -111,6 +113,7 @@ def get_booking_link(
 def checkout_booking_link(
     token: str,
     payload: BookingLinkCheckout,
+    response: Response,
     db: Session = Depends(deps.get_db)
 ):
     """
@@ -178,7 +181,7 @@ def checkout_booking_link(
         location_address=payload.location_address,
         location_city=payload.location_city,
         agreed_price=link.price,
-        status=BookingStatus.pending_payment,
+        status=BookingStatus.contract_pending,
     )
     db.add(booking)
     db.flush()
@@ -187,10 +190,26 @@ def checkout_booking_link(
     link.status = BookingLinkStatus.completed
     link.booking_id = booking.id
     
+    # Generate contract
+    db.flush()
+    try:
+        create_booking_contract(
+            db, 
+            booking, 
+            musician=link.musician, 
+            musician_user=link.musician.user, 
+            contractor=contractor, 
+            contractor_user=user
+        )
+    except ValueError as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e))
+    
     db.commit()
     
-    # TODO: In a real flow, this would generate MercadoPago preference 
-    # and return an init_point. For now, we return the booking ID.
+    # Authenticate the user implicitly so they can view the dashboard and pay
+    _issue_login(response, user)
+    
     return {"message": "Reserva creada exitosamente", "booking_id": booking.id}
 
 @router.post("/{token}/reset-expiration", response_model=BookingLinkOut)
