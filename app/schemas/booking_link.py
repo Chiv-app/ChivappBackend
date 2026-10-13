@@ -54,3 +54,17 @@ class BookingLinkCheckout(BaseModel):
     email: EmailStr
     phone: str
     document_number: str | None = None
+    
+    # Authentication (if user exists)
+    password: str | None = None
+    otp: str | None = None
+
+class BookingLinkIdentityCheck(BaseModel):
+    email: EmailStr
+
+class BookingLinkIdentityResponse(BaseModel):
+    status: str # 'self', 'exists_verified', 'exists_unverified', 'new'
+    message: str | None = None
+
+class BookingLinkOtpRequest(BaseModel):
+    email: EmailStr

@@ -90,10 +90,6 @@ def get_booking_link(
     if link.status != BookingLinkStatus.active:
         raise HTTPException(status_code=400, detail=f"Este link de pago ya no está activo ({link.status.value}).")
         
-    if link.expires_at < datetime.utcnow():
-        link.status = BookingLinkStatus.expired
-        db.commit()
-        raise HTTPException(status_code=400, detail="Este link de pago ha expirado.")
         
     return BookingLinkPublicOut(
         token=link.token,
@@ -108,6 +104,80 @@ def get_booking_link(
         status=link.status.value,
         expires_at=link.expires_at
     )
+
+
+@router.post("/{token}/check-identity", response_model=BookingLinkIdentityResponse)
+def check_identity(
+    token: str,
+    payload: BookingLinkIdentityCheck,
+    db: Session = Depends(deps.get_db)
+):
+    link = db.query(BookingLink).filter(BookingLink.token == token).first()
+    if not link:
+        raise HTTPException(status_code=404, detail="Link no encontrado.")
+
+    email = payload.email.lower().strip()
+    
+    # 1. Self check
+    musician_user = link.musician.user
+    if musician_user.email == email:
+        return BookingLinkIdentityResponse(status="self", message="No puedes usar tu propia cuenta de mǧsico para contratarte a ti mismo.")
+        
+    user = db.query(User).filter(User.email == email).first()
+    if not user:
+        return BookingLinkIdentityResponse(status="new")
+        
+    if user.is_verified:
+        return BookingLinkIdentityResponse(status="exists_verified", message="Este correo ya existe y estǭ verificado.")
+    else:
+        return BookingLinkIdentityResponse(status="exists_unverified", message="Este correo ya existe pero requiere contrasea.")
+
+@router.post("/{token}/send-otp")
+@limiter.limit(settings.RATE_LIMIT_LOGIN)
+def send_identity_otp(
+    token: str,
+    payload: BookingLinkOtpRequest,
+    request: Request,
+    db: Session = Depends(deps.get_db)
+):
+    link = db.query(BookingLink).filter(BookingLink.token == token).first()
+    if not link:
+        raise HTTPException(status_code=404, detail="Link no encontrado.")
+        
+    email = payload.email.lower().strip()
+    user = db.query(User).filter(User.email == email).first()
+    
+    if not user or not user.is_verified:
+        raise HTTPException(status_code=400, detail="Usuario no vǭlido para OTP.")
+        
+    from app.services.email.service import send_templated_email
+    from app.services.email.defaults import APP_NAME
+    import secrets
+    from datetime import timedelta
+    
+    from app.core.hashing import hash_password
+    otp = str(secrets.randbelow(1000000)).zfill(6)
+    user.login_otp_hash = hash_password(otp)
+    user.login_otp_expires_at = datetime.utcnow() + timedelta(minutes=15)
+    db.commit()
+    
+    try:
+        send_templated_email(
+            to_email=user.email,
+            subject=f"Tu cdigo de verificacin para {APP_NAME}",
+            template_name="login_otp",
+            context={
+                "fullname": user.fullname or "Usuario",
+                "otp": otp,
+                "app_name": APP_NAME
+            }
+        )
+    except Exception as e:
+        print("Template login_otp failed to send", e)
+        pass
+        
+    return {"message": "OTP enviado"}
+
 
 @router.post("/{token}/checkout")
 def checkout_booking_link(
@@ -127,10 +197,6 @@ def checkout_booking_link(
     if link.status != BookingLinkStatus.active:
         raise HTTPException(status_code=400, detail="Este link de pago ya no está activo.")
         
-    if link.expires_at < datetime.utcnow():
-        link.status = BookingLinkStatus.expired
-        db.commit()
-        raise HTTPException(status_code=400, detail="Este link de pago ha expirado.")
 
     # 1. Find or create the user (Contractor)
     # The requirement: "silently registers guest"
