@@ -15,7 +15,7 @@ from app.models.booking_link import BookingLink, BookingLinkStatus
 from app.models.user import User, UserRole
 from app.models.musician_profile import MusicianProfile
 from app.models.contractor_profile import ContractorProfile
-from app.models.booking import Booking, BookingStatus
+from app.models.booking import Booking, BookingStatus, BookingReview
 from app.schemas.booking_link import (
     BookingLinkCreate,
     BookingLinkOut,
@@ -95,6 +95,26 @@ def get_booking_link(
     if link.status != BookingLinkStatus.active:
         raise HTTPException(status_code=400, detail=f"Este link de pago ya no está activo ({link.status.value}).")
         
+    # Extraer reseñas completadas del músico
+    reviews_query = (
+        db.query(BookingReview)
+        .join(Booking)
+        .filter(Booking.musician_id == link.musician_id)
+        .filter(BookingReview.comment.isnot(None))
+        .order_by(BookingReview.created_at.desc())
+        .limit(10)
+        .all()
+    )
+    
+    reviews_data = [
+        {
+            "guest_name": r.guest_name or (r.author.fullname if r.author else "Usuario anónimo"),
+            "rating": r.rating,
+            "comment": r.comment,
+            "created_at": r.created_at
+        }
+        for r in reviews_query
+    ]
         
     return BookingLinkPublicOut(
         token=link.token,
@@ -108,7 +128,12 @@ def get_booking_link(
             portfolio_description=link.musician.portfolio_description,
             gallery_images=link.musician.gallery_images,
             videos=link.musician.videos,
-            showreel_video_url=link.musician.showreel_video_url
+            showreel_video_url=link.musician.showreel_video_url,
+            rating_avg=float(link.musician.rating_avg) if link.musician.rating_avg else None,
+            rating_count=link.musician.rating_count,
+            genres=link.musician.genres,
+            location_city=link.musician.location_city,
+            reviews=reviews_data
         ),
         status=link.status.value,
         expires_at=link.expires_at

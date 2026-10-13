@@ -24,6 +24,15 @@ class BookingLinkOut(BaseModel):
     class Config:
         from_attributes = True
 
+class MusicianReviewOut(BaseModel):
+    guest_name: str | None = None
+    rating: int
+    comment: str | None = None
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
 class MusicianLinkProfile(BaseModel):
     id: UUID
     stage_name: str
@@ -32,6 +41,11 @@ class MusicianLinkProfile(BaseModel):
     gallery_images: list[str] | None = None
     videos: list[str] | None = None
     showreel_video_url: str | None = None
+    rating_avg: float | None = None
+    rating_count: int | None = None
+    genres: list[str] | None = None
+    location_city: str | None = None
+    reviews: list[MusicianReviewOut] | None = None
     
     class Config:
         from_attributes = True
