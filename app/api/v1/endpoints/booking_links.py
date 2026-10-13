@@ -16,6 +16,7 @@ from app.models.user import User, UserRole
 from app.models.musician_profile import MusicianProfile
 from app.models.contractor_profile import ContractorProfile
 from app.models.booking import Booking, BookingStatus, BookingReview
+from app.models.musician_media import MusicianMedia, MediaType
 from app.schemas.booking_link import (
     BookingLinkCreate,
     BookingLinkOut,
@@ -95,6 +96,31 @@ def get_booking_link(
     if link.status != BookingLinkStatus.active:
         raise HTTPException(status_code=400, detail=f"Este link de pago ya no está activo ({link.status.value}).")
         
+    # Extraer multimedia del músico (fotos y videos) desde MusicianMedia
+    media_records = (
+        db.query(MusicianMedia)
+        .filter(MusicianMedia.musician_id == link.musician_id)
+        .order_by(MusicianMedia.order_index.asc(), MusicianMedia.created_at.asc())
+        .all()
+    )
+    
+    gallery_images = [m.url for m in media_records if m.type == MediaType.image and m.url]
+    videos = [m.url for m in media_records if m.type == MediaType.video and m.url]
+    
+    # Fallback to legacy fields if empty
+    if not gallery_images and getattr(link.musician, "gallery_images", None):
+        gallery_images = list(link.musician.gallery_images)
+    
+    # Ensure profile photo is first if it exists
+    if link.musician.profile_image_url and link.musician.profile_image_url not in gallery_images:
+        gallery_images = [link.musician.profile_image_url] + gallery_images
+    elif link.musician.profile_image_url and gallery_images and gallery_images[0] != link.musician.profile_image_url:
+        gallery_images = [link.musician.profile_image_url] + [u for u in gallery_images if u != link.musician.profile_image_url]
+
+    showreel_video_url = getattr(link.musician, "showreel_video_url", None)
+    if not videos and getattr(link.musician, "videos", None):
+        videos = list(link.musician.videos)
+        
     # Extraer reseñas completadas del músico
     reviews_query = (
         db.query(BookingReview)
@@ -125,10 +151,10 @@ def get_booking_link(
             id=link.musician.id,
             stage_name=link.musician.stage_name,
             profile_image_url=link.musician.profile_image_url,
-            portfolio_description=link.musician.portfolio_description,
-            gallery_images=link.musician.gallery_images,
-            videos=link.musician.videos,
-            showreel_video_url=link.musician.showreel_video_url,
+            portfolio_description=link.musician.portfolio_description or link.musician.bio,
+            gallery_images=gallery_images,
+            videos=videos,
+            showreel_video_url=showreel_video_url,
             rating_avg=float(link.musician.rating_avg) if link.musician.rating_avg else None,
             rating_count=link.musician.rating_count,
             genres=link.musician.genres,
