@@ -119,8 +119,26 @@ def get_booking_link(
         gallery_images = [link.musician.profile_image_url] + [u for u in gallery_images if u != link.musician.profile_image_url]
 
     showreel_video_url = getattr(link.musician, "showreel_video_url", None)
-    if not videos and getattr(link.musician, "videos", None):
-        videos = list(link.musician.videos)
+    
+    # Merge MusicianMedia videos with legacy videos and showreel
+    raw_legacy_videos = list(getattr(link.musician, "videos", [])) if getattr(link.musician, "videos", None) else []
+    legacy_videos = []
+    for v in raw_legacy_videos:
+        if v:
+            for sub_v in v.split(","):
+                if sub_v.strip():
+                    legacy_videos.append(sub_v.strip())
+    all_videos = videos + legacy_videos
+    if showreel_video_url:
+        all_videos.insert(0, showreel_video_url)
+        
+    # Deduplicate preserving order
+    videos = []
+    seen_videos = set()
+    for v in all_videos:
+        if v and v not in seen_videos:
+            videos.append(v)
+            seen_videos.add(v)
         
     # Extraer reseñas completadas del músico
     reviews_query = (
