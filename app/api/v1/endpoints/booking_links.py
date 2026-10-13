@@ -2,13 +2,15 @@ import secrets
 from datetime import datetime, timedelta
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Response, Request
 from app.api.v1.endpoints.auth import _issue_login
 from app.services.booking_contract import create_booking_contract
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 
 from app.api import deps
+from app.core.config import settings
+from app.core.limiter import limiter
 from app.models.booking_link import BookingLink, BookingLinkStatus
 from app.models.user import User, UserRole
 from app.models.musician_profile import MusicianProfile
@@ -19,7 +21,10 @@ from app.schemas.booking_link import (
     BookingLinkOut,
     BookingLinkPublicOut,
     BookingLinkCheckout,
-    MusicianLinkProfile
+    MusicianLinkProfile,
+    BookingLinkIdentityResponse,
+    BookingLinkIdentityCheck,
+    BookingLinkOtpRequest
 )
 
 router = APIRouter()
