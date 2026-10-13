@@ -17,6 +17,7 @@ from app.models.musician_profile import MusicianProfile
 from app.models.contractor_profile import ContractorProfile
 from app.models.booking import Booking, BookingStatus, BookingReview
 from app.models.musician_media import MusicianMedia, MediaType
+from app.services.platform_payment import get_or_create_platform_payment_settings, compute_platform_fee_amount, compute_contractor_payable_total
 from app.schemas.booking_link import (
     BookingLinkCreate,
     BookingLinkOut,
@@ -142,9 +143,17 @@ def get_booking_link(
         for r in reviews_query
     ]
         
+    # Calculate platform fee for public display
+    settings = get_or_create_platform_payment_settings(db)
+    fee_amount = compute_platform_fee_amount(link.price, settings.platform_fee_percent)
+    total_payable = compute_contractor_payable_total(link.price, settings.platform_fee_percent)
+
     return BookingLinkPublicOut(
         token=link.token,
         price=float(link.price),
+        fee_percent=float(settings.platform_fee_percent),
+        fee_amount=float(fee_amount),
+        total_payable=float(total_payable),
         event_date=link.event_date,
         start_time=link.start_time,
         musician=MusicianLinkProfile(

@@ -53,6 +53,9 @@ class MusicianLinkProfile(BaseModel):
 class BookingLinkPublicOut(BaseModel):
     token: str
     price: float
+    fee_percent: float | None = None
+    fee_amount: float | None = None
+    total_payable: float | None = None
     event_date: date | None
     start_time: time | None
     musician: MusicianLinkProfile

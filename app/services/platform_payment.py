@@ -69,11 +69,9 @@ def sync_booking_platform_fee(
     booking.platform_fee_amount = compute_platform_fee_amount(price, percent)
 
 
-def contractor_payable_total(booking: Booking) -> Decimal | None:
-    if booking.price_agreed is None:
-        return None
-    M = Decimal(str(booking.price_agreed))
-    g_percent = Decimal(str(booking.platform_fee_percent or 0))
+def compute_contractor_payable_total(price: Decimal, fee_percent: Decimal) -> Decimal:
+    M = Decimal(str(price))
+    g_percent = Decimal(str(fee_percent))
     g = g_percent / Decimal("100")
     
     # Mercado Pago variables (Peru)
@@ -82,6 +80,14 @@ def contractor_payable_total(booking: Booking) -> Decimal | None:
     
     c_unico = (M * (Decimal("1") + g) + F) / (Decimal("1") - p)
     return c_unico.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+def contractor_payable_total(booking: Booking) -> Decimal | None:
+    if booking.price_agreed is None:
+        return None
+    return compute_contractor_payable_total(
+        Decimal(str(booking.price_agreed)), 
+        Decimal(str(booking.platform_fee_percent or 0))
+    )
 
 
 def musician_portion_of_paid(booking: Booking, paid_total: Decimal) -> Decimal:
