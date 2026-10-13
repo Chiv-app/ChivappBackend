@@ -155,9 +155,9 @@ def send_identity_otp(
     import secrets
     from datetime import timedelta
     
-    from app.core.hashing import hash_password
+    import hashlib
     otp = str(secrets.randbelow(1000000)).zfill(6)
-    user.login_otp_hash = hash_password(otp)
+    user.login_otp_hash = hashlib.sha256(f"{user.id}:{otp}".encode()).hexdigest()
     user.login_otp_expires_at = datetime.utcnow() + timedelta(minutes=15)
     db.commit()
     
@@ -229,7 +229,34 @@ def checkout_booking_link(
         db.add(contractor)
         db.flush()
     else:
-        # Existing user. Ensure contractor profile exists.
+        # Existing user. Validate credentials based on their status.
+        from app.core.hashing import verify_password
+        
+        if user.is_verified:
+            # Verified user requires OTP
+            if not payload.otp:
+                raise HTTPException(status_code=400, detail="Este correo estǭ verificado y requiere un cdigo OTP.")
+            if not user.login_otp_hash or not user.login_otp_expires_at:
+                raise HTTPException(status_code=400, detail="El cdigo ha expirado o no ha sido solicitado. Solicitelo nuevamente.")
+            if user.login_otp_expires_at < datetime.utcnow():
+                raise HTTPException(status_code=400, detail="El cdigo OTP ha expirado. Solicite uno nuevo.")
+            
+            import hashlib
+            expected_hash = hashlib.sha256(f"{user.id}:{payload.otp}".encode()).hexdigest()
+            if user.login_otp_hash != expected_hash:
+                raise HTTPException(status_code=400, detail="El cdigo OTP es incorrecto.")
+            
+            # OTP validated successfully, clear it
+            user.login_otp_hash = None
+            user.login_otp_expires_at = None
+        else:
+            # Unverified user requires password
+            if not payload.password:
+                raise HTTPException(status_code=400, detail="Este correo ya estǭ en uso. Ingrese su contrasea.")
+            if not verify_password(payload.password, user.password_hash):
+                raise HTTPException(status_code=400, detail="Contrasea incorrecta.")
+        
+        # Ensure contractor profile exists.
         contractor = db.query(ContractorProfile).filter(ContractorProfile.user_id == user.id).first()
         if not contractor:
             contractor = ContractorProfile(user_id=user.id, document_number=payload.document_number)
@@ -269,7 +296,7 @@ def checkout_booking_link(
     # Generate contract
     db.flush()
     try:
-        create_booking_contract(
+        contract = create_booking_contract(
             db, 
             booking, 
             musician=link.musician, 
@@ -277,6 +304,12 @@ def checkout_booking_link(
             contractor=contractor, 
             contractor_user=user
         )
+        # Mark terms as implicitly accepted via the public checkout form checkbox
+        from datetime import datetime
+        contract.terms_accepted = True
+        contract.terms_accepted_at = datetime.utcnow()
+        contract.terms_accepted_ip = "public_checkout"
+        # We allow contractor_signed to remain False, as this flow doesn't capture a drawing pad
     except ValueError as e:
         db.rollback()
         error_msg = str(e)
