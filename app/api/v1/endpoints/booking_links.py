@@ -99,7 +99,11 @@ def get_booking_link(
         musician=MusicianLinkProfile(
             id=link.musician.id,
             stage_name=link.musician.stage_name,
-            profile_image_url=link.musician.profile_image_url
+            profile_image_url=link.musician.profile_image_url,
+            portfolio_description=link.musician.portfolio_description,
+            gallery_images=link.musician.gallery_images,
+            videos=link.musician.videos,
+            showreel_video_url=link.musician.showreel_video_url
         ),
         status=link.status.value,
         expires_at=link.expires_at

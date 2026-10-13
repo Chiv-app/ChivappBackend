@@ -28,6 +28,10 @@ class MusicianLinkProfile(BaseModel):
     id: UUID
     stage_name: str
     profile_image_url: str | None
+    portfolio_description: str | None = None
+    gallery_images: list[str] | None = None
+    videos: list[str] | None = None
+    showreel_video_url: str | None = None
     
     class Config:
         from_attributes = True
