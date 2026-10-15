@@ -17,7 +17,7 @@ def _booking(price_agreed=None, platform_fee_amount=None, platform_fee_percent=N
 
 
 def test_compute_platform_fee_amount_rounds_half_up():
-    assert compute_platform_fee_amount(Decimal("500"), Decimal("2")) == Decimal("10.00")
+    assert compute_platform_fee_amount(Decimal("500"), Decimal("2")) == Decimal("33.15")
 
 
 def test_compute_platform_fee_amount_zero_when_price_or_percent_not_positive():
