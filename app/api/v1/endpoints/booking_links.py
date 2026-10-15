@@ -396,7 +396,11 @@ def checkout_booking_link(
         contract.terms_accepted = True
         contract.terms_accepted_at = datetime.utcnow()
         contract.terms_accepted_ip = "public_checkout"
-        # We allow contractor_signed to remain False, as this flow doesn't capture a drawing pad
+        
+        if payload.signature_image_url:
+            contract.signature_url = payload.signature_image_url
+            contract.contractor_signed = True
+            contract.contractor_signed_at = datetime.utcnow()
     except ValueError as e:
         db.rollback()
         error_msg = str(e)

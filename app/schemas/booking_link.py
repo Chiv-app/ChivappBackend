@@ -75,6 +75,7 @@ class BookingLinkCheckout(BaseModel):
     email: EmailStr
     phone: str
     document_number: str | None = None
+    signature_image_url: str | None = None
     
     # Authentication (if user exists)
     password: str | None = None
