@@ -398,9 +398,9 @@ def checkout_booking_link(
         contract.terms_accepted_ip = "public_checkout"
         
         if payload.signature_image_url:
-            contract.signature_url = payload.signature_image_url
+            contract.contractor_signature_url = payload.signature_image_url
             contract.contractor_signed = True
-            contract.contractor_signed_at = datetime.utcnow()
+            contract.contractor_sign_timestamp = datetime.utcnow()
     except ValueError as e:
         db.rollback()
         error_msg = str(e)
