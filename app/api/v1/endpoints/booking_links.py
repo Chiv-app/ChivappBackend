@@ -392,7 +392,6 @@ def checkout_booking_link(
             contractor_user=user
         )
         # Mark terms as implicitly accepted via the public checkout form checkbox
-        from datetime import datetime
         contract.terms_accepted = True
         contract.terms_accepted_at = datetime.utcnow()
         contract.terms_accepted_ip = "public_checkout"

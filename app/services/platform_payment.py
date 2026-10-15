@@ -33,9 +33,8 @@ def get_or_create_platform_payment_settings(db: Session) -> PlatformPaymentSetti
 def compute_platform_fee_amount(price: Decimal, percent: Decimal) -> Decimal:
     if price <= 0 or percent <= 0:
         return Decimal("0.00")
-    return (price * percent / Decimal("100")).quantize(
-        Decimal("0.01"), rounding=ROUND_HALF_UP
-    )
+    total = compute_contractor_payable_total(price, percent)
+    return total - Decimal(str(price))
 
 
 def sync_booking_platform_fee(
