@@ -94,7 +94,17 @@ def get_booking_link(
     if not link:
         raise HTTPException(status_code=404, detail="Link de pago no encontrado.")
         
-    if link.status != BookingLinkStatus.active:
+    if link.expires_at and link.expires_at < datetime.utcnow():
+        if link.status == BookingLinkStatus.active:
+            link.status = BookingLinkStatus.expired
+            db.commit()
+            db.refresh(link)
+            
+    if link.status == BookingLinkStatus.expired:
+        raise HTTPException(status_code=400, detail="Este link de pago ha expirado.")
+    elif link.status == BookingLinkStatus.completed:
+        raise HTTPException(status_code=400, detail="Este link de pago ya ha sido completado.")
+    elif link.status != BookingLinkStatus.active:
         raise HTTPException(status_code=400, detail=f"Este link de pago ya no está activo ({link.status.value}).")
         
     # Extraer multimedia del músico (fotos y videos) desde MusicianMedia
@@ -281,7 +291,17 @@ def checkout_booking_link(
     if not link:
         raise HTTPException(status_code=404, detail="Link de pago no encontrado.")
         
-    if link.status != BookingLinkStatus.active:
+    if link.expires_at and link.expires_at < datetime.utcnow():
+        if link.status == BookingLinkStatus.active:
+            link.status = BookingLinkStatus.expired
+            db.commit()
+            db.refresh(link)
+            
+    if link.status == BookingLinkStatus.expired:
+        raise HTTPException(status_code=400, detail="Este link de pago ha expirado.")
+    elif link.status == BookingLinkStatus.completed:
+        raise HTTPException(status_code=400, detail="Este link de pago ya ha sido completado.")
+    elif link.status != BookingLinkStatus.active:
         raise HTTPException(status_code=400, detail="Este link de pago ya no está activo.")
         
 
