@@ -26,6 +26,7 @@ from app.models.booking_location import (
 from app.models.support_ticket import SupportTicket, SupportTicketStatus
 from app.models.uploaded_file import UploadedFile
 from app.models.booking_link import BookingLink, BookingLinkStatus
+from app.models.payout_request import PayoutRequest
 
 __all__ = [
     "UploadedFile",
@@ -58,4 +59,5 @@ __all__ = [
     "SupportTicketStatus",
     "BookingLink",
     "BookingLinkStatus",
+    "PayoutRequest",
 ]

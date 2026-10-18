@@ -248,3 +248,14 @@ class ContractorOperationsSummary(BaseModel):
     bookings_completed: int
     bookings_cancelled: int
     items: list[ContractorOperationItem]
+
+class PayoutRequestOut(BaseModel):
+    id: UUID
+    musician_id: UUID
+    amount: float
+    status: str
+    created_at: datetime
+    processed_at: datetime | None = None
+    
+    model_config = {'from_attributes': True}
+
