@@ -192,6 +192,27 @@ def release_retained_payments(
             payment.payout_evidence_url = payout_evidence_url
         if payout_notes:
             payment.payout_notes = payout_notes
+
+    if payments:
+        try:
+            from app.models.payout_request import PayoutRequest
+
+            booking = db.get(Booking, booking_id)
+            if booking and booking.musician_id:
+                pending_requests = (
+                    db.query(PayoutRequest)
+                    .filter(
+                        PayoutRequest.musician_id == booking.musician_id,
+                        PayoutRequest.status == "pending",
+                    )
+                    .all()
+                )
+                for req in pending_requests:
+                    req.status = "processed"
+                    req.processed_at = now
+        except Exception:
+            pass
+
     return payments
 
 

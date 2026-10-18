@@ -530,6 +530,18 @@ MIGRATION_STATEMENTS = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS ix_booking_link_token ON booking_link (token)",
+    """
+    CREATE TABLE IF NOT EXISTS payout_request (
+        id UUID PRIMARY KEY,
+        musician_id UUID NOT NULL REFERENCES musician_profile(id) ON DELETE CASCADE,
+        amount NUMERIC NOT NULL,
+        status VARCHAR NOT NULL DEFAULT 'pending',
+        notes VARCHAR,
+        created_at TIMESTAMP DEFAULT NOW(),
+        processed_at TIMESTAMP
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_payout_request_musician_id ON payout_request (musician_id)",
 ]
 
 

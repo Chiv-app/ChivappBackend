@@ -562,10 +562,15 @@ def create_final_booking_review(
         .first()
     )
     if existing_final:
+        if booking.status != BookingStatus.completed:
+            booking.status = BookingStatus.completed
+            disable_booking_share(booking)
+            db.commit()
+            db.refresh(booking)
         review_out = serialize_review(existing_final)
         return {
             "mode": "review",
-            "completed": False,
+            "completed": True,
             "review": review_out.model_dump(mode="json"),
         }
 
@@ -579,9 +584,24 @@ def create_final_booking_review(
         current_user,
         db,
     )
+    booking = get_booking_or_404(db, booking_id)
+    if booking.status != BookingStatus.completed:
+        booking.status = BookingStatus.completed
+        disable_booking_share(booking)
+        musician_user = _musician_user(db, booking)
+        contractor_user = _contractor_user_from_booking(db, booking)
+        other = (
+            musician_user
+            if current_user.role == UserRole.contractor
+            else contractor_user
+        )
+        notify_booking_completed(db, other, str(booking.id))
+        db.commit()
+        db.refresh(booking)
+
     return {
         "mode": "review",
-        "completed": False,
+        "completed": True,
         "review": (
             review_out.model_dump(mode="json")
             if hasattr(review_out, "model_dump")

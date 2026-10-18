@@ -131,14 +131,77 @@ def get_musician_earnings(
         .all()
     )
 
+    from app.models.booking import BookingReview
+    from app.models.contractor_recommendation import ContractorRecommendation
+
+    booking_by_id = {booking.id: booking for booking in bookings}
+
+    strict_final_review_ids = (
+        {
+            row[0]
+            for row in db.query(BookingReview.booking_id)
+            .filter(
+                BookingReview.booking_id.in_(booking_by_id.keys()),
+                BookingReview.is_final.is_(True),
+            )
+            .all()
+        }
+        if booking_by_id
+        else set()
+    )
+
+    contractor_review_booking_ids = (
+        {
+            row[0]
+            for row in db.query(BookingReview.booking_id)
+            .filter(
+                BookingReview.booking_id.in_(booking_by_id.keys()),
+                (BookingReview.is_final.is_(True))
+                | (BookingReview.author_user_id.isnot(None)),
+            )
+            .all()
+        }
+        if booking_by_id
+        else set()
+    )
+
+    musician_review_booking_ids = (
+        {
+            row[0]
+            for row in db.query(ContractorRecommendation.booking_id)
+            .filter(ContractorRecommendation.booking_id.in_(booking_by_id.keys()))
+            .all()
+        }
+        if booking_by_id
+        else set()
+    )
+
+    # Auto-heal bookings that already have a final review from the contractor
+    # or both reviews after event start, but remained in in_progress / payment_retained.
+    auto_completed = False
+    for booking in bookings:
+        if booking.status in {
+            BookingStatus.in_progress,
+            BookingStatus.payment_retained,
+            BookingStatus.payment_released,
+        } and (
+            booking.id in strict_final_review_ids
+            or (
+                booking.id in contractor_review_booking_ids
+                and booking.id in musician_review_booking_ids
+            )
+        ):
+            booking.status = BookingStatus.completed
+            auto_completed = True
+    if auto_completed:
+        db.commit()
+
     total_quoted = 0.0
     bookings_active = 0
     bookings_completed = 0
     bookings_cancelled = 0
-    booking_by_id = {}
 
     for booking in bookings:
-        booking_by_id[booking.id] = booking
         if booking.status == BookingStatus.cancelled:
             bookings_cancelled += 1
             continue
@@ -158,9 +221,6 @@ def get_musician_earnings(
         else []
     )
 
-    from app.models.booking import BookingReview
-    from app.models.contractor_recommendation import ContractorRecommendation
-
     complaints = (
         db.query(BookingComplaint)
         .filter(
@@ -173,31 +233,6 @@ def get_musician_earnings(
         else []
     )
     complaint_by_booking = {c.booking_id: c for c in complaints}
-
-    final_review_booking_ids = (
-        {
-            row[0]
-            for row in db.query(BookingReview.booking_id)
-            .filter(
-                BookingReview.booking_id.in_(booking_by_id.keys()),
-                BookingReview.is_final.is_(True),
-            )
-            .all()
-        }
-        if booking_by_id
-        else set()
-    )
-
-    musician_review_booking_ids = (
-        {
-            row[0]
-            for row in db.query(ContractorRecommendation.booking_id)
-            .filter(ContractorRecommendation.booking_id.in_(booking_by_id.keys()))
-            .all()
-        }
-        if booking_by_id
-        else set()
-    )
 
     payments_by_booking: dict = {}
     for payment in payments:
@@ -225,7 +260,7 @@ def get_musician_earnings(
             total_retained += amount
             is_fully_culminated = (
                 booking.status == BookingStatus.completed
-                and booking.id in final_review_booking_ids
+                and booking.id in contractor_review_booking_ids
                 and booking.id in musician_review_booking_ids
             )
             if not is_fully_culminated:
@@ -279,10 +314,10 @@ def get_musician_earnings(
         if state == "none":
             continue
 
-        has_both_reviews = (
-            booking.id in final_review_booking_ids
-            and booking.id in musician_review_booking_ids
-        )
+        has_contractor_rev = booking.id in contractor_review_booking_ids
+        has_musician_rev = booking.id in musician_review_booking_ids
+        has_both_reviews = has_contractor_rev and has_musician_rev
+
         if state == "payable" and (
             booking.status != BookingStatus.completed or not has_both_reviews
         ):
@@ -307,6 +342,8 @@ def get_musician_earnings(
                 currency="PEN",
                 booking_status=booking.status.value,
                 debt_state=state,
+                has_contractor_review=has_contractor_rev,
+                has_musician_review=has_musician_rev,
                 complaint_status=complaint.status.value if complaint else None,
                 complaint_reason=complaint.reason if complaint else None,
                 admin_musician_amount=(
@@ -322,6 +359,33 @@ def get_musician_earnings(
             )
         )
 
+    pending_payout_out: PayoutRequestOut | None = None
+    try:
+        PayoutRequest.__table__.create(bind=db.get_bind(), checkfirst=True)
+        pending_req = (
+            db.query(PayoutRequest)
+            .filter(
+                PayoutRequest.musician_id == musician.id,
+                PayoutRequest.status == "pending",
+            )
+            .order_by(PayoutRequest.created_at.desc())
+            .first()
+        )
+        if pending_req:
+            if total_app_debt <= 0:
+                pending_req.status = "processed"
+                pending_req.processed_at = datetime.utcnow()
+                db.commit()
+            else:
+                if round(float(pending_req.amount), 2) != round(total_app_debt, 2):
+                    pending_req.amount = round(total_app_debt, 2)
+                    db.commit()
+                    db.refresh(pending_req)
+                pending_payout_out = PayoutRequestOut.model_validate(pending_req)
+    except Exception as exc:
+        logger.warning("No se pudo consultar payout_request: %s", exc)
+        db.rollback()
+
     return MusicianEarningsSummary(
         currency="PEN",
         total_quoted=total_quoted,
@@ -336,6 +400,7 @@ def get_musician_earnings(
         bookings_cancelled=bookings_cancelled,
         items=items,
         debts=debts,
+        pending_payout_request=pending_payout_out,
     )
 
 
@@ -763,6 +828,8 @@ def request_payout(
     if current_user.role != UserRole.musician:
         raise HTTPException(403, "Solo los músicos pueden solicitar retiro")
 
+    PayoutRequest.__table__.create(bind=db.get_bind(), checkfirst=True)
+
     summary = get_musician_earnings(current_user=current_user, db=db)
 
     eligible_debts = [
@@ -770,17 +837,29 @@ def request_payout(
         for d in summary.debts
         if d.debt_state == "payable"
         and d.booking_status == BookingStatus.completed.value
+        and d.has_contractor_review
+        and d.has_musician_review
         and d.retained_total > 0
     ]
     amount = round(sum(d.retained_total for d in eligible_debts), 2)
 
     if amount <= 0 or not eligible_debts:
+        awaiting_reviews = [
+            d for d in summary.debts if d.debt_state == "awaiting_reviews" and d.retained_total > 0
+        ]
+        if awaiting_reviews:
+            raise HTTPException(
+                400,
+                "Aún no tienes reservas listas para desembolso. Verifica que el evento haya culminado y que tanto el contratista como tú hayan dejado su reseña.",
+            )
         raise HTTPException(
             400,
             "No tienes saldo disponible para retirar. Solo se pueden desembolsar reservas culminadas donde tanto el contratista como tú hayan dejado su reseña.",
         )
 
     musician = get_musician_profile_or_400(db, current_user, require_verified=True)
+    booking_ids_str = ", ".join(str(d.booking_id) for d in eligible_debts)
+    notes_text = f"Reservas culminadas con ambas reseñas: {booking_ids_str}"
 
     existing_request = (
         db.query(PayoutRequest)
@@ -788,17 +867,21 @@ def request_payout(
             PayoutRequest.musician_id == musician.id,
             PayoutRequest.status == "pending",
         )
+        .order_by(PayoutRequest.created_at.desc())
         .first()
     )
     if existing_request:
-        raise HTTPException(400, "Ya tienes una solicitud de retiro en proceso.")
+        existing_request.amount = amount
+        existing_request.notes = notes_text
+        db.commit()
+        db.refresh(existing_request)
+        return existing_request
 
-    booking_ids_str = ", ".join(str(d.booking_id) for d in eligible_debts)
     payout_request = PayoutRequest(
         musician_id=musician.id,
         amount=amount,
         status="pending",
-        notes=f"Reservas culminadas con ambas reseñas: {booking_ids_str}",
+        notes=notes_text,
     )
     db.add(payout_request)
     db.commit()

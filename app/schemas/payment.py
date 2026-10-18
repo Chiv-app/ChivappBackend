@@ -144,6 +144,17 @@ class MusicianEarningsItem(BaseModel):
     created_at: datetime
 
 
+class PayoutRequestOut(BaseModel):
+    id: UUID
+    musician_id: UUID
+    amount: float
+    status: str
+    created_at: datetime
+    processed_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
 class MusicianDebtItem(BaseModel):
     booking_id: UUID
     event_type: str
@@ -155,6 +166,8 @@ class MusicianDebtItem(BaseModel):
     currency: str = "PEN"
     booking_status: str
     debt_state: str
+    has_contractor_review: bool = False
+    has_musician_review: bool = False
     complaint_status: str | None = None
     complaint_reason: str | None = None
     admin_musician_amount: float | None = None
@@ -175,6 +188,7 @@ class MusicianEarningsSummary(BaseModel):
     bookings_cancelled: int
     items: list[MusicianEarningsItem]
     debts: list[MusicianDebtItem] = []
+    pending_payout_request: PayoutRequestOut | None = None
 
 
 class ContractorExpensesItem(BaseModel):
@@ -248,14 +262,4 @@ class ContractorOperationsSummary(BaseModel):
     bookings_completed: int
     bookings_cancelled: int
     items: list[ContractorOperationItem]
-
-class PayoutRequestOut(BaseModel):
-    id: UUID
-    musician_id: UUID
-    amount: float
-    status: str
-    created_at: datetime
-    processed_at: datetime | None = None
-    
-    model_config = {'from_attributes': True}
 
