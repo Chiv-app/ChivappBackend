@@ -295,8 +295,11 @@ def process_approved_mercadopago_payment(db: Session, payment_data: dict[str, An
             existing.status = PaymentStatus.retained
             existing.retained_at = existing.retained_at or datetime.utcnow()
             existing.gateway_metadata = payment_data
-            if booking.status in (BookingStatus.contract_signed, BookingStatus.payment_pending):
+            if booking.status in (BookingStatus.contract_signed, BookingStatus.payment_pending, BookingStatus.contract_pending, BookingStatus.accepted):
                 booking.status = BookingStatus.payment_retained
+            from app.models.booking_link import BookingLink, BookingLinkStatus
+            for bl in db.query(BookingLink).filter(BookingLink.booking_id == booking.id).all():
+                bl.status = BookingLinkStatus.completed
             db.commit()
             db.refresh(existing)
         return existing
@@ -339,6 +342,9 @@ def process_approved_mercadopago_payment(db: Session, payment_data: dict[str, An
     if is_approved:
         if payment_type == FULL_PAYMENT_TYPE:
             booking.status = BookingStatus.payment_retained
+            from app.models.booking_link import BookingLink, BookingLinkStatus
+            for bl in db.query(BookingLink).filter(BookingLink.booking_id == booking.id).all():
+                bl.status = BookingLinkStatus.completed
             
             contractor = db.query(ContractorProfile).filter(ContractorProfile.id == booking.contractor_id).first()
             contractor_user = db.query(User).filter(User.id == contractor.user_id).first() if contractor else None

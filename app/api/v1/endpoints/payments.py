@@ -531,7 +531,7 @@ def release_payment(
 
 # Pago único (100 %) por Mercado Pago.
 PAYABLE_STATUSES = {
-    "full": (BookingStatus.contract_pending, BookingStatus.contract_signed, BookingStatus.payment_pending),
+    "full": (BookingStatus.accepted, BookingStatus.contract_pending, BookingStatus.contract_signed, BookingStatus.payment_pending),
 }
 
 
@@ -576,8 +576,26 @@ def create_mercadopago_preference(
     assert_booking_contractor_owner(db, booking, current_user)
 
     # Si se envía firma del contrato durante la confirmación inicial
-    if payload.signature_image_url and booking.status == BookingStatus.contract_pending:
-        assert_private_upload_owned(db, payload.signature_image_url, current_user.id, "archivo de firma")
+    if payload.signature_image_url and booking.status in (
+        BookingStatus.accepted,
+        BookingStatus.contract_pending,
+        BookingStatus.contract_signed,
+    ):
+        sig_url = payload.signature_image_url
+        if sig_url.startswith("data:image/"):
+            from app.services.uploads import save_data_url_upload
+
+            try:
+                sig_url = save_data_url_upload(
+                    sig_url,
+                    private=True,
+                    owner_id=current_user.id,
+                    db=db,
+                )
+            except ValueError as exc:
+                raise HTTPException(400, detail=str(exc)) from exc
+        else:
+            assert_private_upload_owned(db, sig_url, current_user.id, "archivo de firma")
         contract = db.query(Contract).filter(Contract.booking_id == booking.id).first()
         if contract:
             now = datetime.utcnow()
@@ -587,7 +605,7 @@ def create_mercadopago_preference(
             contract.contractor_signed = True
             contract.contractor_sign_timestamp = now
             contract.contractor_sign_ip = payload.sign_ip or "client"
-            contract.contractor_signature_url = payload.signature_image_url
+            contract.contractor_signature_url = sig_url
 
             musician = db.query(MusicianProfile).filter(
                 MusicianProfile.id == booking.musician_id
@@ -595,7 +613,7 @@ def create_mercadopago_preference(
             if musician and not contract.musician_signature_url and musician.signature_image_url:
                 contract.musician_signature_url = musician.signature_image_url
 
-            if booking.status == BookingStatus.contract_pending:
+            if booking.status in (BookingStatus.accepted, BookingStatus.contract_pending):
                 booking.status = BookingStatus.contract_signed
 
             db.commit()
@@ -630,8 +648,26 @@ def process_mercadopago_direct_payment(
     assert_booking_contractor_owner(db, booking, current_user)
 
     # Si se envía firma del contrato durante la confirmación inicial
-    if payload.signature_image_url and booking.status == BookingStatus.contract_pending:
-        assert_private_upload_owned(db, payload.signature_image_url, current_user.id, "archivo de firma")
+    if payload.signature_image_url and booking.status in (
+        BookingStatus.accepted,
+        BookingStatus.contract_pending,
+        BookingStatus.contract_signed,
+    ):
+        sig_url = payload.signature_image_url
+        if sig_url.startswith("data:image/"):
+            from app.services.uploads import save_data_url_upload
+
+            try:
+                sig_url = save_data_url_upload(
+                    sig_url,
+                    private=True,
+                    owner_id=current_user.id,
+                    db=db,
+                )
+            except ValueError as exc:
+                raise HTTPException(400, detail=str(exc)) from exc
+        else:
+            assert_private_upload_owned(db, sig_url, current_user.id, "archivo de firma")
         contract = db.query(Contract).filter(Contract.booking_id == booking.id).first()
         if contract:
             now = datetime.utcnow()
@@ -641,7 +677,7 @@ def process_mercadopago_direct_payment(
             contract.contractor_signed = True
             contract.contractor_sign_timestamp = now
             contract.contractor_sign_ip = payload.sign_ip or "client"
-            contract.contractor_signature_url = payload.signature_image_url
+            contract.contractor_signature_url = sig_url
 
             musician = db.query(MusicianProfile).filter(
                 MusicianProfile.id == booking.musician_id
@@ -649,7 +685,7 @@ def process_mercadopago_direct_payment(
             if musician and not contract.musician_signature_url and musician.signature_image_url:
                 contract.musician_signature_url = musician.signature_image_url
 
-            if booking.status == BookingStatus.contract_pending:
+            if booking.status in (BookingStatus.accepted, BookingStatus.contract_pending):
                 booking.status = BookingStatus.contract_signed
 
             db.commit()

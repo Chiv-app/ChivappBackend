@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import base64
 import logging
 import re
 import uuid
@@ -147,7 +148,68 @@ def _store_private(filename: str, content: bytes, content_type: str) -> None:
         except Exception as exc:  # noqa: BLE001
             logger.exception("Fallo al subir archivo privado a GCS")
             raise ValueError("Error al subir el archivo. Intenta de nuevo.") from exc
+    if settings.GCP_BUCKET_NAME:
+        try:
+            blob = _gcs_bucket(settings.GCP_BUCKET_NAME).blob(f"private/{filename}")
+            blob.upload_from_string(content, content_type=content_type)
+        except Exception:  # noqa: BLE001
+            logger.exception("Fallo al respaldar archivo privado en GCS")
     (ensure_private_upload_dir() / filename).write_bytes(content)
+
+
+def save_data_url_upload(
+    data_url: str,
+    *,
+    private: bool = True,
+    owner_id=None,
+    db=None,
+) -> str:
+    """Decodifica un data URL (`data:image/...;base64,...`) y lo almacena como archivo subido."""
+    if not data_url or not data_url.startswith("data:"):
+        return data_url
+    try:
+        _, b64_data = data_url.split(",", 1)
+        content = base64.b64decode(b64_data)
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError("El archivo de firma en base64 no es válido.") from exc
+
+    if not content:
+        raise ValueError("El archivo de firma está vacío.")
+    if len(content) > MAX_FILE_SIZE:
+        raise ValueError("El archivo supera el tamaño máximo permitido (15 MB).")
+
+    content_type = sniff_content_type(content[:16])
+    if content_type not in ALLOWED_TYPES:
+        raise ValueError("Tipo de archivo de firma no permitido.")
+
+    filename = f"{uuid.uuid4().hex}{ALLOWED_TYPES[content_type]}"
+    if private:
+        _store_private(filename, content, content_type)
+        if owner_id is not None and db is not None:
+            from app.models.uploaded_file import UploadedFile
+
+            db.add(
+                UploadedFile(
+                    filename=filename,
+                    owner_user_id=owner_id,
+                    content_type=content_type,
+                    size_bytes=len(content),
+                )
+            )
+            db.flush()
+        return f"{PRIVATE_URL_PREFIX}{filename}"
+
+    if settings.GCP_BUCKET_NAME:
+        try:
+            blob = _gcs_bucket(settings.GCP_BUCKET_NAME).blob(filename)
+            blob.upload_from_string(content, content_type=content_type)
+            return f"{GCS_PUBLIC_PREFIX}{settings.GCP_BUCKET_NAME}/{filename}"
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Fallo al subir data_url a GCS")
+            raise ValueError("Error al subir el archivo. Intenta de nuevo.") from exc
+
+    (ensure_upload_dir() / filename).write_bytes(content)
+    return f"{PUBLIC_URL_PREFIX}{filename}"
 
 
 def _safe_name(name: str) -> str | None:
@@ -174,13 +236,28 @@ def read_private_file(filename: str) -> bytes | None:
             logger.exception("No se pudo leer el archivo privado %s", name)
             return None
     path = PRIVATE_UPLOAD_DIR / name
-    return path.read_bytes() if path.is_file() else None
+    if path.is_file():
+        return path.read_bytes()
+    if settings.GCP_BUCKET_NAME:
+        try:
+            blob = _gcs_bucket(settings.GCP_BUCKET_NAME).blob(f"private/{name}")
+            if blob.exists():
+                return blob.download_as_bytes()
+        except Exception:  # noqa: BLE001
+            logger.exception("No se pudo leer respaldo privado %s de GCS", name)
+    return None
 
 
 def read_upload_bytes(url: str | None) -> bytes | None:
-    """Lee cualquier archivo subido (público o privado, disco o GCS) a partir de su URL."""
+    """Lee cualquier archivo subido (público o privado, disco o GCS, o data URL) a partir de su URL."""
     if not url:
         return None
+    if url.startswith("data:"):
+        try:
+            _, b64_data = url.split(",", 1)
+            return base64.b64decode(b64_data)
+        except Exception:  # noqa: BLE001
+            return None
     name = private_filename(url)
     if name:
         return read_private_file(name)
@@ -216,9 +293,27 @@ def assert_private_upload_owned(db, url: str | None, user_id, label: str = "arch
 
     from app.models.uploaded_file import UploadedFile
 
+    if not url:
+        raise HTTPException(400, f"El {label} no es válido. Vuelve a subirlo.")
+
+    if url.startswith("data:image/"):
+        return
+
     name = private_filename(url)
     record = (
         db.query(UploadedFile).filter(UploadedFile.filename == name).first() if name else None
     )
+    if not record and name:
+        content = read_private_file(name)
+        if content:
+            ct = sniff_content_type(content[:16]) or "image/png"
+            record = UploadedFile(
+                filename=name,
+                owner_user_id=user_id,
+                content_type=ct,
+                size_bytes=len(content),
+            )
+            db.add(record)
+            db.flush()
     if not record or str(record.owner_user_id) != str(user_id):
         raise HTTPException(400, f"El {label} no es válido. Vuelve a subirlo.")

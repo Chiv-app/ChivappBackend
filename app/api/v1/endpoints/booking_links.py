@@ -99,6 +99,21 @@ def get_booking_link(
             link.status = BookingLinkStatus.expired
             db.commit()
             db.refresh(link)
+
+    # Si el link figuraba como "completed" pero la reserva aún no ha sido pagada,
+    # permitir que el cliente continúe el proceso de pago.
+    if link.status == BookingLinkStatus.completed and link.booking_id:
+        existing_booking = db.get(Booking, link.booking_id)
+        if existing_booking and existing_booking.status in (
+            BookingStatus.accepted,
+            BookingStatus.contract_pending,
+            BookingStatus.contract_signed,
+            BookingStatus.payment_pending,
+        ):
+            if not link.expires_at or link.expires_at >= datetime.utcnow():
+                link.status = BookingLinkStatus.active
+                db.commit()
+                db.refresh(link)
             
     if link.status == BookingLinkStatus.expired:
         raise HTTPException(status_code=400, detail="Este link de pago ha expirado.")
@@ -172,14 +187,14 @@ def get_booking_link(
     ]
         
     # Calculate platform fee for public display
-    settings = get_or_create_platform_payment_settings(db)
-    fee_amount = compute_platform_fee_amount(link.price, settings.platform_fee_percent)
-    total_payable = compute_contractor_payable_total(link.price, settings.platform_fee_percent)
+    settings_obj = get_or_create_platform_payment_settings(db)
+    fee_amount = compute_platform_fee_amount(link.price, settings_obj.platform_fee_percent)
+    total_payable = compute_contractor_payable_total(link.price, settings_obj.platform_fee_percent)
 
     return BookingLinkPublicOut(
         token=link.token,
         price=float(link.price),
-        fee_percent=float(settings.platform_fee_percent),
+        fee_percent=float(settings_obj.platform_fee_percent),
         fee_amount=float(fee_amount),
         total_payable=float(total_payable),
         event_date=link.event_date,
@@ -218,16 +233,23 @@ def check_identity(
     # 1. Self check
     musician_user = link.musician.user
     if musician_user.email == email:
-        return BookingLinkIdentityResponse(status="self", message="No puedes usar tu propia cuenta de mǧsico para contratarte a ti mismo.")
+        return BookingLinkIdentityResponse(status="self", message="No puedes usar tu propia cuenta de músico para contratarte a ti mismo.")
         
     user = db.query(User).filter(User.email == email).first()
     if not user:
         return BookingLinkIdentityResponse(status="new")
         
     if user.is_verified:
-        return BookingLinkIdentityResponse(status="exists_verified", message="Este correo ya existe y estǭ verificado.")
+        return BookingLinkIdentityResponse(status="exists_verified", message="Este correo ya existe y está verificado.")
     else:
-        return BookingLinkIdentityResponse(status="exists_unverified", message="Este correo ya existe pero requiere contrasea.")
+        if user.email_verification_token:
+            return BookingLinkIdentityResponse(status="new")
+        if link.booking_id:
+            existing_b = db.get(Booking, link.booking_id)
+            contractor_p = db.query(ContractorProfile).filter(ContractorProfile.user_id == user.id).first()
+            if existing_b and contractor_p and existing_b.contractor_id == contractor_p.id:
+                return BookingLinkIdentityResponse(status="new")
+        return BookingLinkIdentityResponse(status="exists_unverified", message="Este correo ya existe pero requiere contraseña.")
 
 @router.post("/{token}/send-otp")
 @limiter.limit(settings.RATE_LIMIT_LOGIN)
@@ -245,14 +267,12 @@ def send_identity_otp(
     user = db.query(User).filter(User.email == email).first()
     
     if not user or not user.is_verified:
-        raise HTTPException(status_code=400, detail="Usuario no vǭlido para OTP.")
+        raise HTTPException(status_code=400, detail="Usuario no válido para OTP.")
         
     from app.services.email.service import send_templated_email
     from app.services.email.defaults import APP_NAME
-    import secrets
-    from datetime import timedelta
-    
     import hashlib
+    
     otp = str(secrets.randbelow(1000000)).zfill(6)
     user.login_otp_hash = hashlib.sha256(f"{user.id}:{otp}".encode()).hexdigest()
     user.login_otp_expires_at = datetime.utcnow() + timedelta(minutes=15)
@@ -261,7 +281,7 @@ def send_identity_otp(
     try:
         send_templated_email(
             to_email=user.email,
-            subject=f"Tu cdigo de verificacin para {APP_NAME}",
+            subject=f"Tu código de verificación para {APP_NAME}",
             template_name="login_otp",
             context={
                 "fullname": user.fullname or "Usuario",
@@ -296,6 +316,22 @@ def checkout_booking_link(
             link.status = BookingLinkStatus.expired
             db.commit()
             db.refresh(link)
+
+    existing_booking = db.get(Booking, link.booking_id) if link.booking_id else None
+    booking_is_unpaid = bool(
+        existing_booking
+        and existing_booking.status
+        in (
+            BookingStatus.accepted,
+            BookingStatus.contract_pending,
+            BookingStatus.contract_signed,
+            BookingStatus.payment_pending,
+        )
+    )
+    if link.status == BookingLinkStatus.completed and booking_is_unpaid:
+        if not link.expires_at or link.expires_at >= datetime.utcnow():
+            link.status = BookingLinkStatus.active
+            db.flush()
             
     if link.status == BookingLinkStatus.expired:
         raise HTTPException(status_code=400, detail="Este link de pago ha expirado.")
@@ -311,9 +347,12 @@ def checkout_booking_link(
     user = db.query(User).filter(User.email == email).first()
     
     if not user:
+        if payload.phone:
+            existing_phone = db.query(User).filter(User.phone == payload.phone).first()
+            if existing_phone:
+                raise HTTPException(status_code=400, detail="Este celular ya está registrado a otra cuenta.")
         
         from app.core.hashing import hash_password
-        import uuid
         
         user = User(
             email=email,
@@ -338,33 +377,40 @@ def checkout_booking_link(
     else:
         # Existing user. Validate credentials based on their status.
         from app.core.hashing import verify_password
+        contractor_check = db.query(ContractorProfile).filter(ContractorProfile.user_id == user.id).first()
+        owns_existing_booking = bool(
+            existing_booking and contractor_check and existing_booking.contractor_id == contractor_check.id
+        )
         
         if user.is_verified:
             # Verified user requires OTP
-            if not payload.otp:
-                raise HTTPException(status_code=400, detail="Este correo estǭ verificado y requiere un cdigo OTP.")
-            if not user.login_otp_hash or not user.login_otp_expires_at:
-                raise HTTPException(status_code=400, detail="El cdigo ha expirado o no ha sido solicitado. Solicitelo nuevamente.")
-            if user.login_otp_expires_at < datetime.utcnow():
-                raise HTTPException(status_code=400, detail="El cdigo OTP ha expirado. Solicite uno nuevo.")
-            
-            import hashlib
-            expected_hash = hashlib.sha256(f"{user.id}:{payload.otp}".encode()).hexdigest()
-            if user.login_otp_hash != expected_hash:
-                raise HTTPException(status_code=400, detail="El cdigo OTP es incorrecto.")
-            
-            # OTP validated successfully, clear it
-            user.login_otp_hash = None
-            user.login_otp_expires_at = None
+            if not payload.otp and not owns_existing_booking:
+                raise HTTPException(status_code=400, detail="Este correo está verificado y requiere un código OTP.")
+            if payload.otp:
+                if not user.login_otp_hash or not user.login_otp_expires_at:
+                    raise HTTPException(status_code=400, detail="El código ha expirado o no ha sido solicitado. Solicítelo nuevamente.")
+                if user.login_otp_expires_at < datetime.utcnow():
+                    raise HTTPException(status_code=400, detail="El código OTP ha expirado. Solicite uno nuevo.")
+                
+                import hashlib
+                expected_hash = hashlib.sha256(f"{user.id}:{payload.otp}".encode()).hexdigest()
+                if user.login_otp_hash != expected_hash:
+                    raise HTTPException(status_code=400, detail="El código OTP es incorrecto.")
+                
+                # OTP validated successfully, clear it
+                user.login_otp_hash = None
+                user.login_otp_expires_at = None
         else:
-            # Unverified user requires password
-            if not payload.password:
-                raise HTTPException(status_code=400, detail="Este correo ya estǭ en uso. Ingrese su contrasea.")
-            if not verify_password(payload.password, user.password_hash):
-                raise HTTPException(status_code=400, detail="Contrasea incorrecta.")
+            # Unverified user: allow guest accounts (with email_verification_token) or retry on same booking
+            is_guest_account = bool(user.email_verification_token) or owns_existing_booking
+            if not is_guest_account:
+                if not payload.password:
+                    raise HTTPException(status_code=400, detail="Este correo ya está en uso. Ingrese su contraseña.")
+                if not verify_password(payload.password, user.password_hash):
+                    raise HTTPException(status_code=400, detail="Contraseña incorrecta.")
         
         # Ensure contractor profile exists.
-        contractor = db.query(ContractorProfile).filter(ContractorProfile.user_id == user.id).first()
+        contractor = contractor_check
         if not contractor:
             contractor = ContractorProfile(user_id=user.id, document_number=payload.document_number)
             db.add(contractor)
@@ -377,27 +423,51 @@ def checkout_booking_link(
             existing_phone = db.query(User).filter(User.phone == payload.phone).first()
             if existing_phone and existing_phone.id != user.id:
                 raise HTTPException(status_code=400, detail="Este celular ya está registrado a otra cuenta.")
-            
+            user.phone = payload.phone
+            db.flush()
+
     from app.services.platform_payment import sync_booking_platform_fee
+    from app.services.uploads import save_data_url_upload
+
+    saved_sig_url = payload.signature_image_url
+    if saved_sig_url and saved_sig_url.startswith("data:image/"):
+        try:
+            saved_sig_url = save_data_url_upload(
+                saved_sig_url,
+                private=True,
+                owner_id=user.id,
+                db=db,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
     
-    # 2. Create the Booking
-    booking = Booking(
-        musician_id=link.musician_id,
-        contractor_id=contractor.id,
-        event_date=payload.event_date,
-        start_time=payload.start_time,
-        event_type=payload.event_type,
-        location_address=payload.location_address,
-        location_city=payload.location_city,
-        price_agreed=link.price,
-        status=BookingStatus.contract_pending,
-    )
-    db.add(booking)
+    # 2. Reuse existing unpaid Booking or create a new Booking
+    if existing_booking and booking_is_unpaid and existing_booking.contractor_id == contractor.id:
+        booking = existing_booking
+        booking.event_date = payload.event_date
+        booking.start_time = payload.start_time
+        booking.event_type = payload.event_type
+        booking.location_address = payload.location_address
+        booking.location_city = payload.location_city
+        booking.price_agreed = link.price
+        booking.status = BookingStatus.contract_signed if saved_sig_url else BookingStatus.contract_pending
+    else:
+        booking = Booking(
+            musician_id=link.musician_id,
+            contractor_id=contractor.id,
+            event_date=payload.event_date,
+            start_time=payload.start_time,
+            event_type=payload.event_type,
+            location_address=payload.location_address,
+            location_city=payload.location_city,
+            price_agreed=link.price,
+            status=BookingStatus.contract_signed if saved_sig_url else BookingStatus.contract_pending,
+        )
+        db.add(booking)
     sync_booking_platform_fee(db, booking, use_current_settings=True)
     db.flush()
     
-    # 3. Mark link as completed
-    link.status = BookingLinkStatus.completed
+    # 3. Link the booking to the payment link (keep link active until payment is approved)
     link.booking_id = booking.id
     
     # Generate contract
@@ -416,10 +486,11 @@ def checkout_booking_link(
         contract.terms_accepted_at = datetime.utcnow()
         contract.terms_accepted_ip = "public_checkout"
         
-        if payload.signature_image_url:
-            contract.contractor_signature_url = payload.signature_image_url
+        if saved_sig_url:
+            contract.contractor_signature_url = saved_sig_url
             contract.contractor_signed = True
             contract.contractor_sign_timestamp = datetime.utcnow()
+            contract.contractor_sign_ip = "public_checkout"
     except ValueError as e:
         db.rollback()
         error_msg = str(e)
@@ -432,7 +503,11 @@ def checkout_booking_link(
     # Authenticate the user implicitly so they can view the dashboard and pay
     _issue_login(response, user)
     
-    return {"message": "Reserva creada exitosamente", "booking_id": booking.id}
+    return {
+        "message": "Reserva creada exitosamente",
+        "booking_id": booking.id,
+        "signature_image_url": saved_sig_url,
+    }
 
 @router.post("/{token}/reset-expiration", response_model=BookingLinkOut)
 def reset_link_expiration(
