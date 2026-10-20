@@ -51,7 +51,7 @@ ACTION_RULES: Dict[BookingAction, TransitionRule] = {
     BookingAction.QUOTE: TransitionRule(
         from_statuses=[BookingStatus.requested, BookingStatus.accepted],
         allowed_roles=[UserRole.musician],
-        error_message="Solo puedes cotizar solicitudes pendientes o actualizar cotizaciones aǧn no aceptadas"
+        error_message="Solo puedes cotizar solicitudes pendientes o actualizar cotizaciones aún no aceptadas"
     ),
     BookingAction.REJECT_QUOTE: TransitionRule(
         from_statuses=[BookingStatus.accepted],
@@ -118,18 +118,19 @@ ACTION_RULES: Dict[BookingAction, TransitionRule] = {
             BookingStatus.balance_pending,
             BookingStatus.balance_review
         ],
-        allowed_roles=[UserRole.admin, UserRole.musician], # Usually admin or cron
+        allowed_roles=[UserRole.admin, UserRole.musician, UserRole.contractor],
         error_message="La reserva no se puede marcar en progreso desde su estado actual"
     ),
     BookingAction.COMPLETE: TransitionRule(
         from_statuses=[
             BookingStatus.in_progress,
             BookingStatus.payment_retained,
+            BookingStatus.payment_released,
             BookingStatus.balance_pending,
             BookingStatus.balance_review
         ],
-        allowed_roles=[UserRole.admin, UserRole.contractor],
-        error_message="La reserva no esta en curso ni confirmada como para finalizarla"
+        allowed_roles=[UserRole.admin, UserRole.contractor, UserRole.musician],
+        error_message="La reserva no está en curso ni confirmada como para finalizarla"
     ),
     BookingAction.CHAT_MESSAGE: TransitionRule(
         from_statuses=[
@@ -183,7 +184,7 @@ ACTION_RULES: Dict[BookingAction, TransitionRule] = {
 
 def assert_can_execute_action(booking, action: BookingAction, current_user=None):
     """
-    Evalǧa si la reserva esta en un estado vǭlido para la accion solicitada
+    Evalúa si la reserva está en un estado válido para la acción solicitada
     y opcionalmente si el rol del usuario puede ejecutarla.
     Lanza HTTPException(400) si no cumple.
     """

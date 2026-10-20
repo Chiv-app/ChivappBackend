@@ -305,7 +305,7 @@ def decide_booking_change(
     booking = get_booking_or_404(db, booking_id)
     assert_booking_participant(db, booking, current_user)
 
-    if payload.decision == "accept":
+    if payload.accept:
         assert_can_execute_action(booking, BookingAction.ACCEPT_CHANGE, current_user)
     else:
         assert_can_execute_action(booking, BookingAction.REJECT_CHANGE, current_user)
@@ -414,6 +414,7 @@ def create_booking_review(
         )
 
     if booking.status not in {
+        BookingStatus.payment_retained,
         BookingStatus.in_progress,
         BookingStatus.payment_released,
     }:
@@ -421,6 +422,8 @@ def create_booking_review(
             400,
             "Las reseñas se habilitan después de confirmar el pago e iniciar el evento",
         )
+    if booking.status == BookingStatus.payment_retained:
+        booking.status = BookingStatus.in_progress
 
     is_final = bool(payload.is_final)
     comment = (payload.comment or "").strip()
@@ -501,6 +504,7 @@ def create_final_booking_review(
             raise HTTPException(400, "Esta reserva finalizada es solo de lectura")
 
         if booking.status not in {
+            BookingStatus.payment_retained,
             BookingStatus.in_progress,
             BookingStatus.payment_released,
         }:
@@ -874,6 +878,7 @@ def recommend_contractor(
     assert_booking_musician_owner(db, booking, current_user)
 
     if booking.status not in {
+        BookingStatus.payment_retained,
         BookingStatus.in_progress,
         BookingStatus.payment_released,
         BookingStatus.completed,
@@ -938,6 +943,7 @@ def complete_booking(
         return booking
 
     if booking.status not in {
+        BookingStatus.payment_retained,
         BookingStatus.in_progress,
         BookingStatus.payment_released,
     }:

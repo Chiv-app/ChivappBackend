@@ -42,6 +42,43 @@ def _resolve_musician_signature_url(
     return contract.musician_signature_url
 
 
+def _ensure_booking_contract(db: Session, booking) -> Contract | None:
+    contract = db.query(Contract).filter(Contract.booking_id == booking.id).first()
+    if contract:
+        return contract
+    from app.models.booking import BookingStatus
+    from app.models.contractor_profile import ContractorProfile
+    from app.services.booking_contract import create_booking_contract
+
+    if booking.status == BookingStatus.requested:
+        return None
+    musician = (
+        db.query(MusicianProfile)
+        .filter(MusicianProfile.id == booking.musician_id)
+        .first()
+    )
+    contractor = (
+        db.query(ContractorProfile)
+        .filter(ContractorProfile.id == booking.contractor_id)
+        .first()
+    )
+    if not musician or not contractor or not musician.user or not contractor.user:
+        return None
+    prev_status = booking.status
+    contract = create_booking_contract(
+        db,
+        booking,
+        musician=musician,
+        musician_user=musician.user,
+        contractor=contractor,
+        contractor_user=contractor.user,
+    )
+    booking.status = prev_status
+    db.commit()
+    db.refresh(contract)
+    return contract
+
+
 @router.get("/booking/{booking_id}", response_model=ContractOut)
 def get_booking_contract(
     booking_id: str,
@@ -51,7 +88,7 @@ def get_booking_contract(
     booking = get_booking_or_404(db, booking_id)
     assert_booking_participant(db, booking, current_user)
 
-    contract = db.query(Contract).filter(Contract.booking_id == booking.id).first()
+    contract = _ensure_booking_contract(db, booking)
     if not contract:
         raise HTTPException(404, "Contrato no encontrado para esta reserva")
 
@@ -71,7 +108,7 @@ def render_booking_contract_pdf_response(
 
     Sin chequeo de autorización: cada endpoint que la llama aplica su propio guard.
     """
-    contract = db.query(Contract).filter(Contract.booking_id == booking.id).first()
+    contract = _ensure_booking_contract(db, booking)
     if not contract:
         raise HTTPException(404, "Contrato no encontrado para esta reserva")
 

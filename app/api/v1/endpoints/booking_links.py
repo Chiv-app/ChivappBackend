@@ -491,6 +491,7 @@ def checkout_booking_link(
             contract.contractor_signed = True
             contract.contractor_sign_timestamp = datetime.utcnow()
             contract.contractor_sign_ip = "public_checkout"
+            booking.status = BookingStatus.contract_signed
     except ValueError as e:
         db.rollback()
         error_msg = str(e)

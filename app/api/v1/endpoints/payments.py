@@ -596,7 +596,9 @@ def create_mercadopago_preference(
                 raise HTTPException(400, detail=str(exc)) from exc
         else:
             assert_private_upload_owned(db, sig_url, current_user.id, "archivo de firma")
-        contract = db.query(Contract).filter(Contract.booking_id == booking.id).first()
+        from app.api.v1.endpoints.contracts import _ensure_booking_contract
+
+        contract = _ensure_booking_contract(db, booking)
         if contract:
             now = datetime.utcnow()
             contract.terms_accepted = True
@@ -668,7 +670,9 @@ def process_mercadopago_direct_payment(
                 raise HTTPException(400, detail=str(exc)) from exc
         else:
             assert_private_upload_owned(db, sig_url, current_user.id, "archivo de firma")
-        contract = db.query(Contract).filter(Contract.booking_id == booking.id).first()
+        from app.api.v1.endpoints.contracts import _ensure_booking_contract
+
+        contract = _ensure_booking_contract(db, booking)
         if contract:
             now = datetime.utcnow()
             contract.terms_accepted = True

@@ -380,10 +380,14 @@ def quote_booking(
     is_update = booking.status == BookingStatus.accepted
 
     if not musician.contract_template_body or len(musician.contract_template_body.strip()) < 50:
-        raise HTTPException(
-            status_code=400,
-            detail="Configura tu plantilla de contrato antes de enviar cotizaciones",
+        from app.services.contract_pdf import (
+            DEFAULT_CONTRACT_TEMPLATE_BODY,
+            DEFAULT_CONTRACT_TEMPLATE_TITLE,
         )
+
+        if not musician.contract_template_title:
+            musician.contract_template_title = DEFAULT_CONTRACT_TEMPLATE_TITLE
+        musician.contract_template_body = DEFAULT_CONTRACT_TEMPLATE_BODY
 
     booking.price_agreed = payload.price_agreed
     booking.musician_quote_notes = payload.musician_quote_notes

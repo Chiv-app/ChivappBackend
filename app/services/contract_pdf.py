@@ -44,6 +44,34 @@ MUSICIAN_BLANK_PLACEHOLDERS = {
     LEGACY_ADVANCE_PLACEHOLDER,
 }
 
+DEFAULT_CONTRACT_TEMPLATE_TITLE = "Contrato de prestación de servicios musicales"
+
+DEFAULT_CONTRACT_TEMPLATE_BODY = """<h1>Contrato de prestación de servicios musicales</h1>
+<h3>Partes</h3>
+<p>Entre {{nombre_artista}}, con correo de contacto {{correo_artista}} y teléfono {{telefono_artista}}, en adelante EL ARTISTA, y {{nombre_cliente}}, identificado(a) con {{documento_cliente}}, en adelante EL CLIENTE, se celebra el presente contrato de prestación de servicios musicales con fecha {{fecha_contrato}}.</p>
+<h3>Objeto del contrato</h3>
+<p>EL ARTISTA se compromete a prestar un servicio musical en vivo de tipo {{tipo_evento}} el día {{fecha_evento}} a las {{hora_evento}} horas, en {{lugar_evento}}, con una duración aproximada de {{duracion_servicio}}.</p>
+<p>El repertorio, el formato musical (número de integrantes) y los momentos especiales del evento serán acordados previamente entre las partes por escrito.</p>
+<h3>Honorarios y forma de pago</h3>
+<p>El monto total acordado por el servicio es {{monto_total}}. EL CLIENTE pagará el 100 % de dicho monto en un único pago a través de Chivapp (Mercado Pago) para confirmar la reserva; no existen pagos posteriores.</p>
+<p>Tarifas de referencia de EL ARTISTA: {{tarifa_evento}} por evento completo o {{tarifa_hora}} por hora adicional. El tiempo extra al pactado se cobrará según esta tarifa y deberá acordarse el mismo día del evento.</p>
+<h3>Equipo técnico y logística</h3>
+<p>EL ARTISTA llevará su propio instrumental y vestuario. El equipo de sonido, iluminación y/o tarima, de ser necesarios, serán coordinados previamente indicando qué parte los proporciona.</p>
+<p>EL CLIENTE garantizará un espacio adecuado para la presentación, así como acceso a un punto de energía eléctrica estable si el show lo requiere.</p>
+<h3>Obligaciones del artista</h3>
+<p>EL ARTISTA se compromete a llegar con un mínimo de 45 minutos de anticipación para el montaje y prueba de sonido, presentar una imagen y desempeño profesional, y cumplir con el repertorio y tiempo acordados, salvo causas de fuerza mayor.</p>
+<h3>Obligaciones del cliente</h3>
+<p>EL CLIENTE se compromete a confirmar la dirección exacta y datos de contacto del lugar del evento con al menos 48 horas de anticipación, informar oportunamente cualquier cambio de horario o lugar, y realizar los pagos en las fechas acordadas.</p>
+<h3>Cancelaciones y reprogramación</h3>
+<p>Las cancelaciones y reembolsos se rigen por la política de Chivapp: si EL CLIENTE cancela con más de 15 días de anticipación se le reembolsa el 100 % de lo pagado (sin el costo de la pasarela de pagos); entre 7 y 15 días, el 50 %; y con menos de 7 días no hay reembolso. Los reembolsos son revisados y aprobados por Chivapp.</p>
+<p>Si EL ARTISTA no pudiera asistir por causas propias, EL CLIENTE recibirá el reembolso del 100 % de lo pagado o, de común acuerdo, se podrá proponer una fecha alternativa o un reemplazo de igual o mejor calidad artística. Toda reprogramación deberá constar por escrito.</p>
+<h3>Fuerza mayor y derechos de imagen</h3>
+<p>Ninguna de las partes será responsable por el incumplimiento de sus obligaciones cuando este se deba a caso fortuito o fuerza mayor debidamente acreditado.</p>
+<p>EL CLIENTE podrá tomar fotografías y videos del evento para uso personal. El uso de dicho material con fines comerciales o publicitarios requerirá la autorización previa y expresa de EL ARTISTA.</p>
+<h3>Legislación aplicable y contacto</h3>
+<p>El presente contrato se rige por las leyes de la República del Perú. Cualquier controversia será sometida a los jueces y tribunales del distrito judicial correspondiente al lugar del evento.</p>
+<p>Para coordinaciones, EL CLIENTE podrá comunicarse con EL ARTISTA mediante {{correo_artista}} o {{telefono_artista}}.</p>"""
+
 CONTRACTOR_BLANK_PLACEHOLDERS = {
     "{{nombre_artista}}",
     "{{correo_artista}}",
@@ -359,11 +387,15 @@ def _booking_contract_content(
     contractor: ContractorProfile,
     contractor_user: User,
 ) -> tuple[str, str, dict[str, str]]:
-    if contract_html_text_length(profile.contract_template_body) < 50:
-        raise ValueError("El músico debe tener una plantilla de contrato configurada")
+    template_body = profile.contract_template_body
+    if contract_html_text_length(template_body) < 50:
+        template_body = DEFAULT_CONTRACT_TEMPLATE_BODY
 
-    raw_title = profile.contract_template_title or f"Contrato de servicios - {profile.stage_name}"
-    raw_body = sanitize_contract_html(profile.contract_template_body) or ""
+    raw_title = (
+        profile.contract_template_title
+        or f"{DEFAULT_CONTRACT_TEMPLATE_TITLE} - {profile.stage_name or musician_user.fullname}"
+    )
+    raw_body = sanitize_contract_html(template_body) or ""
     context = _build_booking_context(
         booking,
         profile,
@@ -436,7 +468,7 @@ def render_contract_pdf_bytes(
     if signature_image_url:
         right_signature_data_uri = _resolve_signature_data_uri(
             signature_image_url,
-            required=True,
+            required=False,
             missing_message="No se encontró la imagen de firma del contratista",
         )
         if signed_at is not None:

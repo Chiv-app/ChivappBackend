@@ -18,16 +18,6 @@ def create_booking_contract(
     contractor: ContractorProfile,
     contractor_user: User,
 ) -> Contract:
-    existing = db.query(Contract).filter(Contract.booking_id == booking.id).first()
-    if existing:
-        return existing
-
-    if not (musician.signature_image_url or "").strip():
-        raise ValueError(
-            "Configura tu firma digital en el perfil (sección de contrato) "
-            "antes de generar contratas."
-        )
-
     title, body, context = build_booking_contract_snapshot(
         booking,
         musician,
@@ -36,7 +26,18 @@ def create_booking_contract(
         contractor_user,
     )
 
+    existing = db.query(Contract).filter(Contract.booking_id == booking.id).first()
+    if existing:
+        if not existing.contractor_signed:
+            existing.title = title
+            existing.body = body
+            existing.context = context
+        if not existing.musician_signature_url and musician.signature_image_url:
+            existing.musician_signature_url = musician.signature_image_url
+        return existing
+
     now = datetime.utcnow()
+    sig_url = (musician.signature_image_url or "").strip() or None
     contract = Contract(
         booking_id=booking.id,
         title=title,
@@ -44,8 +45,9 @@ def create_booking_contract(
         context=context,
         musician_signed=True,
         musician_sign_timestamp=now,
-        musician_signature_url=musician.signature_image_url,
+        musician_signature_url=sig_url,
     )
-    booking.status = BookingStatus.contract_pending
+    if booking.status in (BookingStatus.requested, BookingStatus.accepted):
+        booking.status = BookingStatus.contract_pending
     db.add(contract)
     return contract
