@@ -33,7 +33,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
       - name: Check Python syntax & undefined names (ruff)
-        run: ruff check --select F821,F822,F823,E999 app tests
+        run: ruff check --select F821,F822,F823 app tests
       - name: Run pytest
         run: pytest
 

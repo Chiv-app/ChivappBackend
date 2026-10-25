@@ -11,6 +11,7 @@ from app.models.booking import Booking, BookingStatus
 from app.models.contractor_profile import ContractorProfile
 from app.models.musician_profile import MusicianProfile
 from app.models.payment import Payment, PaymentStatus
+from app.models.payout_request import PayoutRequest
 from app.models.profile_status import ProfileStatus
 from app.models.support_ticket import SupportTicket, SupportTicketStatus
 from app.models.user import User, UserRole
@@ -2046,7 +2047,7 @@ def respond_support_ticket(
 
 
 def _serialize_admin_payout_request(
-    req: "PayoutRequest", musician: MusicianProfile | None
+    req: PayoutRequest, musician: MusicianProfile | None
 ) -> AdminPayoutRequestOut:
     payout_info = None
     if musician:
