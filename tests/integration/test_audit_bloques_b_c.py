@@ -51,6 +51,7 @@ def _setup_users(db):
         stage_name="Mariachi BC",
         slug=f"mariachi-bc-{musician_user.id.hex[:6]}",
         status=ProfileStatus.published,
+        signature_image_url="https://example.com/sig-bc.png",
     )
     contractor = ContractorProfile(
         user_id=contractor_user.id,
