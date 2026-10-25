@@ -18,10 +18,31 @@ from app.core.limiter import limiter, rate_limit_exceeded_handler
 from app.core.security import SecurityHeadersMiddleware
 from app.db.migrate import run_migrations, run_startup_seeds
 from app.db.session import Base, engine
-from app.services.uploads import ensure_upload_dir
+from app.services.uploads import UPLOAD_DIR, _safe_name, ensure_upload_dir, read_upload_bytes
 import app.models  # noqa: F401 — registra modelos antes de create_all
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+
+class GcsFallbackStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope):
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code != 404 or not settings.GCP_BUCKET_NAME:
+                raise
+            name = _safe_name(path.lstrip("/"))
+            if not name:
+                raise
+            content = read_upload_bytes(f"/uploads/{name}")
+            if content is None:
+                raise
+            try:
+                (ensure_upload_dir() / name).write_bytes(content)
+            except Exception:  # noqa: BLE001
+                pass
+            return await super().get_response(path, scope)
 
 DEV_CORS_ORIGIN_REGEX = (
     r"https?://(localhost|127\.0\.0\.1|.*\.ngrok-free\.app|.*\.ngrok\.io|.*\.loca\.lt)(:\d+)?"
@@ -89,7 +110,7 @@ async def harden_upload_responses(request, call_next):
 app.include_router(private_files.router)
 
 ensure_upload_dir()
-app.mount("/uploads", StaticFiles(directory=str(Path(__file__).resolve().parents[1] / "uploads")), name="uploads")
+app.mount("/uploads", GcsFallbackStaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 app.include_router(api_router, prefix=settings.API_V1_STR)
 

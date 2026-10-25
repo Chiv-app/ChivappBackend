@@ -133,7 +133,11 @@ async def save_upload(file: UploadFile, *, private: bool = False, owner_id=None,
         except Exception as exc:  # noqa: BLE001
             logger.exception("Fallo al subir a GCS")
             raise ValueError("Error al subir el archivo. Intenta de nuevo.") from exc
-        return f"{GCS_PUBLIC_PREFIX}{settings.GCP_BUCKET_NAME}/{filename}"
+        try:
+            (ensure_upload_dir() / filename).write_bytes(content)
+        except Exception:  # noqa: BLE001
+            pass
+        return f"{PUBLIC_URL_PREFIX}{filename}"
 
     (ensure_upload_dir() / filename).write_bytes(content)
     return f"{PUBLIC_URL_PREFIX}{filename}"
@@ -205,10 +209,14 @@ def save_data_url_upload(
         try:
             blob = _gcs_bucket(settings.GCP_BUCKET_NAME).blob(filename)
             blob.upload_from_string(content, content_type=content_type)
-            return f"{GCS_PUBLIC_PREFIX}{settings.GCP_BUCKET_NAME}/{filename}"
         except Exception as exc:  # noqa: BLE001
             logger.exception("Fallo al subir data_url a GCS")
             raise ValueError("Error al subir el archivo. Intenta de nuevo.") from exc
+        try:
+            (ensure_upload_dir() / filename).write_bytes(content)
+        except Exception:  # noqa: BLE001
+            pass
+        return f"{PUBLIC_URL_PREFIX}{filename}"
 
     (ensure_upload_dir() / filename).write_bytes(content)
     return f"{PUBLIC_URL_PREFIX}{filename}"
@@ -284,7 +292,16 @@ def read_upload_bytes(url: str | None) -> bytes | None:
     if not name or not url.startswith(PUBLIC_URL_PREFIX):
         return None
     path = UPLOAD_DIR / name
-    return path.read_bytes() if path.is_file() else None
+    if path.is_file():
+        return path.read_bytes()
+    if settings.GCP_BUCKET_NAME:
+        try:
+            blob = _gcs_bucket(settings.GCP_BUCKET_NAME).blob(name)
+            return blob.download_as_bytes() if blob.exists() else None
+        except Exception:  # noqa: BLE001
+            logger.exception("No se pudo leer %s de GCS", name)
+            return None
+    return None
 
 
 def upload_exists(url: str | None) -> bool:
