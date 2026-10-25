@@ -36,19 +36,19 @@ def _resolve_musician_signature_url(
     )
     if not musician or not musician.signature_image_url:
         return None
-    contract.musician_signature_url = musician.signature_image_url
-    db.add(contract)
-    db.commit()
-    return contract.musician_signature_url
+    return musician.signature_image_url
 
 
 def _ensure_booking_contract(db: Session, booking) -> Contract | None:
     contract = db.query(Contract).filter(Contract.booking_id == booking.id).first()
-    if contract:
+    if contract and (contract.contractor_signed or (contract.title and contract.body)):
         return contract
     from app.models.booking import BookingStatus
     from app.models.contractor_profile import ContractorProfile
-    from app.services.booking_contract import create_booking_contract
+    from app.services.booking_contract import (
+        build_booking_contract_snapshot,
+        create_booking_contract,
+    )
 
     if booking.status == BookingStatus.requested:
         return None
@@ -63,7 +63,22 @@ def _ensure_booking_contract(db: Session, booking) -> Contract | None:
         .first()
     )
     if not musician or not contractor or not musician.user or not contractor.user:
-        return None
+        return contract
+    if contract and not contract.contractor_signed:
+        title, body, context = build_booking_contract_snapshot(
+            booking,
+            musician,
+            musician.user,
+            contractor,
+            contractor.user,
+        )
+        contract.title = title
+        contract.body = body
+        contract.context = context
+        db.add(contract)
+        db.commit()
+        db.refresh(contract)
+        return contract
     prev_status = booking.status
     contract = create_booking_contract(
         db,
@@ -91,10 +106,6 @@ def get_booking_contract(
     contract = _ensure_booking_contract(db, booking)
     if not contract:
         raise HTTPException(404, "Contrato no encontrado para esta reserva")
-
-    if not contract.musician_signature_url:
-        _resolve_musician_signature_url(db, booking, contract)
-        db.refresh(contract)
 
     return contract
 

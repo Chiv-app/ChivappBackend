@@ -85,7 +85,10 @@ def test_private_file_access_rules(client, db_session):
     _login(client, stranger)
     assert client.get(url).status_code == 404  # sin relación
     _login(client, counterpart)
-    assert client.get(url).status_code == 200  # contraparte de una reserva
+    assert client.get(url).status_code == 404  # SEC-16: archivo privado no asociado a la reserva
+    musician.contract_pdf_url = url
+    db_session.commit()
+    assert client.get(url).status_code == 200  # contraparte cuando el archivo es documento de la reserva
     _login(client, admin)
     res = client.get(url)
     assert res.status_code == 200

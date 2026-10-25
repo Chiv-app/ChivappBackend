@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI
@@ -15,7 +16,7 @@ from app.api.v1.endpoints import private_files
 from app.core.config import settings
 from app.core.limiter import limiter, rate_limit_exceeded_handler
 from app.core.security import SecurityHeadersMiddleware
-from app.db.migrate import run_migrations
+from app.db.migrate import run_migrations, run_startup_seeds
 from app.db.session import Base, engine
 from app.services.uploads import ensure_upload_dir
 import app.models  # noqa: F401 — registra modelos antes de create_all
@@ -26,13 +27,27 @@ DEV_CORS_ORIGIN_REGEX = (
     r"https?://(localhost|127\.0\.0\.1|.*\.ngrok-free\.app|.*\.ngrok\.io|.*\.loca\.lt)(:\d+)?"
 )
 
-run_migrations(engine)
+IS_PRODUCTION = settings.is_production
+_startup_initialized = False
 
-IS_PRODUCTION = settings.ENVIRONMENT.lower() == "production"
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    global _startup_initialized
+    if not _startup_initialized:
+        if IS_PRODUCTION:
+            run_startup_seeds()
+        else:
+            Base.metadata.create_all(bind=engine)
+            run_migrations(engine)
+        _startup_initialized = True
+    yield
+
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version="1.0.0",
+    lifespan=lifespan,
     # En producción no se publica el mapa completo de la API.
     docs_url=None if IS_PRODUCTION else "/docs",
     redoc_url=None if IS_PRODUCTION else "/redoc",
@@ -55,6 +70,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Unread-Count"],
 )
 
 @app.middleware("http")

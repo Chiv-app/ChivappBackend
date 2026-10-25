@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import secrets
 from datetime import datetime, timedelta
 from uuid import UUID
@@ -44,9 +45,13 @@ def booking_respond_url(token: str) -> str:
     return f"{base}/invite/member/{token}"
 
 
+def _hash_setup_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
 def issue_password_setup_token(member: EnsembleMember) -> str:
     token = new_token()
-    member.password_setup_token = token
+    member.password_setup_token = _hash_setup_token(token)
     member.password_setup_expires_at = datetime.utcnow() + timedelta(
         days=PASSWORD_SETUP_TTL_DAYS
     )
@@ -98,8 +103,6 @@ def serialize_member(member: EnsembleMember, *, include_invite_url: bool = False
         invite_expired = bool(
             invite_expires_at and invite_expires_at < datetime.utcnow()
         )
-        if include_invite_url and is_leader_managed_account(linked):
-            invite_url = password_setup_url(member.password_setup_token)
     return {
         "id": member.id,
         "email": member.email,
@@ -148,18 +151,6 @@ def create_or_link_member_user(
                 400,
                 "No se puede utilizar este correo porque ya está en uso.",
             )
-        # Keep existing password; if none, leader can resend setup link.
-        if phone and not existing.phone:
-            existing.phone = assert_phone_unique(
-                db, phone, exclude_user_id=existing.id
-            )
-        profile = (
-            db.query(MusicianProfile)
-            .filter(MusicianProfile.user_id == existing.id)
-            .first()
-        )
-        if profile and specialties and not profile.instruments:
-            profile.instruments = specialties
         return existing
 
     phone_norm = assert_phone_unique(db, phone)
@@ -169,8 +160,8 @@ def create_or_link_member_user(
         password_hash=None,
         role=UserRole.musician,
         phone=phone_norm,
-        # Trusted via leader invite; profile stays draft (not marketplace-listed).
-        is_verified=True,
+        # Profile stays draft (not marketplace-listed); admin verification required to publish.
+        is_verified=False,
         is_active=True,
     )
     db.add(user)
@@ -193,9 +184,10 @@ def create_or_link_member_user(
 
 
 def find_password_setup_member(db: Session, token: str) -> EnsembleMember:
+    token_hash = _hash_setup_token(token)
     member = (
         db.query(EnsembleMember)
-        .filter(EnsembleMember.password_setup_token == token)
+        .filter(EnsembleMember.password_setup_token == token_hash)
         .first()
     )
     if not member:
@@ -239,11 +231,7 @@ def serialize_booking_invite(invite: BookingMemberInvite) -> dict:
         "member_email": member.email if member else "",
         "specialties": list(member.specialties or []) if member else [],
         "status": invite.status.value if hasattr(invite.status, "value") else invite.status,
-        "respond_url": booking_respond_url(invite.response_token)
-        if invite.status == BookingMemberInviteStatus.pending
-        and member
-        and is_leader_managed_account(member.member_user)
-        else None,
+        "respond_url": None,
         "invited_at": invite.invited_at,
         "responded_at": invite.responded_at,
     }
@@ -253,7 +241,7 @@ def serialize_payout(payout: BookingMemberPayout) -> dict:
     member = payout.ensemble_member
     return {
         "id": payout.id,
-        "booking_id": payout.booking_id,
+        "booking_id": invite_booking_id(payout),
         "ensemble_member_id": payout.ensemble_member_id,
         "member_fullname": member.fullname if member else "",
         "member_email": member.email if member else "",
@@ -264,6 +252,10 @@ def serialize_payout(payout: BookingMemberPayout) -> dict:
         "set_by_leader_at": payout.set_by_leader_at,
         "paid_at": payout.paid_at,
     }
+
+
+def invite_booking_id(payout: BookingMemberPayout) -> UUID:
+    return payout.booking_id
 
 
 def get_member_for_leader(

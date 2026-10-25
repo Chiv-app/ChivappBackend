@@ -161,8 +161,8 @@ def live_location_history(
     rows = (
         db.query(BookingLocationPing)
         .filter(BookingLocationPing.booking_id == booking.id)
-        .order_by(BookingLocationPing.created_at.asc())
+        .order_by(BookingLocationPing.created_at.desc())
         .limit(2000)
         .all()
     )
-    return rows
+    return list(reversed(rows))

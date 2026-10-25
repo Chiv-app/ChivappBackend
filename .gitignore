@@ -27,25 +27,17 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 
-# Environment Secrets
+# Environment & Secrets
 .env
 .env.*
 !.env.example
 !.env.production.example
+google_credentials.json
+*.pem
+*.key
 
-# Local Uploads (archivos subidos localmente no deben ir al repositorio)
+# Local Uploads & Logs
 uploads/*
 !uploads/.gitkeep
-google_credentials.json
-
-
-
-# Scripts sueltos en la raíz (con / para no ignorar tests/ ni app/)
-/check_*.py
-/patch_*.py
-/fix_*.py
-/test_*.py
-output.txt
-
-# Archivos privados locales (DNI, firmas, comprobantes)
 uploads_private/
+*.log

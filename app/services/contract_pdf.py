@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import re
 from datetime import datetime
 from html import escape as html_escape
@@ -6,6 +7,7 @@ from html import unescape
 from io import BytesIO
 from pathlib import Path
 
+from app.core.config import settings
 from app.core.timezone import now_peru, to_peru_datetime
 
 from xhtml2pdf import pisa
@@ -63,7 +65,7 @@ DEFAULT_CONTRACT_TEMPLATE_BODY = """<h1>Contrato de prestación de servicios mus
 <h3>Obligaciones del cliente</h3>
 <p>EL CLIENTE se compromete a confirmar la dirección exacta y datos de contacto del lugar del evento con al menos 48 horas de anticipación, informar oportunamente cualquier cambio de horario o lugar, y realizar los pagos en las fechas acordadas.</p>
 <h3>Cancelaciones y reprogramación</h3>
-<p>Las cancelaciones y reembolsos se rigen por la política de Chivapp: si EL CLIENTE cancela con más de 15 días de anticipación se le reembolsa el 100 % de lo pagado (sin el costo de la pasarela de pagos); entre 7 y 15 días, el 50 %; y con menos de 7 días no hay reembolso. Los reembolsos son revisados y aprobados por Chivapp.</p>
+<p>Las cancelaciones y reembolsos se rigen por la política de Chivapp: si EL CLIENTE cancela con 15 días calendario o más de anticipación se le reembolsa el 100 % de lo pagado (sin el costo de la pasarela de pagos); entre 7 y 14 días calendario, el 50 %; y con menos de 7 días calendario no hay reembolso. Los reembolsos son revisados y aprobados por Chivapp.</p>
 <p>Si EL ARTISTA no pudiera asistir por causas propias, EL CLIENTE recibirá el reembolso del 100 % de lo pagado o, de común acuerdo, se podrá proponer una fecha alternativa o un reemplazo de igual o mejor calidad artística. Toda reprogramación deberá constar por escrito.</p>
 <h3>Fuerza mayor y derechos de imagen</h3>
 <p>Ninguna de las partes será responsable por el incumplimiento de sus obligaciones cuando este se deba a caso fortuito o fuerza mayor debidamente acreditado.</p>
@@ -303,14 +305,14 @@ def _render_html_document(
 <table class="signature-table">
 <tr>
 <td class="signature-cell">
-<div class="signature-label">{left_label}</div>
+<div class="signature-label">{html_escape(left_label)}</div>
 {left_signature_html}
-<div class="signature-line">{left_name}</div>
+<div class="signature-line">{html_escape(left_name)}</div>
 </td>
 <td class="signature-cell">
-<div class="signature-label">{right_label}</div>
+<div class="signature-label">{html_escape(right_label)}</div>
 {right_signature_html}
-<div class="signature-line">{right_name}</div>
+<div class="signature-line">{html_escape(right_name)}</div>
 </td>
 </tr>
 </table>
@@ -380,6 +382,21 @@ def _build_booking_context(
     return context
 
 
+def compute_contract_body_sha256(title: str | None, body: str | None) -> str:
+    payload = f"{(title or '').strip()}\n{(body or '').strip()}".encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def build_default_contract_template_body() -> str:
+    full_days = int(settings.CANCEL_FULL_REFUND_MIN_DAYS)
+    partial_days = int(settings.CANCEL_PARTIAL_REFUND_MIN_DAYS)
+    partial_pct = int(settings.CANCEL_PARTIAL_REFUND_PERCENT)
+    return DEFAULT_CONTRACT_TEMPLATE_BODY.replace(
+        "con más de 15 días de anticipación se le reembolsa el 100 % de lo pagado (sin el costo de la pasarela de pagos); entre 7 y 15 días, el 50 %; y con menos de 7 días no hay reembolso.",
+        f"con {full_days} días calendario o más de anticipación se le reembolsa el 100 % de lo pagado (sin el costo de la pasarela de pagos); entre {partial_days} y {full_days - 1} días calendario, el {partial_pct} %; y con menos de {partial_days} días calendario no hay reembolso.",
+    )
+
+
 def _booking_contract_content(
     booking: Booking,
     profile: MusicianProfile,
@@ -389,7 +406,9 @@ def _booking_contract_content(
 ) -> tuple[str, str, dict[str, str]]:
     template_body = profile.contract_template_body
     if contract_html_text_length(template_body) < 50:
-        template_body = DEFAULT_CONTRACT_TEMPLATE_BODY
+        template_body = build_default_contract_template_body()
+    elif template_body == DEFAULT_CONTRACT_TEMPLATE_BODY:
+        template_body = build_default_contract_template_body()
 
     raw_title = (
         profile.contract_template_title
@@ -406,6 +425,12 @@ def _booking_contract_content(
     all_blanks = MUSICIAN_BLANK_PLACEHOLDERS | CONTRACTOR_BLANK_PLACEHOLDERS
     title = _replace_placeholders(raw_title, context, all_blanks)
     body = _replace_placeholders(raw_body, context, all_blanks, escape_values=True)
+    context["__body_sha256__"] = compute_contract_body_sha256(title, body)
+    context["__cancellation_policy__"] = (
+        f"{int(settings.CANCEL_FULL_REFUND_MIN_DAYS)}d/"
+        f"{int(settings.CANCEL_PARTIAL_REFUND_MIN_DAYS)}d/"
+        f"{int(settings.CANCEL_PARTIAL_REFUND_PERCENT)}%"
+    )
     return title, body, context
 
 
@@ -556,14 +581,37 @@ def generate_signed_booking_contract_pdf(
     return _write_pdf_bytes(f"contract-signed-{booking.id}", pdf_bytes)
 
 
-def generate_musician_contract_pdf(profile: MusicianProfile, user: User) -> str:
+def _write_private_pdf_bytes(filename_prefix: str, pdf_bytes: bytes, *, owner_id=None, db=None) -> str:
+    from app.models.uploaded_file import UploadedFile
+    from app.services.uploads import PRIVATE_URL_PREFIX, ensure_private_upload_dir
+
+    filename = f"{filename_prefix}-{now_peru().strftime('%Y%m%d%H%M%S')}.pdf"
+    destination = ensure_private_upload_dir() / filename
+    destination.write_bytes(pdf_bytes)
+    if db is not None and owner_id is not None:
+        existing = db.query(UploadedFile).filter(UploadedFile.filename == filename).first()
+        if not existing:
+            db.add(
+                UploadedFile(
+                    filename=filename,
+                    owner_user_id=owner_id,
+                    content_type="application/pdf",
+                    size_bytes=len(pdf_bytes),
+                )
+            )
+            db.flush()
+    return f"{PRIVATE_URL_PREFIX}{filename}"
+
+
+def generate_musician_contract_pdf(profile: MusicianProfile, user: User, *, db=None) -> str:
     raw_title = profile.contract_template_title or f"Contrato de servicios - {profile.stage_name}"
-    raw_body = profile.contract_template_body or (
-        f"<p>Contrato estándar de prestación de servicios musicales para {profile.stage_name}.</p>"
-    )
+    raw_body = sanitize_contract_html(
+        profile.contract_template_body
+        or f"<p>Contrato estándar de prestación de servicios musicales para {html_escape(profile.stage_name or '')}.</p>"
+    ) or ""
     context = _build_musician_context(profile, user)
     title = _replace_placeholders(raw_title, context, MUSICIAN_BLANK_PLACEHOLDERS)
-    body = _replace_placeholders(raw_body, context, MUSICIAN_BLANK_PLACEHOLDERS)
+    body = _replace_placeholders(raw_body, context, MUSICIAN_BLANK_PLACEHOLDERS, escape_values=True)
     left_signature = _resolve_signature_data_uri(
         profile.signature_image_url,
         required=False,
@@ -571,7 +619,7 @@ def generate_musician_contract_pdf(profile: MusicianProfile, user: User) -> str:
     )
 
     html = _render_html_document(
-        title=title,
+        title=html_escape(title),
         body_html=body,
         left_label="EL ARTISTA",
         left_name=context["{{nombre_artista}}"],
@@ -580,7 +628,7 @@ def generate_musician_contract_pdf(profile: MusicianProfile, user: User) -> str:
         left_signature_data_uri=left_signature,
     )
     pdf_bytes = _pdf_bytes_from_html(html)
-    return _write_pdf_bytes(f"contract-musician-{profile.id}", pdf_bytes)
+    return _write_private_pdf_bytes(f"contract-musician-{profile.id}", pdf_bytes, owner_id=user.id, db=db)
 
 
 def generate_contractor_contract_pdf(profile: ContractorProfile, user: User) -> str:

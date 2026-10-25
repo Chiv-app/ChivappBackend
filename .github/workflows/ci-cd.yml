@@ -3,6 +3,7 @@ name: Backend CI/CD
 on:
   push:
     branches: [main]
+  pull_request:
 
 jobs:
   test:
@@ -31,11 +32,14 @@ jobs:
           python-version: '3.12'
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
+      - name: Check Python syntax & undefined names (ruff)
+        run: ruff check --select F821,F822,F823,E999 app tests
       - name: Run pytest
         run: pytest
 
   deploy:
     name: Deploy to Cloud Run
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: test
     runs-on: ubuntu-latest
     steps:
@@ -64,6 +68,16 @@ jobs:
           docker build -t us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/cloud-run-source-deploy/backend:latest .
           docker push us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/cloud-run-source-deploy/backend:latest
 
+      - name: Ensure Private Uploads Bucket Exists
+        run: |
+          if ! gcloud storage buckets describe gs://chivapp-private-uploads --project="${{ secrets.GCP_PROJECT_ID }}" >/dev/null 2>&1; then
+            gcloud storage buckets create gs://chivapp-private-uploads \
+              --location=us-central1 \
+              --uniform-bucket-level-access \
+              --project="${{ secrets.GCP_PROJECT_ID }}" || true
+          fi
+          gcloud storage buckets update gs://chivapp-private-uploads --pap --project="${{ secrets.GCP_PROJECT_ID }}" || true
+
       - name: Deploy to Cloud Run
         uses: google-github-actions/deploy-cloudrun@v2
         with:
@@ -71,6 +85,9 @@ jobs:
           region: us-central1
           image: us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/cloud-run-source-deploy/backend:latest
           env_vars: |
+            ENVIRONMENT=production
             LOG_LEVEL=info
             FRONTEND_URL=https://chiv.app
-            OAUTH_REDIRECT_BASE_URL=https://api.chiv.app/api/v1
+            OAUTH_REDIRECT_BASE_URL=https://chiv.app/api/v1
+            GCP_BUCKET_NAME=chivapp-uploads
+            GCP_PRIVATE_BUCKET_NAME=chivapp-private-uploads

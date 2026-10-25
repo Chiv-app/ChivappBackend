@@ -7,7 +7,7 @@ from pydantic import BaseModel, EmailStr, Field
 from app.schemas.booking import BookingMessageOut, BookingReviewOut
 from app.schemas.contract import ContractOut
 from app.schemas.payment import PaymentOut
-from app.schemas.settlement import BookingComplaintOut
+from app.schemas.settlement import BookingComplaintOut, MusicianPayoutInfoOut
 
 
 class AdminStatsOut(BaseModel):
@@ -130,6 +130,8 @@ class AdminPaymentOut(BaseModel):
     event_date: date | None = None
     musician_name: str | None = None
     contractor_name: str | None = None
+    needs_refund: bool = False
+    needs_refund_reason: str | None = None
 
 
 class AdminReleaseSettlement(BaseModel):
@@ -151,3 +153,22 @@ class AdminProfileStatusUpdate(BaseModel):
     """Acciones de moderación sobre perfiles publicados/rechazados."""
     action: str = Field(pattern="^(unpublish|request_resubmit)$")
     reason: str | None = Field(default=None, max_length=1000)
+
+
+class AdminPayoutRequestOut(BaseModel):
+    id: UUID
+    musician_id: UUID
+    musician_name: str | None = None
+    musician_email: str | None = None
+    musician_phone: str | None = None
+    amount: float
+    status: str
+    notes: str | None = None
+    created_at: datetime
+    processed_at: datetime | None = None
+    musician_payout_info: MusicianPayoutInfoOut | None = None
+
+
+class AdminPayoutRequestAction(BaseModel):
+    notes: str | None = Field(default=None, max_length=1000)
+

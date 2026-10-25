@@ -113,6 +113,61 @@ def assert_username_unique(
     return norm
 
 
+def _username_taken(
+    db: Session,
+    username: str,
+    *,
+    exclude_user_id: UUID | None = None,
+) -> bool:
+    norm = normalize_username(username)
+    if not norm:
+        return True
+    user_query = db.query(User.id).filter(
+        func.lower(func.btrim(User.username)) == norm
+    )
+    if exclude_user_id is not None:
+        user_query = user_query.filter(User.id != exclude_user_id)
+    if user_query.first():
+        return True
+
+    profile_query = db.query(MusicianProfile.id).filter(
+        func.lower(func.btrim(MusicianProfile.slug)) == norm
+    )
+    if exclude_user_id is not None:
+        profile_query = profile_query.join(User).filter(User.id != exclude_user_id)
+    if profile_query.first():
+        return True
+
+    stage_query = db.query(MusicianProfile.id).filter(
+        func.lower(func.btrim(MusicianProfile.stage_name)) == norm
+    )
+    if exclude_user_id is not None:
+        stage_query = stage_query.join(User).filter(User.id != exclude_user_id)
+    if stage_query.first():
+        return True
+
+    return False
+
+
+def next_available_username(
+    db: Session,
+    preferred: str | None,
+    *,
+    exclude_user_id: UUID | None = None,
+) -> str:
+    """Genera un username único para registros automáticos (p. ej. OAuth)."""
+    base = normalize_username(preferred) or "musico"
+    if len(base) < 3:
+        base = f"{base}-1" if len(base) >= 1 else "musico"
+    if not _username_taken(db, base, exclude_user_id=exclude_user_id):
+        return base
+    for suffix in range(2, 1000):
+        candidate = f"{base}-{suffix}"
+        if not _username_taken(db, candidate, exclude_user_id=exclude_user_id):
+            return candidate
+    return f"{base}-{uuid4().hex[:6]}"
+
+
 def assert_musician_slug_unique(
     db: Session,
     slug: str | None,

@@ -8,6 +8,14 @@ def _register_and_login(client, email="change.pwd@example.com", password="Passwo
         "role": "musician",
         "accepted_terms": True,
     })
+    from datetime import datetime
+    from app.db.session import SessionLocal
+    from app.models.user import User
+    with SessionLocal() as s:
+        u = s.query(User).filter(User.email == email).first()
+        if u:
+            u.email_verified_at = datetime.utcnow()
+            s.commit()
     login_res = client.post("/api/v1/auth/login", json={
         "email": email,
         "password": password,

@@ -1,10 +1,13 @@
 import hmac
+import logging
 import secrets
 from datetime import datetime
 from urllib.parse import urlencode
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+logger = logging.getLogger(__name__)
+
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
@@ -77,6 +80,7 @@ from app.services.uniqueness import (
     assert_username_unique,
     next_available_musician_slug,
     next_available_stage_name,
+    next_available_username,
     slugify,
 )
 
@@ -186,6 +190,12 @@ def _assert_strong_password(password: str) -> None:
         raise HTTPException(400, str(exc)) from exc
 
 
+def _emails_match(a: str | None, b: str | None) -> bool:
+    if not a or not b:
+        return False
+    return a.strip().lower() == b.strip().lower()
+
+
 def _link_oauth_account(
     db: Session,
     *,
@@ -193,8 +203,21 @@ def _link_oauth_account(
     provider: OAuthProvider,
     provider_user_id: str,
     email: str | None,
+    email_verified: bool = True,
+    allow_unverified_registration: bool = False,
 ) -> None:
-    if user.role == UserRole.contractor:
+    same_verified_email = bool(email_verified and _emails_match(user.email, email))
+    if not user.email_verified_at:
+        if same_verified_email:
+            user.email_verified_at = datetime.utcnow()
+            _revoke_sessions(user)
+        elif not allow_unverified_registration:
+            raise HTTPException(
+                400,
+                "Debes verificar tu correo electrónico antes de vincular una cuenta social con otro correo.",
+            )
+
+    if same_verified_email and user.role == UserRole.contractor:
         user.is_verified = True
 
     existing = (
@@ -283,7 +306,12 @@ def _client_ip(request: Request) -> str:
 
 @router.post("/register", response_model=UserOut, status_code=201)
 @limiter.limit(settings.RATE_LIMIT_REGISTER)
-def register_user(payload: RegisterRequest, request: Request, db: Session = Depends(deps.get_db)):
+def register_user(
+    payload: RegisterRequest,
+    request: Request,
+    response: Response,
+    db: Session = Depends(deps.get_db),
+):
     email = assert_email_unique(db, payload.email)
     if not email:
         raise HTTPException(400, "El correo electrónico es obligatorio")
@@ -304,8 +332,6 @@ def register_user(payload: RegisterRequest, request: Request, db: Session = Depe
     cleaned_fullname: str | None = (
         payload.fullname.strip() if payload.fullname and payload.fullname.strip() else None
     )
-    if payload.role == UserRole.musician.value and cleaned_fullname:
-        assert_stage_name_unique(db, cleaned_fullname)
 
     user = User(
         email=email,
@@ -322,6 +348,7 @@ def register_user(payload: RegisterRequest, request: Request, db: Session = Depe
     _create_role_profile(db, user)
     send_welcome_email(db, user)
     send_email_verification(db, user)
+    _issue_login(response, user)
     db.commit()
     db.refresh(user)
     return user
@@ -329,77 +356,163 @@ def register_user(payload: RegisterRequest, request: Request, db: Session = Depe
 
 
 from app.schemas.auth import LoginStepOneRequest, LoginStepOneResponse, LoginOtpRequest
+from datetime import timedelta
 import hashlib
+import hmac
 
-@router.post("/login-step-one", response_model=LoginStepOneResponse)
-@limiter.limit(settings.RATE_LIMIT_LOGIN)
-def login_step_one(payload: LoginStepOneRequest, request: Request, db: Session = Depends(deps.get_db)):
-    email = payload.email.lower().strip()
-    user = db.query(User).filter(User.email == email).first()
-    
-    if not user:
-        return LoginStepOneResponse(status="not_found")
-        
-    if not user.is_verified:
-        return LoginStepOneResponse(status="requires_password")
-        
-    # User is verified. Generate OTP.
+OTP_MAX_ATTEMPTS = 5
+
+
+def _compute_otp_hmac(user_id: object, otp: str) -> str:
+    secret = (settings.JWT_SECRET_KEY or "dev-otp-secret").encode("utf-8")
+    return hmac.new(secret, f"otp:{user_id}:{otp.strip()}".encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def generate_and_send_login_otp(db: Session, user: User) -> str:
+    """Genera un código OTP de 6 dígitos, persiste su HMAC y lo envía por correo."""
     from app.services.email.service import send_templated_email
     from app.services.email.defaults import APP_NAME
     import secrets
-    from datetime import timedelta
-    
-    # Generate 6 digit numeric code
+
+    locked = db.get(User, user.id, with_for_update=True)
+    if locked is not None:
+        user = locked
+
+    now = datetime.utcnow()
+    if (
+        (getattr(user, "login_otp_attempts", 0) or 0) >= OTP_MAX_ATTEMPTS
+        and getattr(user, "login_otp_expires_at", None)
+        and user.login_otp_expires_at > now
+    ):
+        raise HTTPException(
+            status_code=429,
+            detail="Demasiados intentos. Espera unos minutos antes de solicitar un código nuevo.",
+        )
+
+    previous_expires = getattr(user, "login_otp_expires_at", None)
     otp = str(secrets.randbelow(1000000)).zfill(6)
-    
-    # Hash it and store in DB
-    user.login_otp_hash = hashlib.sha256(f"{user.id}:{otp}".encode()).hexdigest()
-    user.login_otp_expires_at = datetime.utcnow() + timedelta(minutes=10)
+    user.login_otp_hash = _compute_otp_hmac(user.id, otp)
+    user.login_otp_expires_at = now + timedelta(minutes=10)
+    if not previous_expires or previous_expires <= now:
+        user.login_otp_attempts = 0
     db.commit()
-    
+
     try:
         send_templated_email(
             db,
             slug="login_otp",
             to=user.email,
             context={
-                "user_name": user.fullname,
+                "user_name": user.fullname or "Usuario",
                 "app_name": APP_NAME,
                 "otp_code": otp,
             },
             user_id=user.id,
         )
-    except Exception as e:
-        print("Template login_otp failed to send, create it in DB.", e)
-        pass
+        db.commit()
+    except Exception as exc:
+        logger.warning("Failed to send login_otp email to %s: %s", user.email, exc)
 
+    return otp
+
+
+def verify_login_otp_or_raise(db: Session, user: User, otp: str) -> None:
+    """Verifica el OTP con límite de intentos e invalidación automática."""
+    locked = db.get(User, user.id, with_for_update=True)
+    if locked is not None:
+        user = locked
+
+    now = datetime.utcnow()
+    expires_at = getattr(user, "login_otp_expires_at", None)
+    if (getattr(user, "login_otp_attempts", 0) or 0) >= OTP_MAX_ATTEMPTS:
+        user.login_otp_hash = None
+        if not expires_at or expires_at < now:
+            user.login_otp_expires_at = now + timedelta(minutes=10)
+        db.commit()
+        raise HTTPException(
+            status_code=429,
+            detail="Demasiados intentos. Solicita un código nuevo.",
+        )
+
+    stored_hash = getattr(user, "login_otp_hash", None)
+    if not stored_hash or not expires_at:
+        raise HTTPException(status_code=401, detail="Código inválido o expirado")
+
+    if expires_at < now:
+        user.login_otp_hash = None
+        user.login_otp_expires_at = None
+        user.login_otp_attempts = 0
+        db.commit()
+        raise HTTPException(status_code=401, detail="El código ha expirado")
+
+    clean_otp = (otp or "").strip()
+    expected_hmac = _compute_otp_hmac(user.id, clean_otp)
+    is_valid = hmac.compare_digest(stored_hash, expected_hmac)
+
+    if not is_valid:
+        attempts = (getattr(user, "login_otp_attempts", 0) or 0) + 1
+        user.login_otp_attempts = attempts
+        if attempts >= OTP_MAX_ATTEMPTS:
+            user.login_otp_hash = None
+            user.login_otp_expires_at = now + timedelta(minutes=10)
+            db.commit()
+            raise HTTPException(
+                status_code=429,
+                detail="Demasiados intentos. Solicita un código nuevo.",
+            )
+        db.commit()
+        raise HTTPException(status_code=401, detail="Código incorrecto")
+
+    user.login_otp_hash = None
+    user.login_otp_expires_at = None
+    user.login_otp_attempts = 0
+    if user.email_verified_at is None:
+        mark_email_verified(user)
+
+
+@router.post("/login-step-one", response_model=LoginStepOneResponse)
+@limiter.limit(settings.RATE_LIMIT_LOGIN)
+def login_step_one(payload: LoginStepOneRequest, request: Request, db: Session = Depends(deps.get_db)):
+    from sqlalchemy import func
+
+    email = payload.email.lower().strip()
+    user = db.query(User).filter(func.lower(User.email) == email).first()
+
+    if not user:
+        return LoginStepOneResponse(status="not_found")
+
+    if getattr(user, "is_active", True) is False:
+        raise HTTPException(status_code=403, detail="Tu cuenta está desactivada")
+
+    if user.role == UserRole.admin or (not user.is_verified and not user.email_verified_at):
+        return LoginStepOneResponse(status="requires_password")
+
+    generate_and_send_login_otp(db, user)
     return LoginStepOneResponse(status="otp_sent")
+
 
 @router.post("/login-otp", response_model=TokenOut)
 @limiter.limit(settings.RATE_LIMIT_LOGIN)
 def login_otp(payload: LoginOtpRequest, request: Request, response: Response, db: Session = Depends(deps.get_db)):
+    from sqlalchemy import func
+
     email = payload.email.lower().strip()
-    user = db.query(User).filter(User.email == email).first()
-    
+    user = db.query(User).filter(func.lower(User.email) == email).first()
+
     if not user:
         raise HTTPException(status_code=401, detail="Credenciales inválidas")
-        
-    if not getattr(user, "login_otp_hash", None) or not getattr(user, "login_otp_expires_at", None):
-        raise HTTPException(status_code=401, detail="Código inválido o expirado")
-        
-    if user.login_otp_expires_at < datetime.utcnow():
-        raise HTTPException(status_code=401, detail="El código ha expirado")
-        
-    expected_hash = hashlib.sha256(f"{user.id}:{payload.otp}".encode()).hexdigest()
-    if user.login_otp_hash != expected_hash:
-        raise HTTPException(status_code=401, detail="Código incorrecto")
-        
-    user.login_otp_hash = None
-    user.login_otp_expires_at = None
-    
+
+    if getattr(user, "is_active", True) is False:
+        raise HTTPException(status_code=403, detail="Tu cuenta está desactivada")
+
+    if user.role == UserRole.admin:
+        raise HTTPException(status_code=403, detail="El acceso de administrador requiere contraseña")
+
+    verify_login_otp_or_raise(db, user, payload.otp)
+
     _issue_login(response, user)
     db.commit()
-    
+
     return TokenOut()
 
 
@@ -411,12 +524,6 @@ def login(payload: LoginRequest, request: Request, response: Response, db: Sessi
     email = (payload.email or "").strip().lower()
     user = db.query(User).filter(func.lower(User.email) == email).first()
 
-    if user and not user.password_hash:
-        raise HTTPException(
-            status_code=403,
-            detail="No se puede utilizar este correo porque ya está en uso.",
-        )
-
     if not user or not user.password_hash:
         raise HTTPException(status_code=401, detail="Credenciales inválidas")
 
@@ -426,6 +533,17 @@ def login(payload: LoginRequest, request: Request, response: Response, db: Sessi
     if getattr(user, "is_active", True) is False:
         raise HTTPException(status_code=403, detail="Tu cuenta está desactivada")
 
+    if (
+        user.role != UserRole.admin
+        and user.email_verification_token
+        and not user.email_verified_at
+        and not user.is_verified
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Debes verificar tu correo electrónico antes de iniciar sesión. Revisa tu bandeja de entrada.",
+        )
+
     _issue_login(response, user)
     db.commit()
     # El token viaja solo en la cookie httponly; no se expone a JavaScript.
@@ -433,7 +551,15 @@ def login(payload: LoginRequest, request: Request, response: Response, db: Sessi
 
 
 @router.post("/logout")
-def logout(response: Response):
+def logout(
+    request: Request,
+    response: Response,
+    db: Session = Depends(deps.get_db),
+):
+    user = _optional_user(request, db)
+    if user is not None:
+        _revoke_sessions(user)
+        db.commit()
     _clear_auth_cookie(response)
     _clear_oauth_pending_cookie(response)
     return {"message": "Logout exitoso"}
@@ -500,7 +626,7 @@ def set_password(
     db: Session = Depends(deps.get_db),
 ):
     """Crea contraseña vía token de invitación o sesión autenticada sin password."""
-    password = payload.password.strip()
+    password = payload.password
     _assert_strong_password(password)
 
     user: User | None = None
@@ -516,6 +642,11 @@ def set_password(
             raise HTTPException(
                 401,
                 "Debes iniciar sesión o usar el enlace de invitación para crear tu contraseña",
+            )
+        if not user.email_verified_at:
+            raise HTTPException(
+                403,
+                "Debes verificar tu correo electrónico antes de crear una contraseña.",
             )
 
     if not user:
@@ -669,6 +800,7 @@ async def _oauth_callback(provider, request, code, state, error, db):
                 provider=profile.provider,
                 provider_user_id=profile.provider_user_id,
                 email=profile.email,
+                email_verified=bool(profile.email_verified),
             )
             if profile.picture_url and not user.profile_picture_url:
                 user.profile_picture_url = profile.picture_url
@@ -689,7 +821,9 @@ async def _oauth_callback(provider, request, code, state, error, db):
             if user.role == UserRole.contractor
             else "/admin"
         )
-        return _frontend_redirect(path, {"linked": profile.provider.value})
+        redirect = _frontend_redirect(path, {"linked": profile.provider.value})
+        _issue_login(redirect, user)
+        return redirect
 
     existing_oauth = (
         db.query(OAuthAccount)
@@ -703,9 +837,12 @@ async def _oauth_callback(provider, request, code, state, error, db):
         user = db.get(User, existing_oauth.user_id)
         if not user:
             return _frontend_redirect("/login", {"oauth_error": "user_not_found"})
-        if not user.email_verified_at:
+        if getattr(user, "is_active", True) is False:
+            return _frontend_redirect("/login", {"oauth_error": "account_disabled"})
+        same_verified = bool(profile.email_verified and _emails_match(user.email, profile.email))
+        if same_verified and not user.email_verified_at:
             user.email_verified_at = datetime.utcnow()
-        if user.role == UserRole.contractor and not user.is_verified:
+        if same_verified and user.role == UserRole.contractor and not user.is_verified:
             user.is_verified = True
         redirect = _frontend_redirect(_post_login_path(user))
         _issue_login(redirect, user)
@@ -717,6 +854,8 @@ async def _oauth_callback(provider, request, code, state, error, db):
         user_by_email = db.query(User).filter(User.email == profile.email).first()
 
     if user_by_email:
+        if getattr(user_by_email, "is_active", True) is False:
+            return _frontend_redirect("/login", {"oauth_error": "account_disabled"})
         if not _can_link_by_email(user_by_email, profile):
             return _frontend_redirect("/login", {"oauth_error": "email_in_use"})
         _link_oauth_account(
@@ -746,6 +885,7 @@ async def _oauth_callback(provider, request, code, state, error, db):
             "email": profile.email,
             "fullname": profile.fullname,
             "picture_url": profile.picture_url,
+            "email_verified": bool(profile.email_verified),
         }
     )
     redirect = _frontend_redirect("/complete-role")
@@ -811,13 +951,12 @@ def oauth_complete(
         raise HTTPException(400, "Esta cuenta social ya está registrada")
 
     normalized_username: str | None = None
-    if payload.role == UserRole.musician.value:
-        candidate = payload.username.strip() if payload.username and payload.username.strip() else slugify(fullname)
-        normalized_username = assert_username_unique(db, candidate)
-        assert_stage_name_unique(db, fullname)
-    elif payload.username and payload.username.strip():
-        normalized_username = assert_username_unique(db, payload.username)
+    if payload.username and payload.username.strip():
+        normalized_username = assert_username_unique(db, payload.username.strip())
+    elif payload.role == UserRole.musician.value:
+        normalized_username = next_available_username(db, slugify(fullname))
 
+    is_email_verified = bool(pending.get("email_verified", True))
     user = User(
         email=email,
         username=normalized_username,
@@ -826,17 +965,19 @@ def oauth_complete(
         role=UserRole(payload.role),
         phone=phone,
         profile_picture_url=pending.get("picture_url"),
-        email_verified_at=datetime.utcnow(),
+        email_verified_at=datetime.utcnow() if is_email_verified else None,
     )
     db.add(user)
     db.flush()
-    _create_role_profile(db, user, oauth_verified=True)
+    _create_role_profile(db, user, oauth_verified=is_email_verified)
     _link_oauth_account(
         db,
         user=user,
         provider=provider,
         provider_user_id=provider_user_id,
         email=email,
+        email_verified=is_email_verified,
+        allow_unverified_registration=True,
     )
     _issue_login(response, user)
     db.commit()
@@ -862,9 +1003,11 @@ async def oauth_google_credential(
             provider=profile.provider,
             provider_user_id=profile.provider_user_id,
             email=profile.email,
+            email_verified=bool(profile.email_verified),
         )
         if profile.picture_url and not user.profile_picture_url:
             user.profile_picture_url = profile.picture_url
+        _issue_login(response, user)
         db.commit()
         return GoogleAuthResponse(status="linked", role=user.role.value)
 
@@ -881,9 +1024,12 @@ async def oauth_google_credential(
         user = db.get(User, existing_oauth.user_id)
         if not user:
             raise HTTPException(404, "Usuario no encontrado")
-        if not user.email_verified_at:
+        if getattr(user, "is_active", True) is False:
+            raise HTTPException(403, "Tu cuenta está desactivada")
+        same_verified = bool(profile.email_verified and _emails_match(user.email, profile.email))
+        if same_verified and not user.email_verified_at:
             user.email_verified_at = datetime.utcnow()
-        if user.role == UserRole.contractor and not user.is_verified:
+        if same_verified and user.role == UserRole.contractor and not user.is_verified:
             user.is_verified = True
         _issue_login(response, user)
         db.commit()
@@ -899,6 +1045,8 @@ async def oauth_google_credential(
         user_by_email = db.query(User).filter(User.email == profile.email).first()
 
     if user_by_email:
+        if getattr(user_by_email, "is_active", True) is False:
+            raise HTTPException(403, "Tu cuenta está desactivada")
         if not _can_link_by_email(user_by_email, profile):
             raise HTTPException(
                 409,
@@ -932,6 +1080,7 @@ async def oauth_google_credential(
             "email": profile.email,
             "fullname": profile.fullname,
             "picture_url": profile.picture_url,
+            "email_verified": bool(profile.email_verified),
         }
     )
     _set_oauth_pending_cookie(response, pending)
@@ -1008,7 +1157,13 @@ def unlink_oauth_account(
 
 
 @router.post("/verify-email/{token}", response_model=EmailVerificationResult)
-def verify_email(token: str, db: Session = Depends(deps.get_db)):
+def verify_email(
+    token: str,
+    request: Request,
+    response: Response,
+    db: Session = Depends(deps.get_db),
+):
+    session_user = _optional_user(request, db)
     try:
         user = verify_email_token(db, token)
     except ValueError as exc:
@@ -1016,6 +1171,14 @@ def verify_email(token: str, db: Session = Depends(deps.get_db)):
         if code == "expired":
             raise HTTPException(410, "El enlace de verificación expiró. Solicita uno nuevo.") from exc
         raise HTTPException(400, "Enlace de verificación no válido") from exc
+    if session_user is not None and session_user.id == user.id:
+        _issue_login(response, user)
+    elif user.password_hash:
+        user.password_hash = None
+        try:
+            send_password_reset_email(db, user)
+        except Exception as exc:
+            logger.warning("Failed to send password reset after cross-session verify for %s: %s", user.email, exc)
     db.commit()
     return EmailVerificationResult(
         message=f"Correo {user.email} verificado correctamente.",
@@ -1023,20 +1186,40 @@ def verify_email(token: str, db: Session = Depends(deps.get_db)):
     )
 
 
+@router.post("/resend-verification-public", response_model=EmailVerificationResult, include_in_schema=False)
 @router.post("/resend-verification", response_model=EmailVerificationResult)
+@limiter.limit(settings.RATE_LIMIT_PASSWORD_RESET)
 def resend_verification(
-    current_user: User = Depends(deps.get_current_user),
+    request: Request,
+    payload: ForgotPasswordRequest | None = Body(default=None),
     db: Session = Depends(deps.get_db),
 ):
-    if current_user.email_verified_at:
+    from sqlalchemy import func
+
+    session_user = _optional_user(request, db)
+    if session_user:
+        if session_user.email_verified_at:
+            return EmailVerificationResult(
+                message="Tu correo ya está verificado.",
+                email_verified=True,
+            )
+        send_email_verification(db, session_user)
+        db.commit()
         return EmailVerificationResult(
-            message="Tu correo ya está verificado.",
-            email_verified=True,
+            message="Te enviamos un nuevo enlace de verificación.",
+            email_verified=False,
         )
-    send_email_verification(db, current_user)
-    db.commit()
+
+    if not payload or not str(payload.email or "").strip():
+        raise HTTPException(401, "Debes iniciar sesión o indicar tu correo electrónico para reenviar el enlace.")
+
+    email = str(payload.email).strip().lower()
+    user = db.query(User).filter(func.lower(User.email) == email).first()
+    if user and getattr(user, "is_active", True) is not False and not user.email_verified_at:
+        send_email_verification(db, user)
+        db.commit()
     return EmailVerificationResult(
-        message="Te enviamos un nuevo enlace de verificación.",
+        message="Si el correo existe y está pendiente de verificación, te enviamos un nuevo enlace.",
         email_verified=False,
     )
 
@@ -1048,7 +1231,7 @@ def forgot_password(payload: ForgotPasswordRequest, request: Request, db: Sessio
 
     email = str(payload.email).strip().lower()
     user = db.query(User).filter(func.lower(User.email) == email).first()
-    if user and user.password_hash and user.is_active:
+    if user and user.is_active:
         send_password_reset_email(db, user)
         db.commit()
     return {
@@ -1085,11 +1268,12 @@ def reset_password(
             raise HTTPException(410, "El enlace expiró. Solicita uno nuevo.") from exc
         raise HTTPException(404, "Enlace no válido") from exc
 
-    new_password = payload.password.strip()
+    new_password = payload.password
     _assert_strong_password(new_password)
     user.password_hash = hash_password(new_password)
     user.updated_at = datetime.utcnow()
     clear_password_reset(user)
+    mark_email_verified(user)
     _revoke_sessions(user)
     _issue_login(response, user)
     db.commit()
@@ -1105,7 +1289,7 @@ def change_password(
     db: Session = Depends(deps.get_db),
 ):
     """Permite al usuario autenticado cambiar su contraseña o crearla si no tiene."""
-    new_password = payload.new_password.strip()
+    new_password = payload.new_password
 
     if current_user.password_hash:
         if not payload.current_password:
@@ -1114,6 +1298,11 @@ def change_password(
             raise HTTPException(400, "La contraseña actual es incorrecta")
         if payload.current_password == new_password:
             raise HTTPException(400, "La nueva contraseña debe ser diferente a la actual")
+    elif not current_user.email_verified_at:
+        raise HTTPException(
+            403,
+            "Debes verificar tu correo electrónico antes de crear una contraseña.",
+        )
 
     try:
         validate_password_strength(new_password)
@@ -1173,6 +1362,7 @@ def guest_register(
     db.add(new_user)
     db.flush()
     db.add(ContractorProfile(user_id=new_user.id))
+    send_email_verification(db, new_user)
     db.commit()
     db.refresh(new_user)
 
@@ -1208,11 +1398,19 @@ def magic_link_login(
     if getattr(user, "is_active", True) is False:
         return RedirectResponse(url=f"{settings.FRONTEND_URL}/login?error=invalid_magic_link")
 
+    if "ver" not in payload:
+        return RedirectResponse(url=f"{settings.FRONTEND_URL}/login?error=invalid_magic_link")
+    from app.core.jwt import session_version
+    if session_version(payload) != (user.token_version or 0):
+        return RedirectResponse(url=f"{settings.FRONTEND_URL}/login?error=invalid_magic_link")
+
     # Abrir el enlace prueba que el email es suyo, pero NO aprueba la cuenta:
-    # is_verified es la aprobación del admin.
+    # is_verified es la aprobación del admin. Incrementar token_version hace que
+    # el magic link sea de un solo uso y revoca sesiones previas (p. ej. SEC2-10).
     if user.email_verified_at is None:
         user.email_verified_at = datetime.utcnow()
-        db.commit()
+    _revoke_sessions(user)
+    db.commit()
 
     access_token = create_access_token(subject=str(user.id), role=user.role.value, version=user.token_version or 0)
 

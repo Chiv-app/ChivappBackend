@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import time
 from unittest.mock import patch
 
 from app.core.config import settings
@@ -10,7 +11,7 @@ def test_verify_webhook_signature_success():
     secret = "test_webhook_secret_123"
     data_id = "9988776655"
     x_request_id = "req-abc-123"
-    ts = "1700000000"
+    ts = str(int(time.time()))
 
     template = f"id:{data_id};request-id:{x_request_id};ts:{ts};"
     computed_v1 = hmac.new(secret.encode(), template.encode(), hashlib.sha256).hexdigest()
@@ -25,11 +26,30 @@ def test_verify_webhook_signature_success():
         assert result is True
 
 
+def test_verify_webhook_signature_rejects_expired_timestamp():
+    secret = "test_webhook_secret_123"
+    data_id = "9988776655"
+    x_request_id = "req-abc-123"
+    ts = "1700000000"
+
+    template = f"id:{data_id};request-id:{x_request_id};ts:{ts};"
+    computed_v1 = hmac.new(secret.encode(), template.encode(), hashlib.sha256).hexdigest()
+    x_signature = f"ts={ts},v1={computed_v1}"
+
+    with patch.object(settings, "MERCADO_PAGO_WEBHOOK_SECRET", secret):
+        assert verify_webhook_signature(
+            x_signature=x_signature,
+            x_request_id=x_request_id,
+            data_id=data_id,
+        ) is False
+
+
 def test_verify_webhook_signature_invalid():
     secret = "test_webhook_secret_123"
     data_id = "9988776655"
     x_request_id = "req-abc-123"
-    x_signature = "ts=1700000000,v1=invalidsignature00000000"
+    ts = str(int(time.time()))
+    x_signature = f"ts={ts},v1=invalidsignature00000000"
 
     with patch.object(settings, "MERCADO_PAGO_WEBHOOK_SECRET", secret):
         result = verify_webhook_signature(

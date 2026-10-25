@@ -10,7 +10,6 @@ from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
-from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = '72a0cf37fe62'
@@ -28,13 +27,13 @@ def upgrade() -> None:
                existing_type=sa.BOOLEAN(),
                nullable=False,
                existing_server_default=sa.text('false'))
-    op.drop_index(op.f('ix_booking_complaint_status'), table_name='booking_complaint')
+    op.execute('DROP INDEX IF EXISTS ix_booking_complaint_status')
     op.alter_column('booking_review', 'is_final',
                existing_type=sa.BOOLEAN(),
                nullable=False,
                existing_server_default=sa.text('false'))
-    op.drop_index(op.f('uq_booking_review_final'), table_name='booking_review', postgresql_where='(is_final IS TRUE)')
-    op.create_index(op.f('ix_booking_review_booking_id'), 'booking_review', ['booking_id'], unique=False)
+    op.execute('DROP INDEX IF EXISTS uq_booking_review_final')
+    op.execute('CREATE INDEX IF NOT EXISTS ix_booking_review_booking_id ON booking_review (booking_id)')
     op.alter_column('contractor_profile', 'contract_template_body',
                existing_type=sa.TEXT(),
                type_=sa.String(),
@@ -46,9 +45,10 @@ def upgrade() -> None:
                nullable=False,
                postgresql_using='status::profilestatus',
                server_default=sa.text("'draft'::profilestatus"))
-    op.drop_index(op.f('uq_contractor_document_number_normalized'), table_name='contractor_profile', postgresql_where="((document_number IS NOT NULL) AND (btrim((document_number)::text) <> ''::text))")
-    op.drop_constraint(op.f('contractor_profile_user_id_fkey'), 'contractor_profile', type_='foreignkey')
-    op.create_foreign_key(None, 'contractor_profile', 'user', ['user_id'], ['id'], ondelete='CASCADE')
+    op.execute('DROP INDEX IF EXISTS uq_contractor_document_number_normalized')
+    op.execute('ALTER TABLE contractor_profile DROP CONSTRAINT IF EXISTS contractor_profile_user_id_fkey')
+    op.create_foreign_key('contractor_profile_user_id_fkey', 'contractor_profile', 'user', ['user_id'], ['id'], ondelete='CASCADE')
+    op.execute('ALTER TABLE musician_profile ADD COLUMN IF NOT EXISTS is_ensemble_only BOOLEAN NOT NULL DEFAULT FALSE')
     op.alter_column('musician_profile', 'songs',
                existing_type=postgresql.ARRAY(sa.VARCHAR()),
                nullable=False,
@@ -64,21 +64,21 @@ def upgrade() -> None:
                nullable=False,
                postgresql_using='status::profilestatus',
                server_default=sa.text("'draft'::profilestatus"))
-    op.drop_index(op.f('uq_musician_profile_slug'), table_name='musician_profile', postgresql_where='(slug IS NOT NULL)')
-    op.drop_index(op.f('uq_musician_profile_slug_lower'), table_name='musician_profile', postgresql_where="((slug IS NOT NULL) AND (btrim((slug)::text) <> ''::text))")
-    op.drop_index(op.f('uq_musician_profile_stage_name_lower'), table_name='musician_profile')
-    op.create_index(op.f('ix_musician_profile_slug'), 'musician_profile', ['slug'], unique=True)
-    op.drop_index(op.f('ix_support_ticket_status'), table_name='support_ticket')
+    op.execute('DROP INDEX IF EXISTS uq_musician_profile_slug')
+    op.execute('DROP INDEX IF EXISTS uq_musician_profile_slug_lower')
+    op.execute('DROP INDEX IF EXISTS uq_musician_profile_stage_name_lower')
+    op.execute('CREATE UNIQUE INDEX IF NOT EXISTS ix_musician_profile_slug ON musician_profile (slug)')
+    op.execute('DROP INDEX IF EXISTS ix_support_ticket_status')
     op.alter_column('user', 'is_active',
                existing_type=sa.BOOLEAN(),
                nullable=False,
                existing_server_default=sa.text('true'))
-    op.drop_index(op.f('uq_user_email_verification_token'), table_name='user', postgresql_where='(email_verification_token IS NOT NULL)')
-    op.drop_index(op.f('uq_user_password_reset_token'), table_name='user', postgresql_where='(password_reset_token IS NOT NULL)')
-    op.drop_index(op.f('uq_user_username_lower'), table_name='user', postgresql_where="((username IS NOT NULL) AND (btrim((username)::text) <> ''::text))")
-    op.create_index(op.f('ix_user_email_verification_token'), 'user', ['email_verification_token'], unique=True)
-    op.create_index(op.f('ix_user_password_reset_token'), 'user', ['password_reset_token'], unique=True)
-    op.create_index(op.f('ix_user_username'), 'user', ['username'], unique=True)
+    op.execute('DROP INDEX IF EXISTS uq_user_email_verification_token')
+    op.execute('DROP INDEX IF EXISTS uq_user_password_reset_token')
+    op.execute('DROP INDEX IF EXISTS uq_user_username_lower')
+    op.execute('CREATE UNIQUE INDEX IF NOT EXISTS ix_user_email_verification_token ON "user" (email_verification_token)')
+    op.execute('CREATE UNIQUE INDEX IF NOT EXISTS ix_user_password_reset_token ON "user" (password_reset_token)')
+    op.execute('CREATE UNIQUE INDEX IF NOT EXISTS ix_user_username ON "user" (username)')
     # ### end Alembic commands ###
 
 
@@ -112,7 +112,7 @@ def downgrade() -> None:
                existing_type=postgresql.ARRAY(sa.VARCHAR()),
                nullable=True,
                existing_server_default=sa.text("'{}'::character varying[]"))
-    op.drop_constraint(None, 'contractor_profile', type_='foreignkey')
+    op.execute('ALTER TABLE contractor_profile DROP CONSTRAINT IF EXISTS contractor_profile_user_id_fkey')
     op.create_foreign_key(op.f('contractor_profile_user_id_fkey'), 'contractor_profile', 'user', ['user_id'], ['id'])
     op.create_index(op.f('uq_contractor_document_number_normalized'), 'contractor_profile', [sa.literal_column("upper(replace(btrim(document_number::text), ' '::text, ''::text))")], unique=True, postgresql_where="((document_number IS NOT NULL) AND (btrim((document_number)::text) <> ''::text))")
     op.alter_column('contractor_profile', 'status',

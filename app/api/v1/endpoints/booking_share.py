@@ -171,6 +171,36 @@ def get_public_share(token: str, db: Session = Depends(deps.get_db)):
     )
 
 
+MAX_PUBLIC_SHARE_REVIEWS_PER_BOOKING = 100
+MAX_REVIEW_MEDIA_ITEMS = 5
+
+
+def _validate_review_media_urls(urls: list[str] | None, label: str) -> list[str]:
+    if not urls:
+        return []
+    if len(urls) > MAX_REVIEW_MEDIA_ITEMS:
+        raise HTTPException(400, f"Máximo {MAX_REVIEW_MEDIA_ITEMS} archivos de {label} por reacción.")
+    r2_prefix = (getattr(settings, "R2_PUBLIC_URL", None) or "").rstrip("/")
+    gcs_bucket = (getattr(settings, "GCP_BUCKET_NAME", None) or "").strip()
+    gcs_prefix = f"https://storage.googleapis.com/{gcs_bucket}/" if gcs_bucket else ""
+    cleaned: list[str] = []
+    for raw in urls:
+        u = (raw or "").strip()
+        if not u:
+            continue
+        is_local = (
+            u.startswith("/uploads/")
+            and not u.startswith("/uploads/private/")
+            and ".." not in u
+        )
+        is_r2 = bool(r2_prefix and u.startswith(f"{r2_prefix}/"))
+        is_gcs = bool(gcs_prefix and u.startswith(gcs_prefix) and ".." not in u)
+        if not (is_local or is_r2 or is_gcs):
+            raise HTTPException(400, f"URL de {label} no válida.")
+        cleaned.append(u)
+    return cleaned
+
+
 @router.get("/public/share/{token}/reviews", response_model=list[BookingReviewOut])
 def list_public_share_reviews(token: str, db: Session = Depends(deps.get_db)):
     booking = _get_shared_booking_or_410(db, token)
@@ -180,7 +210,7 @@ def list_public_share_reviews(token: str, db: Session = Depends(deps.get_db)):
         .order_by(BookingReview.created_at.asc())
         .all()
     )
-    return [serialize_review(review) for review in reviews]
+    return [serialize_review(review, public=True) for review in reviews]
 
 
 @router.post("/public/share/{token}/reviews", response_model=BookingReviewOut)
@@ -192,10 +222,21 @@ def create_public_share_review(
     db: Session = Depends(deps.get_db),
 ):
     booking = _get_shared_booking_or_410(db, token)
+    existing_count = (
+        db.query(BookingReview)
+        .filter(BookingReview.booking_id == booking.id)
+        .count()
+    )
+    if existing_count >= MAX_PUBLIC_SHARE_REVIEWS_PER_BOOKING:
+        raise HTTPException(400, "Se alcanzó el límite de reacciones para este evento.")
+
     raw_name = " ".join(payload.guest_name.strip().split())
     if len(raw_name.replace(" - Invitado", "").strip()) < 2:
         raise HTTPException(400, "Ingresa un nombre válido.")
     guest_name = format_guest_display_name(raw_name)
+
+    photo_urls = _validate_review_media_urls(payload.photo_urls, "fotos")
+    video_urls = _validate_review_media_urls(payload.video_urls, "videos")
 
     review = BookingReview(
         booking_id=booking.id,
@@ -204,8 +245,8 @@ def create_public_share_review(
         rating=payload.rating,
         emoji=payload.emoji,
         comment=payload.comment,
-        photo_urls=payload.photo_urls or [],
-        video_urls=payload.video_urls or [],
+        photo_urls=photo_urls,
+        video_urls=video_urls,
     )
     db.add(review)
 
@@ -231,7 +272,7 @@ def create_public_share_review(
 
     db.commit()
     db.refresh(review)
-    return serialize_review(review)
+    return serialize_review(review, public=True)
 
 
 @router.post("/public/share/{token}/upload")

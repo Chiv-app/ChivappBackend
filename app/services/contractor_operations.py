@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -21,7 +22,6 @@ from app.models.musician_profile import MusicianProfile
 from app.models.payment import Payment, PaymentStatus
 from app.schemas.payment import ContractorOperationItem, ContractorOperationsSummary
 from app.services.platform_payment import musician_portion_of_paid
-from decimal import Decimal
 
 
 # Pago único (100 %). Pagos antiguos con payment_type="advance" se muestran
@@ -173,7 +173,7 @@ def build_contractor_operations(
         .all()
     )
 
-    total_quoted = 0.0
+    total_quoted = Decimal("0.00")
     bookings_active = 0
     bookings_completed = 0
     bookings_cancelled = 0
@@ -192,7 +192,7 @@ def build_contractor_operations(
         elif booking.status != BookingStatus.requested:
             bookings_active += 1
         if booking.price_agreed is not None:
-            total_quoted += float(booking.price_agreed)
+            total_quoted += Decimal(str(booking.price_agreed))
 
     musicians = (
         db.query(MusicianProfile)
@@ -222,14 +222,14 @@ def build_contractor_operations(
     complaint_by_booking = {c.booking_id: c for c in complaints}
 
     items: list[ContractorOperationItem] = []
-    total_released = 0.0
-    total_retained = 0.0
-    total_pending = 0.0
-    total_out = 0.0
-    total_in = 0.0
-    total_service = 0.0
-    total_fees = 0.0
-    total_refund_pending = 0.0
+    total_released = Decimal("0.00")
+    total_retained = Decimal("0.00")
+    total_pending = Decimal("0.00")
+    total_out = Decimal("0.00")
+    total_in = Decimal("0.00")
+    total_service = Decimal("0.00")
+    total_fees = Decimal("0.00")
+    total_refund_pending = Decimal("0.00")
 
     # --- Lifecycle / attention ops ---
     for booking in bookings:
@@ -305,18 +305,21 @@ def build_contractor_operations(
         if (payment.payment_type or "").lower() == "refund":
             continue
 
-        amount = float(payment.amount)
-        service = float(musician_portion_of_paid(booking, Decimal(str(amount))))
-        fee = round(max(amount - service, 0.0), 2)
-        total_out += amount
-        total_service += service
-        total_fees += fee
+        amount_dec = Decimal(str(payment.amount)).quantize(Decimal("0.01"))
+        service_dec = musician_portion_of_paid(booking, amount_dec).quantize(Decimal("0.01"))
+        fee_dec = max(amount_dec - service_dec, Decimal("0.00")).quantize(Decimal("0.01"))
+        amount = float(amount_dec)
+        service = float(service_dec)
+        fee = float(fee_dec)
+        total_out += amount_dec
+        total_service += service_dec
+        total_fees += fee_dec
         if payment.status == PaymentStatus.released:
-            total_released += amount
+            total_released += amount_dec
         elif payment.status == PaymentStatus.retained:
-            total_retained += amount
+            total_retained += amount_dec
         elif payment.status == PaymentStatus.initiated:
-            total_pending += amount
+            total_pending += amount_dec
 
         type_label = _PAYMENT_TYPE_TITLE.get(
             payment.payment_type or "",
@@ -366,7 +369,8 @@ def build_contractor_operations(
         booking = booking_by_id.get(complaint.booking_id)
         if not booking:
             continue
-        refund_amount = float(complaint.admin_contractor_refund)
+        refund_dec = Decimal(str(complaint.admin_contractor_refund)).quantize(Decimal("0.01"))
+        refund_amount = float(refund_dec)
         rs = complaint.refund_status or REFUND_STATUS_NONE
 
         if rs == REFUND_STATUS_COMPLETED:
@@ -374,13 +378,13 @@ def build_contractor_operations(
             title = "Devolución confirmada"
             subtitle = "Validaste el comprobante. Devolución completada."
             cta = "Ver reserva"
-            total_in += refund_amount
+            total_in += refund_dec
         elif rs == REFUND_STATUS_AWAITING_VALIDATION:
             op_status = "pending_me"
             title = "Validar devolución"
             subtitle = "El admin envió el comprobante. Confirma si recibiste el dinero."
             cta = "Validar devolución"
-            total_refund_pending += refund_amount
+            total_refund_pending += refund_dec
         elif rs == REFUND_STATUS_REJECTED:
             op_status = "pending_other"
             title = "Devolución rechazada · nueva transferencia"
@@ -389,7 +393,7 @@ def build_contractor_operations(
                 or "Rechazaste el comprobante. El admin debe volver a transferir."
             )
             cta = "Ver disputa"
-            total_refund_pending += refund_amount
+            total_refund_pending += refund_dec
         else:
             # awaiting_transfer / none
             op_status = "pending_other"
@@ -399,7 +403,7 @@ def build_contractor_operations(
                 f"El admin aún debe enviar el comprobante."
             )
             cta = "Ver disputa"
-            total_refund_pending += refund_amount
+            total_refund_pending += refund_dec
 
         items.append(
             _base_item(
@@ -442,16 +446,16 @@ def build_contractor_operations(
 
     return ContractorOperationsSummary(
         currency="PEN",
-        total_out=total_out,
-        total_in=total_in,
-        net_out=total_out - total_in,
-        total_quoted=total_quoted,
-        total_service=total_service,
-        total_fees=total_fees,
-        total_released=total_released,
-        total_retained=total_retained,
-        total_pending=total_pending,
-        total_refund_pending=total_refund_pending,
+        total_out=float(total_out),
+        total_in=float(total_in),
+        net_out=float(total_out - total_in),
+        total_quoted=float(total_quoted),
+        total_service=float(total_service),
+        total_fees=float(total_fees),
+        total_released=float(total_released),
+        total_retained=float(total_retained),
+        total_pending=float(total_pending),
+        total_refund_pending=float(total_refund_pending),
         pending_me_count=pending_me_count,
         pending_other_count=pending_other_count,
         dispute_count=dispute_count,

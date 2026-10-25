@@ -19,6 +19,19 @@ class BookingCreate(BaseModel):
     event_type: str
     event_description: str | None = None
 
+    @model_validator(mode="after")
+    def validate_time_order(self):
+        if self.end_time is not None and self.start_time is not None:
+            if self.end_time == self.start_time:
+                raise ValueError("La hora de fin no puede ser igual a la hora de inicio")
+            if self.end_time < self.start_time:
+                start_min = self.start_time.hour * 60 + self.start_time.minute
+                end_min = self.end_time.hour * 60 + self.end_time.minute
+                overnight_duration = (24 * 60 - start_min) + end_min
+                if overnight_duration > 12 * 60 or end_min > 8 * 60:
+                    raise ValueError("La hora de fin debe ser posterior a la hora de inicio")
+        return self
+
 
 class MusicianBookingCreate(BaseModel):
     """Reserva/contrata creada por el músico.
@@ -43,7 +56,7 @@ class MusicianBookingCreate(BaseModel):
     event_type: str = Field(min_length=2, max_length=120)
     event_description: str | None = Field(default=None, max_length=2000)
 
-    price_agreed: Decimal = Field(gt=0)
+    price_agreed: Decimal = Field(ge=Decimal("10.00"), le=Decimal("50000.00"), decimal_places=2)
     musician_quote_notes: str | None = Field(default=None, max_length=2000)
 
 
@@ -56,6 +69,67 @@ class MusicianBookingCreate(BaseModel):
             return None
         return value
 
+    @model_validator(mode="after")
+    def validate_time_order(self):
+        if self.end_time is not None and self.start_time is not None:
+            if self.end_time == self.start_time:
+                raise ValueError("La hora de fin no puede ser igual a la hora de inicio")
+            if self.end_time < self.start_time:
+                start_min = self.start_time.hour * 60 + self.start_time.minute
+                end_min = self.end_time.hour * 60 + self.end_time.minute
+                overnight_duration = (24 * 60 - start_min) + end_min
+                if overnight_duration > 12 * 60 or end_min > 8 * 60:
+                    raise ValueError("La hora de fin debe ser posterior a la hora de inicio")
+        return self
+
+
+_NON_NULLABLE_BOOKING_UPDATE_FIELDS = (
+    "event_date",
+    "start_time",
+    "location_address",
+    "event_type",
+)
+
+
+def _validate_non_null_booking_fields(instance: BaseModel) -> BaseModel:
+    for field_name in _NON_NULLABLE_BOOKING_UPDATE_FIELDS:
+        if field_name in instance.model_fields_set and getattr(instance, field_name) is None:
+            raise ValueError(f"El campo '{field_name}' no puede ser nulo")
+        val = getattr(instance, field_name)
+        if isinstance(val, str) and not val.strip():
+            raise ValueError(f"El campo '{field_name}' no puede estar vacío")
+    return instance
+
+
+def _clean_review_media_urls(urls: list[str] | None) -> list[str]:
+    if not urls:
+        return []
+    if len(urls) > 10:
+        raise ValueError("No se permiten más de 10 archivos multimedia por lista")
+    from app.core.config import settings
+
+    r2_prefix = (getattr(settings, "R2_PUBLIC_URL", None) or "").rstrip("/")
+    gcs_bucket = (getattr(settings, "GCP_BUCKET_NAME", None) or "").strip()
+    gcs_prefix = f"https://storage.googleapis.com/{gcs_bucket}/" if gcs_bucket else ""
+    cleaned: list[str] = []
+    for raw in urls:
+        url = (raw or "").strip()
+        if not url:
+            continue
+        if len(url) > 500:
+            raise ValueError("URL multimedia demasiado larga")
+        is_local = (
+            url.startswith("/uploads/")
+            and not url.startswith("/uploads/private/")
+            and ".." not in url
+        )
+        is_r2 = bool(r2_prefix and url.startswith(f"{r2_prefix}/"))
+        is_gcs = bool(gcs_prefix and url.startswith(gcs_prefix) and ".." not in url)
+        if not (is_local or is_r2 or is_gcs):
+            raise ValueError("URL multimedia inválida")
+        cleaned.append(url)
+    return cleaned
+
 
 class BookingUpdate(BaseModel):
     event_date: date | None = None
@@ -66,6 +140,13 @@ class BookingUpdate(BaseModel):
     location_reference: str | None = None
     event_type: str | None = None
     event_description: str | None = None
+
+    @model_validator(mode="after")
+    def reject_explicit_null_required_fields(self):
+        _validate_non_null_booking_fields(self)
+        if self.start_time is not None and self.end_time is not None and self.end_time == self.start_time:
+            raise ValueError("La hora de fin no puede ser igual a la hora de inicio")
+        return self
 
 
 class BookingRequestedRepertoireUpdate(BaseModel):
@@ -115,10 +196,17 @@ class BookingReopenQuote(BaseModel):
             cleaned.append(title[:160])
         return cleaned
 
+    @model_validator(mode="after")
+    def reject_explicit_null_required_fields(self):
+        _validate_non_null_booking_fields(self)
+        if self.start_time is not None and self.end_time is not None and self.end_time == self.start_time:
+            raise ValueError("La hora de fin no puede ser igual a la hora de inicio")
+        return self
+
 
 class BookingQuote(BaseModel):
     """Respuesta del músico con cotización y detalle solicitado."""
-    price_agreed: Decimal = Field(gt=0)
+    price_agreed: Decimal = Field(ge=Decimal("10.00"), le=Decimal("50000.00"), decimal_places=2)
     musician_quote_notes: str | None = None
     location_address: str | None = None
     location_city: str | None = None
@@ -127,6 +215,11 @@ class BookingQuote(BaseModel):
 
 class BookingReject(BaseModel):
     rejection_reason: str | None = None
+
+
+class BookingAcceptQuote(BaseModel):
+    accept_terms: bool | None = None
+    contract_body_sha256: str | None = Field(default=None, max_length=64)
 
 
 class CancellationQuoteOut(BaseModel):
@@ -179,9 +272,14 @@ class BookingReviewCreate(BaseModel):
     rating: int = Field(ge=1, le=5)
     emoji: str | None = Field(default=None, max_length=16)
     comment: str | None = Field(default=None, max_length=2000)
-    photo_urls: list[str] = Field(default_factory=list)
-    video_urls: list[str] = Field(default_factory=list)
+    photo_urls: list[str] = Field(default_factory=list, max_length=10)
+    video_urls: list[str] = Field(default_factory=list, max_length=10)
     is_final: bool = False
+
+    @field_validator("photo_urls", "video_urls")
+    @classmethod
+    def validate_media_urls(cls, value: list[str]) -> list[str]:
+        return _clean_review_media_urls(value)
 
 
 class BookingFinalReviewCreate(BaseModel):
@@ -216,9 +314,14 @@ class BookingGuestReviewCreate(BaseModel):
     rating: int = Field(ge=1, le=5)
     emoji: str | None = Field(default=None, max_length=16)
     comment: str | None = Field(default=None, max_length=2000)
-    photo_urls: list[str] = Field(default_factory=list)
-    video_urls: list[str] = Field(default_factory=list)
+    photo_urls: list[str] = Field(default_factory=list, max_length=10)
+    video_urls: list[str] = Field(default_factory=list, max_length=10)
     guest_name: str = Field(min_length=2, max_length=80)
+
+    @field_validator("photo_urls", "video_urls")
+    @classmethod
+    def validate_media_urls(cls, value: list[str]) -> list[str]:
+        return _clean_review_media_urls(value)
 
 
 class BookingReviewOut(BaseModel):

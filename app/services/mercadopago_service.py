@@ -1,12 +1,16 @@
+import datetime as dt
 import hashlib
 import hmac
 import logging
+import re
+import time
 import uuid
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
 import httpx
+from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -16,11 +20,14 @@ from app.models.contractor_profile import ContractorProfile
 from app.models.payment import Payment, PaymentStatus
 from app.models.user import User
 from app.models.musician_profile import MusicianProfile
-from app.services.booking_notifications import notify_booking_confirmed
+from app.services.availability_match import assert_no_booking_overlap
+from app.services.booking_notifications import notify_admins, notify_booking_confirmed
 
 logger = logging.getLogger(__name__)
 
 MERCADO_PAGO_API_BASE = "https://api.mercadopago.com"
+_NUMERIC_MP_ID_RE = re.compile(r"^\d{1,20}$")
+WEBHOOK_SIGNATURE_MAX_AGE_SECONDS = 300
 
 
 def _mp_headers() -> dict[str, str]:
@@ -101,6 +108,10 @@ def create_preference(
         },
         "notification_url": get_webhook_url(),
         "statement_descriptor": "CHIVAPP",
+        "expires": True,
+        "expiration_date_to": (
+            datetime.utcnow() + dt.timedelta(hours=24)
+        ).strftime("%Y-%m-%dT%H:%M:%S.000-00:00"),
     }
 
     # Mercado Pago strictly requires HTTPS for back_urls when auto_return is enabled.
@@ -149,40 +160,46 @@ def create_preference(
 def get_payment_details(payment_id: str) -> dict[str, Any]:
     if not is_mercadopago_configured():
         raise ValueError("Mercado Pago no está configurado.")
+    cleaned_id = str(payment_id or "").strip()
+    if not _NUMERIC_MP_ID_RE.fullmatch(cleaned_id):
+        raise ValueError("El identificador de pago de Mercado Pago debe ser numérico.")
 
     try:
         with httpx.Client(timeout=15.0) as client:
             resp = client.get(
-                f"{MERCADO_PAGO_API_BASE}/v1/payments/{payment_id}",
+                f"{MERCADO_PAGO_API_BASE}/v1/payments/{cleaned_id}",
                 headers=_mp_headers(),
             )
             resp.raise_for_status()
             return resp.json()
     except httpx.HTTPStatusError as exc:
-        logger.error("Error al obtener pago %s de Mercado Pago: %s", payment_id, exc.response.text)
+        logger.error("Error al obtener pago %s de Mercado Pago: %s", cleaned_id, exc.response.text)
         raise ValueError(f"Error al consultar pago en Mercado Pago: {exc.response.text}") from exc
     except Exception as exc:
-        logger.error("Error de conexión con Mercado Pago para pago %s: %s", payment_id, exc)
+        logger.error("Error de conexión con Mercado Pago para pago %s: %s", cleaned_id, exc)
         raise ValueError(f"Error al conectar con Mercado Pago: {exc}") from exc
 
 
 def get_merchant_order_details(merchant_order_id: str) -> dict[str, Any]:
     if not is_mercadopago_configured():
         raise ValueError("Mercado Pago no está configurado.")
+    cleaned_id = str(merchant_order_id or "").strip()
+    if not _NUMERIC_MP_ID_RE.fullmatch(cleaned_id):
+        raise ValueError("El identificador de orden de Mercado Pago debe ser numérico.")
 
     try:
         with httpx.Client(timeout=15.0) as client:
             resp = client.get(
-                f"{MERCADO_PAGO_API_BASE}/merchant_orders/{merchant_order_id}",
+                f"{MERCADO_PAGO_API_BASE}/merchant_orders/{cleaned_id}",
                 headers=_mp_headers(),
             )
             resp.raise_for_status()
             return resp.json()
     except httpx.HTTPStatusError as exc:
-        logger.error("Error al obtener merchant order %s de Mercado Pago: %s", merchant_order_id, exc.response.text)
+        logger.error("Error al obtener merchant order %s de Mercado Pago: %s", cleaned_id, exc.response.text)
         raise ValueError(f"Error al consultar orden en Mercado Pago: {exc.response.text}") from exc
     except Exception as exc:
-        logger.error("Error de conexión con Mercado Pago para merchant order %s: %s", merchant_order_id, exc)
+        logger.error("Error de conexión con Mercado Pago para merchant order %s: %s", cleaned_id, exc)
         raise ValueError(f"Error al conectar con Mercado Pago: {exc}") from exc
 
 
@@ -207,6 +224,13 @@ def verify_webhook_signature(
         ts = parts.get("ts")
         v1 = parts.get("v1")
         if not ts or not v1:
+            return False
+        ts_val = int(ts)
+        # Si ts viene en milisegundos, convertir a segundos
+        if ts_val > 10_000_000_000:
+            ts_val = ts_val // 1000
+        if abs(int(time.time()) - ts_val) > WEBHOOK_SIGNATURE_MAX_AGE_SECONDS:
+            logger.warning("Webhook de Mercado Pago rechazado por timestamp fuera de ventana: %s", ts)
             return False
 
         template = f"id:{data_id};request-id:{x_request_id or ''};ts:{ts};"
@@ -244,6 +268,67 @@ def expected_payment_amount(db: Session, booking: Booking, payment_type: str) ->
     raise ValueError("Tipo de pago no soportado")
 
 
+PAYABLE_BOOKING_STATUSES = {
+    BookingStatus.accepted,
+    BookingStatus.contract_pending,
+    BookingStatus.contract_signed,
+    BookingStatus.payment_pending,
+}
+
+
+def _confirm_booking_notifications_and_calendar(db: Session, booking: Booking) -> None:
+    contractor = db.query(ContractorProfile).filter(ContractorProfile.id == booking.contractor_id).first()
+    contractor_user = db.query(User).filter(User.id == contractor.user_id).first() if contractor else None
+
+    musician = db.query(MusicianProfile).filter(MusicianProfile.id == booking.musician_id).first()
+    if not musician:
+        return
+    musician_user = db.query(User).filter(User.id == musician.user_id).first()
+    if not musician_user:
+        return
+
+    notify_booking_confirmed(db, musician_user, str(booking.id), contractor_user)
+
+    if not booking.calendar_event_id and contractor_user and musician_user:
+        from app.services.calendar_service import create_booking_event
+
+        try:
+            import math
+
+            duration_hours = 1
+            if booking.start_time and booking.end_time:
+                start_dt = dt.datetime.combine(booking.event_date, booking.start_time)
+                end_dt = dt.datetime.combine(booking.event_date, booking.end_time)
+                if end_dt <= start_dt:
+                    end_dt += dt.timedelta(days=1)
+                total_secs = (end_dt - start_dt).total_seconds()
+                if total_secs > 0:
+                    duration_hours = max(1, math.ceil(total_secs / 3600))
+
+            start_t = booking.start_time or dt.time(12, 0)
+            event_date_time = dt.datetime.combine(booking.event_date, start_t)
+
+            event_id = create_booking_event(
+                booking_id=str(booking.id),
+                event_type=booking.event_type,
+                event_date=event_date_time,
+                duration_hours=duration_hours or 1,
+                location_city=booking.location_city or "",
+                location_zone=booking.location_reference or "",
+                location_address=booking.location_address or "",
+                musician_email=musician_user.email,
+                contractor_email=contractor_user.email,
+                contractor_name=contractor_user.fullname or "Contratista",
+                musician_name=musician.stage_name,
+                musician_phone=musician_user.phone or "",
+                contractor_phone=contractor_user.phone or "",
+            )
+            if event_id:
+                booking.calendar_event_id = event_id
+        except Exception as e:
+            logger.error(f"Error calling create_booking_event: {e}")
+
+
 def process_approved_mercadopago_payment(db: Session, payment_data: dict[str, Any]) -> Payment | None:
     payment_id = str(payment_data.get("id"))
     status = payment_data.get("status")
@@ -273,38 +358,216 @@ def process_approved_mercadopago_payment(db: Session, payment_data: dict[str, An
     raw_payment_type = metadata.get("payment_type") or FULL_PAYMENT_TYPE
     # Metadata antigua "advance" se trata como "full"; "balance" ya no se soporta.
     payment_type = normalize_payment_type(raw_payment_type) or str(raw_payment_type)
-    existing = db.query(Payment).filter(Payment.gateway_payment_id == payment_id).first()
+    existing = (
+        db.query(Payment)
+        .filter(
+            Payment.gateway_payment_id == payment_id,
+            Payment.payment_type.is_distinct_from("refund"),
+        )
+        .first()
+    )
+
+    if existing and existing.status in (PaymentStatus.retained, PaymentStatus.released):
+        if status in ("refunded", "charged_back", "cancelled", "rejected"):
+            meta_dict = dict(existing.gateway_metadata or {}) if isinstance(existing.gateway_metadata, dict) else {}
+            prev_post_event = meta_dict.get("post_approval_event")
+            meta_dict.update(payment_data)
+            meta_dict["post_approval_event"] = status
+            existing.gateway_metadata = meta_dict
+            if status in ("refunded", "charged_back"):
+                existing.status = PaymentStatus.refunded
+                if booking.status in (
+                    BookingStatus.payment_retained,
+                    BookingStatus.in_progress,
+                    BookingStatus.change_pending,
+                ):
+                    booking.status = BookingStatus.cancelled
+                    booking.cancelled_by = "system"
+                    booking.rejection_reason = f"Pago revertido en Mercado Pago ({status})"
+            if prev_post_event != status:
+                try:
+                    notify_admins(
+                        db,
+                        type="payment_alert",
+                        title=f"Pago revertido o contracargo en Mercado Pago ({status})",
+                        message=(
+                            f"El pago MP {payment_id} por S/ {amount:.2f} de la reserva "
+                            f"{str(booking.id)[:8]} cambió a estado '{status}' después de haber sido aprobado."
+                        ),
+                        meta={
+                            "booking_id": str(booking.id),
+                            "payment_id": str(payment_id),
+                            "post_approval_event": status,
+                        },
+                    )
+                except Exception as exc:
+                    logger.warning("No se pudo notificar a admins sobre reversión de pago %s: %s", payment_id, exc)
+            db.commit()
+            db.refresh(existing)
+        return existing
 
     is_approved = (status == "approved")
-    if is_approved and not (existing and existing.status == PaymentStatus.retained):
+    if is_approved:
         currency = payment_data.get("currency_id") or "PEN"
         try:
             expected = expected_payment_amount(db, booking, payment_type)
         except ValueError:
             expected = None
-        if currency != "PEN" or expected is None or amount + AMOUNT_TOLERANCE < expected:
+        if currency != "PEN" or expected is None or abs(amount - expected) > AMOUNT_TOLERANCE:
             # Se registra el pago para conciliación, pero no confirma la reserva.
             logger.error(
                 "Pago MP %s aprobado con monto/moneda inválidos (%s %s, esperado %s) para reserva %s",
                 payment_id, amount, currency, expected, booking.id,
             )
             is_approved = False
+            already_alerted = bool(
+                existing
+                and isinstance(existing.gateway_metadata, dict)
+                and existing.gateway_metadata.get("needs_refund")
+            )
+            payment_data = dict(payment_data)
+            payment_data["needs_refund"] = True
+            payment_data["needs_refund_reason"] = "invalid_amount_or_currency"
+            if existing:
+                existing.gateway_metadata = payment_data
+            if not already_alerted:
+                try:
+                    notify_admins(
+                        db,
+                        type="payment_alert",
+                        title="Pago con monto o moneda inválidos en Mercado Pago",
+                        message=(
+                            f"El pago MP {payment_id} por {currency} {amount:.2f} (esperado PEN {expected}) "
+                            f"llegó aprobado para la reserva {str(booking.id)[:8]}. Requiere conciliación/reembolso."
+                        ),
+                        meta={
+                            "booking_id": str(booking.id),
+                            "payment_id": str(payment_id),
+                            "needs_refund": True,
+                            "needs_refund_reason": "invalid_amount_or_currency",
+                        },
+                    )
+                except Exception as exc:
+                    logger.warning("No se pudo notificar a admins sobre pago inválido %s: %s", payment_id, exc)
+            db.flush()
+
+    if is_approved:
+        # Bloquear el perfil del músico para serializar confirmaciones de horario del mismo músico (BUG3-02)
+        if booking.musician_id:
+            db.query(MusicianProfile).filter(MusicianProfile.id == booking.musician_id).with_for_update().first()
+
+        other_retained_or_released = (
+            db.query(Payment)
+            .filter(
+                Payment.booking_id == booking.id,
+                Payment.payment_type.is_distinct_from("refund"),
+                Payment.status.in_((PaymentStatus.retained, PaymentStatus.released)),
+                Payment.gateway_payment_id.is_distinct_from(payment_id),
+            )
+            .first()
+            is not None
+        )
+        from app.services.booking_lifecycle import is_event_started
+        event_already_started = is_event_started(booking)
+        has_schedule_overlap = False
+        if booking.status in PAYABLE_BOOKING_STATUSES and not other_retained_or_released and not event_already_started and booking.musician_id and booking.event_date and booking.start_time:
+            try:
+                assert_no_booking_overlap(
+                    db,
+                    booking.musician_id,
+                    booking.event_date,
+                    booking.start_time,
+                    end_time=booking.end_time,
+                    exclude_booking_id=booking.id,
+                )
+            except HTTPException:
+                has_schedule_overlap = True
+
+        if booking.status not in PAYABLE_BOOKING_STATUSES or other_retained_or_released or has_schedule_overlap or event_already_started:
+            logger.error(
+                "Pago MP %s aprobado recibido para reserva %s en estado no pagable (%s), ya pagada, evento pasado o con cruce de horario.",
+                payment_id,
+                booking.id,
+                booking.status.value,
+            )
+            is_approved = False
+            already_alerted = bool(
+                existing
+                and isinstance(existing.gateway_metadata, dict)
+                and existing.gateway_metadata.get("needs_refund")
+            )
+            reason_code = (
+                "event_passed"
+                if event_already_started
+                else "schedule_overlap"
+                if has_schedule_overlap
+                else "duplicate_or_unpayable"
+            )
+            payment_data = dict(payment_data)
+            payment_data["needs_refund"] = True
+            payment_data["needs_refund_reason"] = reason_code
+            if existing:
+                existing.gateway_metadata = payment_data
+            if not already_alerted:
+                try:
+                    alert_title = (
+                        "Pago en evento cuya fecha ya pasó"
+                        if event_already_started
+                        else "Pago en horario ya ocupado (solape de reserva)"
+                        if has_schedule_overlap
+                        else "Pago tardío o duplicado en Mercado Pago"
+                    )
+                    notify_admins(
+                        db,
+                        type="payment_alert",
+                        title=alert_title,
+                        message=(
+                            f"El pago MP {payment_id} por S/ {amount:.2f} llegó aprobado para la reserva "
+                            f"{str(booking.id)[:8]} ({reason_code}). Requiere conciliación/reembolso."
+                        ),
+                        meta={
+                            "booking_id": str(booking.id),
+                            "payment_id": str(payment_id),
+                            "needs_refund": True,
+                            "needs_refund_reason": reason_code,
+                        },
+                    )
+                except Exception as exc:
+                    logger.warning("No se pudo notificar a admins sobre pago tardío/solapado %s: %s", payment_id, exc)
+            db.flush()
+
+    is_rejected = status in ("rejected", "cancelled")
 
     if existing:
-        if is_approved and existing.status != PaymentStatus.retained:
+        if is_approved:
             existing.status = PaymentStatus.retained
             existing.retained_at = existing.retained_at or datetime.utcnow()
             existing.gateway_metadata = payment_data
-            if booking.status in (BookingStatus.contract_signed, BookingStatus.payment_pending, BookingStatus.contract_pending, BookingStatus.accepted):
+            if payment_type == FULL_PAYMENT_TYPE:
                 booking.status = BookingStatus.payment_retained
-            from app.models.booking_link import BookingLink, BookingLinkStatus
-            for bl in db.query(BookingLink).filter(BookingLink.booking_id == booking.id).all():
-                bl.status = BookingLinkStatus.completed
+                from app.models.booking_link import BookingLink, BookingLinkStatus
+                for bl in db.query(BookingLink).filter(BookingLink.booking_id == booking.id).all():
+                    bl.status = BookingLinkStatus.completed
+                _confirm_booking_notifications_and_calendar(db, booking)
+            db.commit()
+            db.refresh(existing)
+        elif is_rejected and existing.status == PaymentStatus.initiated:
+            existing.status = PaymentStatus.rejected
+            existing.rejection_reason = str(payment_data.get("status_detail") or "rejected")
+            existing.gateway_metadata = payment_data
+            db.commit()
+            db.refresh(existing)
+        elif isinstance(payment_data, dict) and payment_data.get("needs_refund"):
+            existing.gateway_metadata = payment_data
             db.commit()
             db.refresh(existing)
         return existing
 
-    new_payment_status = PaymentStatus.retained if is_approved else PaymentStatus.initiated
+    new_payment_status = (
+        PaymentStatus.retained
+        if is_approved
+        else (PaymentStatus.rejected if is_rejected else PaymentStatus.initiated)
+    )
 
     active_payment = (
         db.query(Payment)
@@ -339,56 +602,12 @@ def process_approved_mercadopago_payment(db: Session, payment_data: dict[str, An
         )
         db.add(payment)
 
-    if is_approved:
-        if payment_type == FULL_PAYMENT_TYPE:
-            booking.status = BookingStatus.payment_retained
-            from app.models.booking_link import BookingLink, BookingLinkStatus
-            for bl in db.query(BookingLink).filter(BookingLink.booking_id == booking.id).all():
-                bl.status = BookingLinkStatus.completed
-            
-            contractor = db.query(ContractorProfile).filter(ContractorProfile.id == booking.contractor_id).first()
-            contractor_user = db.query(User).filter(User.id == contractor.user_id).first() if contractor else None
-
-            musician = db.query(MusicianProfile).filter(MusicianProfile.id == booking.musician_id).first()
-            if musician:
-                musician_user = db.query(User).filter(User.id == musician.user_id).first()
-                if musician_user:
-                    notify_booking_confirmed(db, musician_user, str(booking.id), contractor_user)
-                    
-                    # Create Google Calendar event
-                    if not booking.calendar_event_id and contractor_user and musician_user:
-                        from app.services.calendar_service import create_booking_event
-                        try:
-                            # Estimate duration (default 1 hour if not specified)
-                            duration_hours = 1
-                            if booking.start_time and booking.end_time:
-                                import datetime as dt
-                                start_dt = dt.datetime.combine(booking.event_date, booking.start_time)
-                                end_dt = dt.datetime.combine(booking.event_date, booking.end_time)
-                                if end_dt > start_dt:
-                                    duration_hours = (end_dt - start_dt).seconds // 3600
-                            
-                            event_date_time = dt.datetime.combine(booking.event_date, booking.start_time)
-                            
-                            event_id = create_booking_event(
-                                booking_id=str(booking.id),
-                                event_type=booking.event_type,
-                                event_date=event_date_time,
-                                duration_hours=duration_hours or 1,
-                                location_city=booking.location_city or "",
-                                location_zone=booking.location_reference or "",
-                                location_address=booking.location_address or "",
-                                musician_email=musician_user.email,
-                                contractor_email=contractor_user.email,
-                                contractor_name=contractor_user.fullname or "Contratista",
-                                musician_name=musician.stage_name,
-                                musician_phone=musician_user.phone or "",
-                                contractor_phone=contractor_user.phone or ""
-                            )
-                            if event_id:
-                                booking.calendar_event_id = event_id
-                        except Exception as e:
-                            logger.error(f"Error calling create_booking_event: {e}")
+    if is_approved and payment_type == FULL_PAYMENT_TYPE:
+        booking.status = BookingStatus.payment_retained
+        from app.models.booking_link import BookingLink, BookingLinkStatus
+        for bl in db.query(BookingLink).filter(BookingLink.booking_id == booking.id).all():
+            bl.status = BookingLinkStatus.completed
+        _confirm_booking_notifications_and_calendar(db, booking)
                             
 
     try:
@@ -490,7 +709,7 @@ def process_direct_payment(
             )
             data = resp.json()
             if resp.status_code >= 400:
-                safe_body = {k: v for k, v in mp_body.items() if k != "token"}
+                safe_body = {k: v for k, v in mp_body.items() if k not in ("token", "payer")}
                 logger.error(
                     "Error al procesar pago directo en Mercado Pago: %s %s - Body: %s",
                     resp.status_code,
@@ -511,48 +730,6 @@ def process_direct_payment(
                     "payment_id": None,
                     "message": message,
                 }
-
-            status = data.get("status")
-            status_detail = data.get("status_detail")
-            payment_id = str(data.get("id")) if data.get("id") else None
-
-            detail_messages = {
-                "rejected_high_risk": "Pago rechazado por prevención de riesgo/fraude de Mercado Pago. (Nota: en modo producción no puedes pagarte a ti mismo con tu propio celular/tarjeta/cuenta de Mercado Pago).",
-                "rejected_by_bank": "El banco emisor o la billetera rechazó la operación.",
-                "cc_rejected_insufficient_amount": "Saldo o fondos insuficientes en la cuenta.",
-                "cc_rejected_bad_filled_security_code": "Código de seguridad o validación inválido.",
-                "cc_rejected_bad_filled_date": "Fecha de vencimiento de la tarjeta inválida.",
-                "cc_rejected_bad_filled_other": "Datos ingresados incorrectos o no coinciden.",
-                "cc_rejected_call_for_authorize": "Debes llamar a tu banco para autorizar compras por internet.",
-                "cc_rejected_card_disabled": "Tu tarjeta o cuenta no está habilitada para pagos por internet.",
-                "cc_rejected_duplicated_payment": "Se detectó un pago duplicado reciente para este monto.",
-                "cc_rejected_max_attempts": "Se superó el límite de intentos permitidos. Intenta más tarde.",
-            }
-
-            if status == "approved":
-                friendly_message = "¡Pago aprobado con éxito! Tu reserva ha quedado confirmada."
-            elif status == "in_process":
-                friendly_message = "El pago está en proceso de revisión por la entidad financiera."
-            elif status == "pending":
-                friendly_message = "El pago se encuentra pendiente de acreditación."
-            else:
-                friendly_message = (
-                    detail_messages.get(status_detail)
-                    or f"El pago fue rechazado ({status_detail or 'motivo desconocido'}). Verifica los datos o intenta con otro medio de pago."
-                )
-
-            if status == "approved":
-                process_approved_mercadopago_payment(db, data)
-
-            return {
-                "success": (status == "approved"),
-                "status": status,
-                "status_detail": status_detail,
-                "payment_id": payment_id,
-                "message": friendly_message,
-                "raw": data,
-            }
-
     except Exception as exc:
         logger.error("Excepción al contactar con Mercado Pago v1/payments: %s", exc)
         return {
@@ -560,8 +737,76 @@ def process_direct_payment(
             "status": "error",
             "status_detail": "network_error",
             "payment_id": None,
-            "message": f"Error de comunicación con la pasarela de pago: {exc}",
+            "message": "Error de comunicación con la pasarela de pago. Inténtalo nuevamente en unos instantes.",
         }
+
+    status = data.get("status")
+    status_detail = data.get("status_detail")
+    payment_id = str(data.get("id")) if data.get("id") else None
+
+    detail_messages = {
+        "rejected_high_risk": "Pago rechazado por prevención de riesgo/fraude de Mercado Pago. (Nota: en modo producción no puedes pagarte a ti mismo con tu propio celular/tarjeta/cuenta de Mercado Pago).",
+        "rejected_by_bank": "El banco emisor o la billetera rechazó la operación.",
+        "cc_rejected_insufficient_amount": "Saldo o fondos insuficientes en la cuenta.",
+        "cc_rejected_bad_filled_security_code": "Código de seguridad o validación inválido.",
+        "cc_rejected_bad_filled_date": "Fecha de vencimiento de la tarjeta inválida.",
+        "cc_rejected_bad_filled_other": "Datos ingresados incorrectos o no coinciden.",
+        "cc_rejected_call_for_authorize": "Debes llamar a tu banco para autorizar compras por internet.",
+        "cc_rejected_card_disabled": "Tu tarjeta o cuenta no está habilitada para pagos por internet.",
+        "cc_rejected_duplicated_payment": "Se detectó un pago duplicado reciente para este monto.",
+        "cc_rejected_max_attempts": "Se superó el límite de intentos permitidos. Intenta más tarde.",
+    }
+
+    if status == "approved":
+        friendly_message = "¡Pago aprobado con éxito! Tu reserva ha quedado confirmada."
+    elif status == "in_process":
+        friendly_message = "El pago está en proceso de revisión por la entidad financiera."
+    elif status == "pending":
+        friendly_message = "El pago se encuentra pendiente de acreditación."
+    else:
+        friendly_message = (
+            detail_messages.get(status_detail)
+            or f"El pago fue rechazado ({status_detail or 'motivo desconocido'}). Verifica los datos o intenta con otro medio de pago."
+        )
+
+    try:
+        if status == "approved":
+            payment_row = process_approved_mercadopago_payment(db, data)
+            if payment_row and payment_row.status != PaymentStatus.retained:
+                return {
+                    "success": False,
+                    "status": "pending",
+                    "status_detail": "reconciliation_required",
+                    "payment_id": payment_id,
+                    "message": "Recibimos tu pago en Mercado Pago, pero requiere validación adicional de nuestro equipo.",
+                    "raw": data,
+                }
+        elif status in ("rejected", "cancelled", "pending", "in_process", "authorized") and payment_id:
+            enriched = dict(data)
+            if not enriched.get("metadata") and not enriched.get("external_reference"):
+                enriched["external_reference"] = str(booking.id)
+            process_approved_mercadopago_payment(db, enriched)
+    except Exception as exc:
+        logger.error("Error local al registrar pago directo MP %s (estado MP=%s): %s", payment_id, status, exc)
+        db.rollback()
+        if status == "approved":
+            return {
+                "success": True,
+                "status": "pending",
+                "status_detail": "sync_pending",
+                "payment_id": payment_id,
+                "message": "El pago fue aprobado por Mercado Pago y se está sincronizando con tu reserva. No vuelvas a pagar.",
+                "raw": data,
+            }
+
+    return {
+        "success": (status == "approved"),
+        "status": status,
+        "status_detail": status_detail,
+        "payment_id": payment_id,
+        "message": friendly_message,
+        "raw": data,
+    }
 
 def issue_refund(payment_id: str, amount: float, idempotency_key: str | None = None) -> dict[str, Any]:
     """

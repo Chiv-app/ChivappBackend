@@ -18,7 +18,7 @@ def _get_calendar_service_oauth(refresh_token: str):
     """Inicializa y devuelve el servicio de Google Calendar usando OAuth 2.0."""
     from google.oauth2.credentials import Credentials
     from googleapiclient.discovery import build
-    
+
     if not refresh_token or not settings.GOOGLE_CLIENT_ID or not settings.GOOGLE_CLIENT_SECRET:
         return None
         
@@ -39,6 +39,9 @@ def _get_calendar_service_oauth(refresh_token: str):
 
 def _get_calendar_service():
     """Inicializa y devuelve el servicio de Google Calendar."""
+    if not (settings.GOOGLE_CALENDAR_ID or "").strip():
+        return None
+
     creds = None
     if settings.GOOGLE_CREDENTIALS_JSON:
         try:
@@ -48,7 +51,7 @@ def _get_calendar_service():
             )
         except Exception as e:
             logger.error(f"Error al cargar credenciales de entorno: {e}")
-    else:
+    elif not settings.is_production:
         creds_path = os.path.join(os.path.dirname(__file__), '..', '..', 'google_credentials.json')
         if not os.path.exists(creds_path):
             logger.warning(f"No se encontro google_credentials.json ni GOOGLE_CREDENTIALS_JSON. No se sincronizara con Google Calendar.")
@@ -60,6 +63,8 @@ def _get_calendar_service():
         except Exception as e:
             logger.error(f"Error al inicializar Google Calendar desde archivo: {e}")
             return None
+    else:
+        return None
 
     if not creds:
         return None
@@ -177,6 +182,80 @@ def cancel_booking_event(event_id: str) -> bool:
         logger.error(f"Error al eliminar evento en Google Calendar: {error}")
         return False
 
+
+def cancel_booking_calendar_event(db, booking, musician_user=None) -> bool:
+    """Elimina el evento de Google Calendar (OAuth del músico o Service Account) y limpia calendar_event_id."""
+    event_id = getattr(booking, "calendar_event_id", None)
+    if not event_id:
+        return False
+
+    deleted = False
+    try:
+        if musician_user is None and db is not None and getattr(booking, "musician_id", None):
+            from app.models.musician_profile import MusicianProfile
+            from app.models.user import User
+
+            mp = db.query(MusicianProfile).filter(MusicianProfile.id == booking.musician_id).first()
+            if mp:
+                musician_user = db.query(User).filter(User.id == mp.user_id).first()
+
+        refresh_token = getattr(musician_user, "google_calendar_refresh_token", None) if musician_user else None
+        if refresh_token:
+            oauth_svc = _get_calendar_service_oauth(refresh_token)
+            if oauth_svc:
+                try:
+                    oauth_svc.events().delete(calendarId="primary", eventId=event_id).execute()
+                    deleted = True
+                except Exception as exc:
+                    logger.warning("No se pudo eliminar evento OAuth %s: %s", event_id, exc)
+    except Exception as exc:
+        logger.warning("Error resolviendo OAuth calendar al cancelar %s: %s", event_id, exc)
+
+    if not deleted:
+        try:
+            deleted = cancel_booking_event(event_id)
+        except Exception as exc:
+            logger.warning("Error eliminando evento Service Account %s: %s", event_id, exc)
+
+    booking.calendar_event_id = None
+    return deleted
+
+
+def update_booking_calendar_event(db, booking) -> bool:
+    """Actualiza la ubicación/descripción de un evento existente en Google Calendar tras un cambio."""
+    event_id = getattr(booking, "calendar_event_id", None)
+    if not event_id:
+        return False
+
+    patch_body = {
+        "location": f"{booking.location_address or ''}, {booking.location_reference or ''}, {booking.location_city or ''}".strip(", "),
+    }
+    try:
+        musician_user = None
+        if db is not None and getattr(booking, "musician_id", None):
+            from app.models.musician_profile import MusicianProfile
+            from app.models.user import User
+
+            mp = db.query(MusicianProfile).filter(MusicianProfile.id == booking.musician_id).first()
+            if mp:
+                musician_user = db.query(User).filter(User.id == mp.user_id).first()
+
+        refresh_token = getattr(musician_user, "google_calendar_refresh_token", None) if musician_user else None
+        if refresh_token:
+            oauth_svc = _get_calendar_service_oauth(refresh_token)
+            if oauth_svc:
+                oauth_svc.events().patch(calendarId="primary", eventId=event_id, body=patch_body).execute()
+                return True
+
+        service = _get_calendar_service()
+        if service:
+            calendar_id = settings.GOOGLE_CALENDAR_ID or "primary"
+            service.events().patch(calendarId=calendar_id, eventId=event_id, body=patch_body).execute()
+            return True
+    except Exception as exc:
+        logger.warning("No se pudo actualizar evento de Google Calendar %s: %s", event_id, exc)
+    return False
+
 def add_attendee_to_booking_event(event_id: str, attendee_email: str) -> bool:
     # Desactivado debido a la restriccion 403 de Service Accounts (sin Workspace)
     return False
@@ -210,10 +289,18 @@ def sync_booking_calendar(db, booking_id: str, include_contractor: bool, ensembl
     if include_contractor and contractor_user and contractor_user.email and not contractor_user.email.endswith("@guest.local"):
         attendees.append({'email': contractor_user.email})
 
-    for mid in ensemble_member_ids:
-        em = db.query(EnsembleMember).filter(EnsembleMember.id == mid).first()
-        if em and em.email and not em.email.endswith('@guest.local'):
-            attendees.append({'email': em.email})
+    if musician_user:
+        for mid in ensemble_member_ids:
+            em = (
+                db.query(EnsembleMember)
+                .filter(
+                    EnsembleMember.id == mid,
+                    EnsembleMember.leader_user_id == musician_user.id,
+                )
+                .first()
+            )
+            if em and em.email and not em.email.endswith('@guest.local'):
+                attendees.append({'email': em.email})
         
 
 

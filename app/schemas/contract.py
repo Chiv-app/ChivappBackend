@@ -2,7 +2,8 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
+from app.services.contract_pdf import compute_contract_body_sha256
 
 
 class ContractOut(BaseModel):
@@ -11,6 +12,8 @@ class ContractOut(BaseModel):
     title: str | None = None
     body: str | None = None
     context: dict[str, Any] | None = None
+    body_sha256: str | None = None
+    signed_body_sha256: str | None = None
     # Legacy PDF paths (contratos antiguos). Nuevos contratos generan PDF on-demand.
     contract_pdf_url: str | None = None
     contract_signed_pdf_url: str | None = None
@@ -26,3 +29,15 @@ class ContractOut(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+    @model_validator(mode="after")
+    def populate_hashes(self) -> "ContractOut":
+        ctx = self.context if isinstance(self.context, dict) else {}
+        if not self.body_sha256 and (self.title or self.body):
+            self.body_sha256 = str(
+                ctx.get("__body_sha256__")
+                or compute_contract_body_sha256(self.title, self.body)
+            )
+        if not self.signed_body_sha256 and ctx.get("__signed_body_sha256__"):
+            self.signed_body_sha256 = str(ctx.get("__signed_body_sha256__"))
+        return self

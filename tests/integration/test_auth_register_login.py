@@ -56,7 +56,7 @@ def test_register_duplicate_username_returns_400(client):
     assert "nombre de usuario" in response.json()["detail"].lower()
 
 
-def test_register_duplicate_fullname_returns_400(client):
+def test_register_duplicate_fullname_returns_201_with_disambiguated_stage_name(client):
     client.post("/api/v1/auth/register", json=_register_payload())
     response = client.post(
         "/api/v1/auth/register",
@@ -67,8 +67,8 @@ def test_register_duplicate_fullname_returns_400(client):
             phone="+51999888779",
         ),
     )
-    assert response.status_code == 400
-    assert "nombre" in response.json()["detail"].lower()
+    assert response.status_code == 201
+    assert response.json()["email"] == "otro2@example.com"
 
 
 def test_register_duplicate_email_returns_400(client):
@@ -80,8 +80,15 @@ def test_register_duplicate_email_returns_400(client):
     assert response.status_code == 400
 
 
-def test_login_with_correct_credentials_returns_token(client):
+def test_login_with_correct_credentials_returns_token(client, db_session):
+    from datetime import datetime
+    from app.models.user import User
+
     client.post("/api/v1/auth/register", json=_register_payload())
+    u = db_session.query(User).filter(User.email == "mariachi.test@example.com").first()
+    u.email_verified_at = datetime.utcnow()
+    db_session.commit()
+    client.cookies.clear()
     response = client.post(
         "/api/v1/auth/login",
         json={"email": "mariachi.test@example.com", "password": "SuperSecreta123!"},
@@ -108,13 +115,8 @@ def test_newly_registered_musician_can_get_profile_and_update_profile(client):
         "accepted_terms": True,
     })
     assert reg.status_code == 201
-
-    login_resp = client.post(
-        "/api/v1/auth/login",
-        json={"email": "nuevo.musico.profile@example.com", "password": "SuperSecreta123!"},
-    )
-    assert login_resp.status_code == 200
-    headers = {}  # sesión por cookie
+    assert "access_token" in reg.cookies
+    headers = {}  # sesión por cookie emitida en el registro
 
     # Get profile (previously crashed with 500 ResponseValidationError)
     prof_resp = client.get("/api/v1/profiles/musician/me", headers=headers)

@@ -35,7 +35,10 @@ from app.schemas.settlement import BookingComplaintRespond, BookingRefundReject
 from app.services.booking_lifecycle import (
     apply_commitment_fields,
     apply_pending_changes,
+    assert_event_finished,
+    assert_event_started,
     clear_pending_changes,
+    is_event_finished,
     is_pre_event,
 )
 from app.services.booking_notifications import (
@@ -49,11 +52,13 @@ from app.services.booking_notifications import (
     notify_booking_review,
     notify_complaint_musician_update,
     notify_complaint_opened,
+    notify_user,
 )
 from app.services.booking_share import (
     disable_booking_share,
     serialize_review,
 )
+from app.services.calendar_service import update_booking_calendar_event
 from app.services.ratings import (
     recompute_contractor_rating,
     recompute_musician_rating,
@@ -240,6 +245,7 @@ def request_booking_change(
         )
         db.commit()
         db.refresh(booking)
+        update_booking_calendar_event(db, booking)
         return booking
 
     # --- Contratista: requiere validación del músico ---
@@ -335,6 +341,39 @@ def decide_booking_change(
 
     db.commit()
     db.refresh(booking)
+    if payload.accept:
+        update_booking_calendar_event(db, booking)
+    return booking
+
+
+@router.post("/{booking_id}/cancel-change", response_model=BookingOut)
+def cancel_booking_change(
+    booking_id: str,
+    current_user: User = Depends(deps.get_current_user),
+    db: Session = Depends(deps.get_db),
+):
+    """Permite al contratista retirar una solicitud de cambio pendiente."""
+    booking = get_booking_or_404(db, booking_id)
+    assert_booking_contractor_owner(db, booking, current_user)
+    if booking.status != BookingStatus.change_pending:
+        raise HTTPException(400, "No hay una solicitud de cambio pendiente por retirar")
+
+    clear_pending_changes(booking)
+    booking.status = BookingStatus.payment_retained
+    try:
+        musician_user = _musician_user(db, booking)
+        notify_user(
+            db,
+            user=musician_user,
+            type="booking_change_withdrawn",
+            title="Solicitud de cambio retirada",
+            message="El contratista retiró su solicitud de cambio de la reserva.",
+            booking_id=str(booking.id),
+        )
+    except HTTPException:
+        pass
+    db.commit()
+    db.refresh(booking)
     return booking
 
 
@@ -349,6 +388,11 @@ def start_event_phase(
     assert_booking_participant(db, booking, current_user)
 
     assert_can_execute_action(booking, BookingAction.MARK_IN_PROGRESS, current_user)
+    assert_event_started(
+        booking,
+        tolerance_minutes=120,
+        detail="Solo puedes iniciar el evento dentro de las 2 horas previas a la hora pactada.",
+    )
 
     booking.status = BookingStatus.in_progress
     other = (
@@ -422,12 +466,20 @@ def create_booking_review(
             400,
             "Las reseñas se habilitan después de confirmar el pago e iniciar el evento",
         )
+    assert_event_started(
+        booking,
+        detail="Las reseñas se habilitan una vez llegada la fecha y hora del evento.",
+    )
     if booking.status == BookingStatus.payment_retained:
         booking.status = BookingStatus.in_progress
 
     is_final = bool(payload.is_final)
     comment = (payload.comment or "").strip()
     if is_final:
+        assert_event_finished(
+            booking,
+            detail="La reseña final solo está disponible cuando haya finalizado el evento.",
+        )
         if len(comment) < 10:
             raise HTTPException(
                 400,
@@ -460,6 +512,37 @@ def create_booking_review(
 
     if is_final:
         recompute_musician_rating(db, booking.musician_id)
+
+    has_musician_rec = (
+        db.query(ContractorRecommendation)
+        .filter(ContractorRecommendation.booking_id == booking.id)
+        .first()
+        is not None
+    )
+    is_post_event_review = is_event_finished(booking) and (is_final or not payload.emoji)
+    if (
+        is_post_event_review
+        and has_musician_rec
+        and booking.status
+        in {
+            BookingStatus.payment_retained,
+            BookingStatus.in_progress,
+            BookingStatus.payment_released,
+        }
+    ):
+        from app.models.booking_complaint import BookingComplaint, BookingComplaintStatus
+
+        open_complaint = (
+            db.query(BookingComplaint)
+            .filter(
+                BookingComplaint.booking_id == booking.id,
+                BookingComplaint.status == BookingComplaintStatus.open,
+            )
+            .first()
+        )
+        if not open_complaint:
+            booking.status = BookingStatus.completed
+            disable_booking_share(booking)
 
     musician_user = _musician_user(db, booking)
     preview = comment or payload.emoji or f"{payload.rating}★"
@@ -512,6 +595,10 @@ def create_final_booking_review(
                 400,
                 "Las quejas se habilitan después de confirmar el pago e iniciar el evento",
             )
+        assert_event_finished(
+            booking,
+            detail="Las quejas y el cierre del evento se habilitan una vez finalizado el horario del evento.",
+        )
 
         complaint = (
             db.query(BookingComplaint)
@@ -557,6 +644,10 @@ def create_final_booking_review(
     # Review path — idempotent if a previous attempt already saved the final review.
     booking = get_booking_or_404(db, booking_id)
     assert_booking_contractor_owner(db, booking, current_user)
+    assert_event_finished(
+        booking,
+        detail="La reseña final solo está disponible una vez finalizado el horario del evento.",
+    )
     existing_final = (
         db.query(BookingReview)
         .filter(
@@ -565,8 +656,14 @@ def create_final_booking_review(
         )
         .first()
     )
+    has_musician_rec = (
+        db.query(ContractorRecommendation)
+        .filter(ContractorRecommendation.booking_id == booking.id)
+        .first()
+        is not None
+    )
     if existing_final:
-        if booking.status != BookingStatus.completed:
+        if has_musician_rec and booking.status != BookingStatus.completed:
             booking.status = BookingStatus.completed
             disable_booking_share(booking)
             db.commit()
@@ -574,7 +671,7 @@ def create_final_booking_review(
         review_out = serialize_review(existing_final)
         return {
             "mode": "review",
-            "completed": True,
+            "completed": booking.status == BookingStatus.completed,
             "review": review_out.model_dump(mode="json"),
         }
 
@@ -589,7 +686,7 @@ def create_final_booking_review(
         db,
     )
     booking = get_booking_or_404(db, booking_id)
-    if booking.status != BookingStatus.completed:
+    if has_musician_rec and booking.status != BookingStatus.completed:
         booking.status = BookingStatus.completed
         disable_booking_share(booking)
         musician_user = _musician_user(db, booking)
@@ -605,7 +702,7 @@ def create_final_booking_review(
 
     return {
         "mode": "review",
-        "completed": True,
+        "completed": booking.status == BookingStatus.completed,
         "review": (
             review_out.model_dump(mode="json")
             if hasattr(review_out, "model_dump")
@@ -887,6 +984,10 @@ def recommend_contractor(
             400,
             "Solo puedes recomendar al cliente después de la fase de evento.",
         )
+    assert_event_started(
+        booking,
+        detail="Solo puedes recomendar al cliente una vez llegada la fecha y hora del evento.",
+    )
 
     existing = (
         db.query(ContractorRecommendation)
@@ -915,6 +1016,56 @@ def recommend_contractor(
     db.add(recommendation)
     db.flush()
     recompute_contractor_rating(db, booking.contractor_id)
+
+    contractor_reviews = (
+        db.query(BookingReview)
+        .filter(
+            BookingReview.booking_id == booking.id,
+            BookingReview.author_user_id.isnot(None),
+        )
+        .all()
+    )
+    from datetime import timezone as _tz
+
+    has_contractor_review = any(
+        r.is_final
+        or (
+            r.emoji is None
+            and is_event_finished(
+                booking,
+                now=(
+                    r.created_at.replace(tzinfo=_tz.utc)
+                    if r.created_at and r.created_at.tzinfo is None
+                    else r.created_at
+                ),
+            )
+        )
+        for r in contractor_reviews
+    )
+    if (
+        is_event_finished(booking)
+        and has_contractor_review
+        and booking.status
+        in {
+            BookingStatus.payment_retained,
+            BookingStatus.in_progress,
+            BookingStatus.payment_released,
+        }
+    ):
+        from app.models.booking_complaint import BookingComplaint, BookingComplaintStatus
+
+        open_complaint = (
+            db.query(BookingComplaint)
+            .filter(
+                BookingComplaint.booking_id == booking.id,
+                BookingComplaint.status == BookingComplaintStatus.open,
+            )
+            .first()
+        )
+        if not open_complaint:
+            booking.status = BookingStatus.completed
+            disable_booking_share(booking)
+
     db.commit()
     db.refresh(recommendation)
 
@@ -937,6 +1088,7 @@ def complete_booking(
     db: Session = Depends(deps.get_db),
 ):
     booking = get_booking_or_404(db, booking_id)
+    booking = db.get(Booking, booking.id, with_for_update=True) or booking
     assert_booking_participant(db, booking, current_user)
 
     if booking.status == BookingStatus.completed:
@@ -952,13 +1104,39 @@ def complete_booking(
             "Aún no puedes finalizar: falta completar la fase de evento. "
             "Revisa el timeline para ver el paso pendiente.",
         )
+    assert_event_finished(
+        booking,
+        detail="No puedes finalizar la reserva antes de que termine el horario del evento.",
+    )
 
-    final_review = (
+    from datetime import timezone as _tz
+
+    contractor_reviews = (
         db.query(BookingReview)
         .filter(
             BookingReview.booking_id == booking.id,
-            BookingReview.is_final.is_(True),
+            BookingReview.author_user_id.isnot(None),
         )
+        .all()
+    )
+    has_valid_contractor_review = any(
+        r.is_final
+        or (
+            r.emoji is None
+            and is_event_finished(
+                booking,
+                now=(
+                    r.created_at.replace(tzinfo=_tz.utc)
+                    if r.created_at and r.created_at.tzinfo is None
+                    else r.created_at
+                ),
+            )
+        )
+        for r in contractor_reviews
+    )
+    musician_rec = (
+        db.query(ContractorRecommendation)
+        .filter(ContractorRecommendation.booking_id == booking.id)
         .first()
     )
     from app.models.booking_complaint import BookingComplaint
@@ -968,11 +1146,10 @@ def complete_booking(
         .filter(BookingComplaint.booking_id == booking.id)
         .first()
     )
-    if not final_review and not complaint:
+    if not (has_valid_contractor_review and musician_rec) and not complaint:
         raise HTTPException(
             400,
-            "Falta el paso «Evento y reseña»: el contratista debe dejar "
-            "una reseña final o registrar una queja antes de finalizar.",
+            "Para cerrar la reserva es necesario que tanto el contratista como el músico hayan registrado su reseña final (o exista una queja registrada).",
         )
 
     # Funds stay retained in the platform as app debt until an admin settles.

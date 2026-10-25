@@ -8,8 +8,15 @@ class Base(DeclarativeBase):
 
 
 connect_args = {}
+pool_kwargs = {}
 if settings.SQLALCHEMY_DATABASE_URI.startswith("postgresql"):
     connect_args = {"options": "-c timezone=America/Lima"}
+    pool_kwargs = {
+        "pool_size": settings.DB_POOL_SIZE,
+        "max_overflow": settings.DB_MAX_OVERFLOW,
+        "pool_timeout": settings.DB_POOL_TIMEOUT,
+        "pool_recycle": settings.DB_POOL_RECYCLE,
+    }
 
 engine = create_engine(
     settings.SQLALCHEMY_DATABASE_URI,
@@ -17,6 +24,7 @@ engine = create_engine(
     future=True,
     pool_pre_ping=True,
     connect_args=connect_args,
+    **pool_kwargs,
 )
 
 SessionLocal = sessionmaker(

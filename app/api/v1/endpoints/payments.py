@@ -1,11 +1,13 @@
 import logging
-from datetime import datetime
+import re
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.limiter import get_client_ip, limiter
 
 from app.api import deps
 from app.api.booking_helpers import (
@@ -35,7 +37,7 @@ from app.schemas.payment import (
     MusicianEarningsSummary,
     PaymentOut,
 )
-from app.services.booking_notifications import notify_payment_released
+from app.services.booking_notifications import notify_admins, notify_payment_released
 from app.services.contractor_operations import build_contractor_operations
 from app.services.payment_evidence import (
     apply_evidence_urls,
@@ -115,6 +117,7 @@ def list_booking_payments(
 def get_musician_earnings(
     current_user: User = Depends(deps.get_current_user),
     db: Session = Depends(deps.get_db),
+    _require_verified: bool = True,
 ):
     if current_user.role != UserRole.musician:
         raise HTTPException(403, "Solo los músicos pueden ver sus ingresos")
@@ -123,7 +126,7 @@ def get_musician_earnings(
     from app.services.platform_payment import musician_portion_of_paid
     from app.services.settlement import settlement_state_for_booking
 
-    musician = get_musician_profile_or_400(db, current_user, require_verified=True)
+    musician = get_musician_profile_or_400(db, current_user, require_verified=_require_verified)
     bookings = (
         db.query(Booking)
         .filter(Booking.musician_id == musician.id)
@@ -133,37 +136,36 @@ def get_musician_earnings(
 
     from app.models.booking import BookingReview
     from app.models.contractor_recommendation import ContractorRecommendation
+    from app.services.booking_lifecycle import is_event_finished
 
     booking_by_id = {booking.id: booking for booking in bookings}
 
-    strict_final_review_ids = (
-        {
-            row[0]
-            for row in db.query(BookingReview.booking_id)
-            .filter(
-                BookingReview.booking_id.in_(booking_by_id.keys()),
-                BookingReview.is_final.is_(True),
-            )
-            .all()
-        }
+    review_rows = (
+        db.query(BookingReview)
+        .filter(
+            BookingReview.booking_id.in_(booking_by_id.keys()),
+            (BookingReview.is_final.is_(True))
+            | (BookingReview.author_user_id.isnot(None)),
+        )
+        .all()
         if booking_by_id
-        else set()
+        else []
     )
-
-    contractor_review_booking_ids = (
-        {
-            row[0]
-            for row in db.query(BookingReview.booking_id)
-            .filter(
-                BookingReview.booking_id.in_(booking_by_id.keys()),
-                (BookingReview.is_final.is_(True))
-                | (BookingReview.author_user_id.isnot(None)),
-            )
-            .all()
-        }
-        if booking_by_id
-        else set()
-    )
+    contractor_review_booking_ids: set = set()
+    for rev in review_rows:
+        b_obj = booking_by_id.get(rev.booking_id)
+        if not b_obj:
+            continue
+        rev_dt = (
+            rev.created_at.replace(tzinfo=timezone.utc)
+            if rev.created_at and rev.created_at.tzinfo is None
+            else rev.created_at
+        )
+        if rev.is_final:
+            if is_event_finished(b_obj):
+                contractor_review_booking_ids.add(rev.booking_id)
+        elif rev.emoji is None and is_event_finished(b_obj, now=rev_dt):
+            contractor_review_booking_ids.add(rev.booking_id)
 
     musician_review_booking_ids = (
         {
@@ -176,41 +178,41 @@ def get_musician_earnings(
         else set()
     )
 
-    # Auto-heal bookings that already have a final review from the contractor
-    # or both reviews after event start, but remained in in_progress / payment_retained.
-    auto_completed = False
+    # Determinar el estado efectivo sin mutar la base de datos en un GET (BUG-14).
+    # Una reserva se considera cerrada cuando el contratista dejó su reseña Y el músico dejó la suya.
+    effective_status_by_id: dict = {}
     for booking in bookings:
-        if booking.status in {
-            BookingStatus.in_progress,
-            BookingStatus.payment_retained,
-            BookingStatus.payment_released,
-        } and (
-            booking.id in strict_final_review_ids
-            or (
-                booking.id in contractor_review_booking_ids
-                and booking.id in musician_review_booking_ids
-            )
+        if (
+            booking.status
+            in {
+                BookingStatus.in_progress,
+                BookingStatus.payment_retained,
+                BookingStatus.payment_released,
+            }
+            and is_event_finished(booking)
+            and booking.id in contractor_review_booking_ids
+            and booking.id in musician_review_booking_ids
         ):
-            booking.status = BookingStatus.completed
-            auto_completed = True
-    if auto_completed:
-        db.commit()
+            effective_status_by_id[booking.id] = BookingStatus.completed
+        else:
+            effective_status_by_id[booking.id] = booking.status
 
-    total_quoted = 0.0
+    total_quoted = Decimal("0.00")
     bookings_active = 0
     bookings_completed = 0
     bookings_cancelled = 0
 
     for booking in bookings:
-        if booking.status == BookingStatus.cancelled:
+        eff_status = effective_status_by_id[booking.id]
+        if eff_status == BookingStatus.cancelled:
             bookings_cancelled += 1
             continue
-        if booking.status == BookingStatus.completed:
+        if eff_status == BookingStatus.completed:
             bookings_completed += 1
-        elif booking.status not in {BookingStatus.requested}:
+        elif eff_status not in {BookingStatus.requested}:
             bookings_active += 1
         if booking.price_agreed is not None:
-            total_quoted += float(booking.price_agreed)
+            total_quoted += Decimal(str(booking.price_agreed))
 
     payments = (
         db.query(Payment)
@@ -238,12 +240,12 @@ def get_musician_earnings(
     for payment in payments:
         payments_by_booking.setdefault(payment.booking_id, []).append(payment)
 
-    total_released = 0.0
-    total_retained = 0.0
-    total_pending = 0.0
-    total_app_debt = 0.0
-    total_disputed = 0.0
-    total_retained_active = 0.0
+    total_released = Decimal("0.00")
+    total_retained = Decimal("0.00")
+    total_pending = Decimal("0.00")
+    total_app_debt = Decimal("0.00")
+    total_disputed = Decimal("0.00")
+    total_retained_active = Decimal("0.00")
     items: list[MusicianEarningsItem] = []
     debts: list[MusicianDebtItem] = []
 
@@ -251,22 +253,26 @@ def get_musician_earnings(
         booking = booking_by_id.get(payment.booking_id)
         if not booking:
             continue
-        amount = float(
-            musician_portion_of_paid(booking, Decimal(str(payment.amount)))
-        )
+        eff_status = effective_status_by_id[booking.id]
+        amount_dec = musician_portion_of_paid(booking, Decimal(str(payment.amount)))
+        amount = float(amount_dec)
         if payment.status == PaymentStatus.released:
-            total_released += amount
+            total_released += amount_dec
         elif payment.status == PaymentStatus.retained:
-            total_retained += amount
-            is_fully_culminated = (
-                booking.status == BookingStatus.completed
-                and booking.id in contractor_review_booking_ids
-                and booking.id in musician_review_booking_ids
-            )
+            total_retained += amount_dec
+            is_fully_culminated = eff_status == BookingStatus.completed
             if not is_fully_culminated:
-                total_retained_active += amount
+                total_retained_active += amount_dec
         elif payment.status == PaymentStatus.initiated:
-            total_pending += amount
+            is_needs_refund = (
+                isinstance(payment.gateway_metadata, dict)
+                and bool(payment.gateway_metadata.get("needs_refund"))
+            )
+            if (
+                eff_status not in {BookingStatus.cancelled, BookingStatus.completed}
+                and not is_needs_refund
+            ):
+                total_pending += amount_dec
 
         items.append(
             MusicianEarningsItem(
@@ -275,7 +281,7 @@ def get_musician_earnings(
                 event_type=booking.event_type,
                 event_date=booking.event_date,
                 location_city=booking.location_city,
-                booking_status=booking.status.value,
+                booking_status=eff_status.value,
                 amount=amount,
                 currency=payment.currency or "PEN",
                 payment_type=payment.payment_type,
@@ -287,46 +293,43 @@ def get_musician_earnings(
         )
 
     for booking in bookings:
-        if booking.status == BookingStatus.cancelled:
+        eff_status = effective_status_by_id[booking.id]
+        if eff_status == BookingStatus.cancelled:
             continue
         booking_payments = payments_by_booking.get(booking.id, [])
         retained_gross = sum(
-            float(p.amount)
-            for p in booking_payments
-            if p.status == PaymentStatus.retained
+            (Decimal(str(p.amount or 0)) for p in booking_payments if p.status == PaymentStatus.retained),
+            Decimal("0.00"),
         )
         released_gross = sum(
-            float(p.amount)
-            for p in booking_payments
-            if p.status == PaymentStatus.released
+            (Decimal(str(p.amount or 0)) for p in booking_payments if p.status == PaymentStatus.released),
+            Decimal("0.00"),
         )
-        retained = float(
-            musician_portion_of_paid(booking, Decimal(str(retained_gross)))
-        )
-        released = float(
-            musician_portion_of_paid(booking, Decimal(str(released_gross)))
-        )
-        if retained <= 0 and released <= 0 and booking.status != BookingStatus.completed:
+        retained_dec = musician_portion_of_paid(booking, retained_gross)
+        released_dec = musician_portion_of_paid(booking, released_gross)
+        retained = float(retained_dec)
+        released = float(released_dec)
+        if retained <= 0 and released <= 0 and eff_status != BookingStatus.completed:
             continue
 
         complaint = complaint_by_booking.get(booking.id)
-        state = settlement_state_for_booking(booking, complaint, retained, released)
+        state = settlement_state_for_booking(
+            booking,
+            complaint,
+            retained,
+            released,
+            effective_status=eff_status,
+        )
         if state == "none":
             continue
 
         has_contractor_rev = booking.id in contractor_review_booking_ids
         has_musician_rev = booking.id in musician_review_booking_ids
-        has_both_reviews = has_contractor_rev and has_musician_rev
-
-        if state == "payable" and (
-            booking.status != BookingStatus.completed or not has_both_reviews
-        ):
-            state = "awaiting_reviews"
 
         if state == "payable":
-            total_app_debt += retained
+            total_app_debt += retained_dec
         elif state in {"disputed", "awaiting_admin"}:
-            total_disputed += retained
+            total_disputed += retained_dec
 
         debts.append(
             MusicianDebtItem(
@@ -340,7 +343,7 @@ def get_musician_earnings(
                 retained_total=retained,
                 released_total=released,
                 currency="PEN",
-                booking_status=booking.status.value,
+                booking_status=eff_status.value,
                 debt_state=state,
                 has_contractor_review=has_contractor_rev,
                 has_musician_review=has_musician_rev,
@@ -361,7 +364,6 @@ def get_musician_earnings(
 
     pending_payout_out: PayoutRequestOut | None = None
     try:
-        PayoutRequest.__table__.create(bind=db.get_bind(), checkfirst=True)
         pending_req = (
             db.query(PayoutRequest)
             .filter(
@@ -371,30 +373,21 @@ def get_musician_earnings(
             .order_by(PayoutRequest.created_at.desc())
             .first()
         )
-        if pending_req:
-            if total_app_debt <= 0:
-                pending_req.status = "processed"
-                pending_req.processed_at = datetime.utcnow()
-                db.commit()
-            else:
-                if round(float(pending_req.amount), 2) != round(total_app_debt, 2):
-                    pending_req.amount = round(total_app_debt, 2)
-                    db.commit()
-                    db.refresh(pending_req)
-                pending_payout_out = PayoutRequestOut.model_validate(pending_req)
+        if pending_req and total_app_debt > 0:
+            pending_payout_out = PayoutRequestOut.model_validate(pending_req)
     except Exception as exc:
         logger.warning("No se pudo consultar payout_request: %s", exc)
         db.rollback()
 
     return MusicianEarningsSummary(
         currency="PEN",
-        total_quoted=total_quoted,
-        total_released=total_released,
-        total_retained=total_retained,
-        total_pending=total_pending,
-        total_app_debt=total_app_debt,
-        total_disputed=total_disputed,
-        total_retained_active=total_retained_active,
+        total_quoted=float(total_quoted),
+        total_released=float(total_released),
+        total_retained=float(total_retained),
+        total_pending=float(total_pending),
+        total_app_debt=float(total_app_debt),
+        total_disputed=float(total_disputed),
+        total_retained_active=float(total_retained_active),
         bookings_active=bookings_active,
         bookings_completed=bookings_completed,
         bookings_cancelled=bookings_cancelled,
@@ -485,6 +478,29 @@ def retain_payment(
 
     if payment.status != PaymentStatus.initiated:
         raise HTTPException(400, "El pago no está en estado 'initiated'")
+    if isinstance(payment.gateway_metadata, dict) and payment.gateway_metadata.get("needs_refund"):
+        raise HTTPException(400, "No se puede retener un pago marcado para reembolso o revisión")
+    if booking.status in {BookingStatus.cancelled, BookingStatus.completed}:
+        raise HTTPException(400, "No se puede retener el pago de una reserva cerrada o cancelada")
+    if booking.status not in {
+        BookingStatus.accepted,
+        BookingStatus.contract_pending,
+        BookingStatus.contract_signed,
+        BookingStatus.payment_pending,
+    }:
+        raise HTTPException(400, "La reserva no está en un estado que permita retener un pago")
+
+    from app.services.availability_match import assert_no_booking_overlap
+
+    if booking.musician_id and booking.event_date and booking.start_time:
+        assert_no_booking_overlap(
+            db,
+            booking.musician_id,
+            booking.event_date,
+            booking.start_time,
+            end_time=booking.end_time,
+            exclude_booking_id=booking.id,
+        )
 
     payment.status = PaymentStatus.retained
     payment.retained_at = datetime.utcnow()
@@ -508,10 +524,13 @@ def release_payment(
 
     if payment.status != PaymentStatus.retained:
         raise HTTPException(400, "El pago debe estar retenido antes de liberarse")
+    if booking.status == BookingStatus.cancelled:
+        raise HTTPException(400, "Usa el flujo de liquidación para liberar pagos de reservas canceladas")
 
     payment.status = PaymentStatus.released
     payment.released_at = datetime.utcnow()
-    booking.status = BookingStatus.payment_released
+    if booking.status != BookingStatus.completed:
+        booking.status = BookingStatus.payment_released
 
     musician = (
         db.query(MusicianProfile)
@@ -543,10 +562,33 @@ def _server_amount(db: Session, booking: Booking, payment_type: str, client_amou
         raise HTTPException(400, "Tipo de pago no soportado")
     if booking.status not in allowed:
         raise HTTPException(400, "La reserva no está en un estado que permita este pago")
+    from app.services.booking_lifecycle import is_event_started
+    if is_event_started(booking):
+        raise HTTPException(400, "No se puede procesar el pago porque la fecha u hora del evento ya pasó.")
+    from app.services.availability_match import assert_no_booking_overlap
+
+    assert_no_booking_overlap(
+        db,
+        booking.musician_id,
+        booking.event_date,
+        booking.start_time,
+        end_time=booking.end_time,
+        exclude_booking_id=booking.id,
+    )
     try:
         expected = mercadopago_service.expected_payment_amount(db, booking, payment_type)
     except ValueError as exc:
-        raise HTTPException(400, detail=str(exc)) from exc
+        logger.warning("Error procesando pago directo de Mercado Pago para reserva %s: %s", booking.id, exc)
+        msg = str(exc)
+        safe_detail = (
+            msg
+            if any(
+                token in msg.lower()
+                for token in ("teléfono", "otp", "token", "monto", "moneda", "no está configurad")
+            )
+            else "No se pudo procesar el pago con la pasarela. Verifica los datos ingresados e inténtalo nuevamente."
+        )
+        raise HTTPException(400, detail=safe_detail) from exc
     if expected <= 0:
         raise HTTPException(400, "El monto a pagar debe ser mayor a cero")
     if client_amount and abs(Decimal(str(client_amount)) - expected) > mercadopago_service.AMOUNT_TOLERANCE:
@@ -562,8 +604,10 @@ def get_mercadopago_public_key():
 
 
 @router.post("/mercadopago/preference", response_model=MercadoPagoPreferenceResponse)
+@limiter.limit(settings.RATE_LIMIT_PAYMENT)
 def create_mercadopago_preference(
     payload: MercadoPagoPreferenceRequest,
+    request: Request,
     current_user: User = Depends(deps.get_current_user),
     db: Session = Depends(deps.get_db),
 ):
@@ -572,8 +616,38 @@ def create_mercadopago_preference(
     Cobro único del 100 % de la reserva.
     Si se incluye signature_image_url, valida y registra la firma del contrato.
     """
-    booking = get_booking_or_404(db, payload.booking_id)
+    booking_id = parse_uuid(payload.booking_id, "booking_id")
+    booking = db.get(Booking, booking_id, with_for_update=True)
+    if not booking:
+        raise HTTPException(404, detail="Reserva no encontrada")
     assert_booking_contractor_owner(db, booking, current_user)
+
+    in_flight_candidates = (
+        db.query(Payment)
+        .filter(
+            Payment.booking_id == booking.id,
+            Payment.payment_type.is_distinct_from("refund"),
+            Payment.status == PaymentStatus.initiated,
+            Payment.gateway_payment_id.isnot(None),
+        )
+        .all()
+    )
+    existing_in_flight = next(
+        (
+            p
+            for p in in_flight_candidates
+            if not (isinstance(p.gateway_metadata, dict) and p.gateway_metadata.get("needs_refund"))
+        ),
+        None,
+    )
+    if existing_in_flight:
+        raise HTTPException(
+            409,
+            detail="Ya hay un pago en proceso para esta reserva. Espera la confirmación antes de volver a intentar.",
+        )
+
+    # Validar el monto y el estado ANTES de mutar/firmar el contrato (BUG-17)
+    total_amount = _server_amount(db, booking, payload.payment_type, payload.amount)
 
     # Si se envía firma del contrato durante la confirmación inicial
     if payload.signature_image_url and booking.status in (
@@ -597,17 +671,32 @@ def create_mercadopago_preference(
         else:
             assert_private_upload_owned(db, sig_url, current_user.id, "archivo de firma")
         from app.api.v1.endpoints.contracts import _ensure_booking_contract
+        from app.services.contract_pdf import compute_contract_body_sha256
 
         contract = _ensure_booking_contract(db, booking)
         if contract:
+            current_sha = compute_contract_body_sha256(contract.title, contract.body)
+            if (
+                payload.contract_body_sha256
+                and payload.contract_body_sha256.strip()
+                and payload.contract_body_sha256.strip() != current_sha
+            ):
+                raise HTTPException(
+                    409,
+                    detail="El contenido del contrato cambió desde que lo abriste. Recarga la página antes de firmar.",
+                )
             now = datetime.utcnow()
+            real_ip = get_client_ip(request) or payload.sign_ip or "client"
             contract.terms_accepted = True
             contract.terms_accepted_at = now
-            contract.terms_accepted_ip = payload.sign_ip or "client"
+            contract.terms_accepted_ip = real_ip
             contract.contractor_signed = True
             contract.contractor_sign_timestamp = now
-            contract.contractor_sign_ip = payload.sign_ip or "client"
+            contract.contractor_sign_ip = real_ip
             contract.contractor_signature_url = sig_url
+            ctx = dict(contract.context or {})
+            ctx["__signed_body_sha256__"] = current_sha
+            contract.context = ctx
 
             musician = db.query(MusicianProfile).filter(
                 MusicianProfile.id == booking.musician_id
@@ -620,7 +709,12 @@ def create_mercadopago_preference(
 
             db.commit()
 
-    total_amount = _server_amount(db, booking, payload.payment_type, payload.amount)
+    if booking.status not in (BookingStatus.contract_signed, BookingStatus.payment_pending):
+        from app.models.contract import Contract
+
+        contract = db.query(Contract).filter(Contract.booking_id == booking.id).first()
+        if not contract or not contract.contractor_signed:
+            raise HTTPException(400, "Debes firmar el contrato antes de realizar el pago")
 
     try:
         pref = mercadopago_service.create_preference(
@@ -633,12 +727,18 @@ def create_mercadopago_preference(
         )
         return MercadoPagoPreferenceResponse(**pref)
     except ValueError as exc:
-        raise HTTPException(400, detail=str(exc)) from exc
+        logger.warning("Error creando preferencia de Mercado Pago para reserva %s: %s", booking.id, exc)
+        raise HTTPException(
+            400,
+            detail="No se pudo generar la preferencia de pago en este momento. Verifica los datos e inténtalo nuevamente.",
+        ) from exc
 
 
 @router.post("/mercadopago/process", response_model=MercadoPagoProcessPaymentResponse)
+@limiter.limit(settings.RATE_LIMIT_PAYMENT)
 def process_mercadopago_direct_payment(
     payload: MercadoPagoProcessPaymentRequest,
+    request: Request,
     current_user: User = Depends(deps.get_current_user),
     db: Session = Depends(deps.get_db),
 ):
@@ -646,8 +746,38 @@ def process_mercadopago_direct_payment(
     Procesa un pago directo usando el Checkout API de Mercado Pago (Yape nativo o Tarjeta vía Bricks/SDK).
     Ejecuta el cargo en tiempo real contra /v1/payments y confirma la reserva si es aprobado.
     """
-    booking = get_booking_or_404(db, payload.booking_id)
+    booking_id = parse_uuid(payload.booking_id, "booking_id")
+    booking = db.get(Booking, booking_id, with_for_update=True)
+    if not booking:
+        raise HTTPException(404, detail="Reserva no encontrada")
     assert_booking_contractor_owner(db, booking, current_user)
+
+    in_flight_candidates = (
+        db.query(Payment)
+        .filter(
+            Payment.booking_id == booking.id,
+            Payment.payment_type.is_distinct_from("refund"),
+            Payment.status == PaymentStatus.initiated,
+            Payment.gateway_payment_id.isnot(None),
+        )
+        .all()
+    )
+    existing_in_flight = next(
+        (
+            p
+            for p in in_flight_candidates
+            if not (isinstance(p.gateway_metadata, dict) and p.gateway_metadata.get("needs_refund"))
+        ),
+        None,
+    )
+    if existing_in_flight:
+        raise HTTPException(
+            409,
+            detail="Ya hay un pago en proceso para esta reserva. Espera la confirmación antes de volver a intentar.",
+        )
+
+    # Validar el monto y el estado ANTES de mutar/firmar el contrato (BUG-17)
+    total_amount = _server_amount(db, booking, payload.payment_type, payload.amount)
 
     # Si se envía firma del contrato durante la confirmación inicial
     if payload.signature_image_url and booking.status in (
@@ -671,17 +801,32 @@ def process_mercadopago_direct_payment(
         else:
             assert_private_upload_owned(db, sig_url, current_user.id, "archivo de firma")
         from app.api.v1.endpoints.contracts import _ensure_booking_contract
+        from app.services.contract_pdf import compute_contract_body_sha256
 
         contract = _ensure_booking_contract(db, booking)
         if contract:
+            current_sha = compute_contract_body_sha256(contract.title, contract.body)
+            if (
+                payload.contract_body_sha256
+                and payload.contract_body_sha256.strip()
+                and payload.contract_body_sha256.strip() != current_sha
+            ):
+                raise HTTPException(
+                    409,
+                    detail="El contenido del contrato cambió desde que lo abriste. Recarga la página antes de firmar.",
+                )
             now = datetime.utcnow()
+            real_ip = get_client_ip(request) or payload.sign_ip or "client"
             contract.terms_accepted = True
             contract.terms_accepted_at = now
-            contract.terms_accepted_ip = payload.sign_ip or "client"
+            contract.terms_accepted_ip = real_ip
             contract.contractor_signed = True
             contract.contractor_sign_timestamp = now
-            contract.contractor_sign_ip = payload.sign_ip or "client"
+            contract.contractor_sign_ip = real_ip
             contract.contractor_signature_url = sig_url
+            ctx = dict(contract.context or {})
+            ctx["__signed_body_sha256__"] = current_sha
+            contract.context = ctx
 
             musician = db.query(MusicianProfile).filter(
                 MusicianProfile.id == booking.musician_id
@@ -694,7 +839,12 @@ def process_mercadopago_direct_payment(
 
             db.commit()
 
-    total_amount = _server_amount(db, booking, payload.payment_type, payload.amount)
+    if booking.status not in (BookingStatus.contract_signed, BookingStatus.payment_pending):
+        from app.models.contract import Contract
+
+        contract = db.query(Contract).filter(Contract.booking_id == booking.id).first()
+        if not contract or not contract.contractor_signed:
+            raise HTTPException(400, "Debes firmar el contrato antes de realizar el pago")
 
     payment_data = payload.model_dump()
     payment_data["amount"] = total_amount
@@ -714,7 +864,17 @@ def process_mercadopago_direct_payment(
             message=res.get("message", "Operación procesada"),
         )
     except ValueError as exc:
-        raise HTTPException(400, detail=str(exc)) from exc
+        logger.warning("Error procesando pago directo de Mercado Pago para reserva %s: %s", booking.id, exc)
+        msg = str(exc)
+        safe_detail = (
+            msg
+            if any(
+                token in msg.lower()
+                for token in ("teléfono", "otp", "token", "monto", "moneda", "no está configurad")
+            )
+            else "No se pudo procesar el pago con la pasarela. Verifica los datos ingresados e inténtalo nuevamente."
+        )
+        raise HTTPException(400, detail=safe_detail) from exc
 
 
 @router.post("/mercadopago/webhook")
@@ -743,20 +903,19 @@ async def mercadopago_webhook(
     if not topic:
         topic = body_data.get("type") or body_data.get("action")
 
-    # Validación de firma criptográfica HMAC-SHA256 si hay secreto configurado
-    x_signature = request.headers.get("x-signature")
-    x_request_id = request.headers.get("x-request-id")
-    if settings.MERCADO_PAGO_WEBHOOK_SECRET and data_id:
-        if not mercadopago_service.verify_webhook_signature(
-            x_signature=x_signature,
-            x_request_id=x_request_id,
-            data_id=str(data_id),
-        ):
-            logger.warning("Firma inválida o ausente en webhook de Mercado Pago (id: %s)", data_id)
-            return {"status": "ignored", "reason": "invalid_signature"}
-
     if not data_id:
         return {"status": "ignored", "reason": "no_data_id"}
+
+    # Validación de firma criptográfica HMAC-SHA256 siempre (en producción rechaza si falta secreto)
+    x_signature = request.headers.get("x-signature")
+    x_request_id = request.headers.get("x-request-id")
+    if not mercadopago_service.verify_webhook_signature(
+        x_signature=x_signature,
+        x_request_id=x_request_id,
+        data_id=str(data_id),
+    ):
+        logger.warning("Firma inválida o ausente en webhook de Mercado Pago (id: %s)", data_id)
+        return {"status": "ignored", "reason": "invalid_signature"}
 
     # Manejo de notificaciones de merchant_order
     if topic in ("merchant_order", "merchant_orders"):
@@ -774,7 +933,7 @@ async def mercadopago_webhook(
             return {"status": "ok", "merchant_order_id": str(data_id), "payments_processed": processed_count}
         except Exception as exc:
             logger.error("Error al procesar merchant_order %s: %s", data_id, exc)
-            return {"status": "error_logged", "order_id": str(data_id), "detail": str(exc)}
+            raise HTTPException(500, detail="Error procesando notificación de orden") from exc
 
     # Notificaciones estándar de pago (topic == "payment" o action "payment.*")
     payment_id = str(data_id)
@@ -784,9 +943,8 @@ async def mercadopago_webhook(
             mercadopago_service.process_approved_mercadopago_payment(db, payment_details)
             return {"status": "ok", "payment_id": payment_id, "mp_status": payment_details.get("status")}
     except Exception as exc:
-        # Retornamos 200 para evitar que Mercado Pago reintente indefinidamente en caso de pagos no encontrados
         logger.error("Error en webhook de Mercado Pago para pago %s: %s", payment_id, exc)
-        return {"status": "error_logged", "payment_id": payment_id, "detail": str(exc)}
+        raise HTTPException(500, detail="Error procesando notificación de pago") from exc
 
     return {"status": "ok", "payment_id": payment_id}
 
@@ -820,12 +978,20 @@ def check_mercadopago_payment_status(
 
     mp_status: str | None = None
     if effective_payment_id:
+        effective_payment_id = str(effective_payment_id).strip()
+        if not re.fullmatch(r"\d{1,20}", effective_payment_id):
+            raise HTTPException(400, "Identificador de pago inválido.")
         try:
             details = mercadopago_service.get_payment_details(effective_payment_id)
             if details:
+                ext_ref = (details.get("metadata") or {}).get("booking_id") or details.get("external_reference")
+                if ext_ref and str(ext_ref) != str(booking.id):
+                    raise HTTPException(400, "El pago indicado no corresponde a esta reserva.")
                 mp_status = details.get("status")
                 mercadopago_service.process_approved_mercadopago_payment(db, details)
                 db.refresh(booking)
+        except HTTPException:
+            raise
         except Exception as exc:
             logger.warning("No se pudo sincronizar pago %s: %s", effective_payment_id, exc)
 
@@ -868,7 +1034,16 @@ def request_payout(
     if current_user.role != UserRole.musician:
         raise HTTPException(403, "Solo los músicos pueden solicitar retiro")
 
-    PayoutRequest.__table__.create(bind=db.get_bind(), checkfirst=True)
+    musician = (
+        db.query(MusicianProfile)
+        .filter(MusicianProfile.user_id == current_user.id)
+        .with_for_update()
+        .first()
+    )
+    if not musician:
+        raise HTTPException(400, "Completa tu perfil de músico primero")
+    if not current_user.is_verified:
+        raise HTTPException(403, "Tu perfil de músico debe estar verificado para solicitar retiros")
 
     summary = get_musician_earnings(current_user=current_user, db=db)
 
@@ -877,11 +1052,13 @@ def request_payout(
         for d in summary.debts
         if d.debt_state == "payable"
         and d.booking_status == BookingStatus.completed.value
-        and d.has_contractor_review
-        and d.has_musician_review
         and d.retained_total > 0
     ]
-    amount = round(sum(d.retained_total for d in eligible_debts), 2)
+    amount_dec = sum(
+        (Decimal(str(d.retained_total)) for d in eligible_debts),
+        Decimal("0.00"),
+    ).quantize(Decimal("0.01"))
+    amount = float(amount_dec)
 
     if amount <= 0 or not eligible_debts:
         awaiting_reviews = [
@@ -897,7 +1074,29 @@ def request_payout(
             "No tienes saldo disponible para retirar. Solo se pueden desembolsar reservas culminadas donde tanto el contratista como tú hayan dejado su reseña.",
         )
 
-    musician = get_musician_profile_or_400(db, current_user, require_verified=True)
+    # Persistir el paso a 'completed' de las reservas elegibles que ya cuentan con ambas reseñas (SEC2-05)
+    eligible_ids = [d.booking_id for d in eligible_debts]
+    if eligible_ids:
+        from app.services.booking_share import disable_booking_share
+
+        bookings_to_promote = (
+            db.query(Booking)
+            .filter(
+                Booking.id.in_(eligible_ids),
+                Booking.status.in_(
+                    [
+                        BookingStatus.in_progress,
+                        BookingStatus.payment_retained,
+                        BookingStatus.payment_released,
+                    ]
+                ),
+            )
+            .all()
+        )
+        for b_row in bookings_to_promote:
+            b_row.status = BookingStatus.completed
+            disable_booking_share(b_row)
+
     booking_ids_str = ", ".join(str(d.booking_id) for d in eligible_debts)
     notes_text = f"Reservas culminadas con ambas reseñas: {booking_ids_str}"
 
@@ -908,22 +1107,36 @@ def request_payout(
             PayoutRequest.status == "pending",
         )
         .order_by(PayoutRequest.created_at.desc())
+        .with_for_update()
         .first()
     )
     if existing_request:
         existing_request.amount = amount
         existing_request.notes = notes_text
-        db.commit()
-        db.refresh(existing_request)
-        return existing_request
+        payout_request = existing_request
+    else:
+        payout_request = PayoutRequest(
+            musician_id=musician.id,
+            amount=amount,
+            status="pending",
+            notes=notes_text,
+        )
+        db.add(payout_request)
 
-    payout_request = PayoutRequest(
-        musician_id=musician.id,
-        amount=amount,
-        status="pending",
-        notes=notes_text,
-    )
-    db.add(payout_request)
+    try:
+        notify_admins(
+            db,
+            type="payout_requested",
+            title="Nueva solicitud de retiro de músico",
+            message=(
+                f"{musician.stage_name or current_user.fullname or 'Un músico'} solicitó un retiro "
+                f"por S/ {amount:.2f} ({len(eligible_debts)} reserva(s) culminadas)."
+            ),
+            meta={"musician_id": str(musician.id), "amount": amount},
+        )
+    except Exception as exc:
+        logger.warning("No se pudo notificar a los administradores sobre solicitud de retiro: %s", exc)
+
     db.commit()
     db.refresh(payout_request)
     return payout_request

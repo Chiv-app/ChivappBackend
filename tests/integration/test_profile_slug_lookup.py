@@ -17,7 +17,7 @@ def _register_and_login(client, fullname: str, email: str, username: str | None 
             "accepted_terms": True,
         },
     )
-    client.post("/api/v1/auth/login", json={"email": email, "password": "SuperSecreta123!"})
+    return resp
     return resp
 
 

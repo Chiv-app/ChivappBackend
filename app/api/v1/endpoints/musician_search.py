@@ -16,6 +16,10 @@ from app.services.profile_visibility import is_musician_listed_publicly
 router = APIRouter(prefix="/musicians", tags=["Musician Search"])
 
 
+def _escape_like(val: str) -> str:
+    return val.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 @router.post("/search", response_model=list[MusicianSearchResult])
 def search_musicians(
     filters: MusicianSearchFilters,
@@ -35,16 +39,23 @@ def search_musicians(
     )
 
     if filters.city:
-        query = query.filter(MusicianProfile.location_city.ilike(f"%{filters.city}%"))
+        escaped_city = _escape_like(filters.city.strip())
+        query = query.filter(MusicianProfile.location_city.ilike(f"%{escaped_city}%", escape="\\"))
 
     if filters.genres:
         from sqlalchemy import or_, func
-        conditions = [func.array_to_string(MusicianProfile.genres, ',').ilike(f"%{g}%") for g in filters.genres]
+        conditions = [
+            func.array_to_string(MusicianProfile.genres, ',').ilike(f"%{_escape_like(g.strip())}%", escape="\\")
+            for g in filters.genres
+        ]
         query = query.filter(or_(*conditions))
 
     if filters.instruments:
         from sqlalchemy import or_, func
-        conditions = [func.array_to_string(MusicianProfile.instruments, ',').ilike(f"%{i}%") for i in filters.instruments]
+        conditions = [
+            func.array_to_string(MusicianProfile.instruments, ',').ilike(f"%{_escape_like(i.strip())}%", escape="\\")
+            for i in filters.instruments
+        ]
         query = query.filter(or_(*conditions))
 
     if filters.min_price_per_event is not None:

@@ -87,6 +87,7 @@ ACTION_RULES: Dict[BookingAction, TransitionRule] = {
             BookingStatus.payment_pending,
             BookingStatus.payment_retained,
             BookingStatus.change_pending,
+            BookingStatus.in_progress,
             BookingStatus.balance_pending,
             BookingStatus.balance_review,
         ],

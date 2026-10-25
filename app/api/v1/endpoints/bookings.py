@@ -1,5 +1,6 @@
 import logging
 from datetime import date, datetime
+from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 def get_lima_today() -> date:
@@ -10,6 +11,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session, joinedload
 
 from app.api import deps
+from app.core.config import settings
+from app.schemas.booking_link import CancellationPolicyPublicOut
+from app.services.booking_lifecycle import is_pre_event
 from app.api.booking_helpers import (
     assert_booking_contractor_owner,
     assert_booking_musician_owner,
@@ -30,10 +34,12 @@ from app.services.booking_state_machine import assert_can_execute_action, Bookin
 from app.models.booking import Booking, BookingStatus
 from app.services.platform_payment import sync_booking_platform_fee
 from app.models.contract import Contract
+from app.models.contractor_profile import ContractorProfile
 from app.models.musician_profile import MusicianProfile
 from app.models.payment import Payment, PaymentStatus
 from app.models.profile_status import ProfileStatus
 from app.schemas.booking import (
+    BookingAcceptQuote,
     BookingCreate,
     BookingOut,
     BookingQuote,
@@ -48,11 +54,13 @@ from app.schemas.booking import (
 from app.services.cancellation_policy import (
     CANCELLABLE_STATUSES,
     REFUND_PENDING_APPROVAL,
+    RETAINED_STATUSES,
     quote_cancellation,
     record_cancellation,
 )
 from app.services.availability_match import assert_musician_available
 from app.services.booking_contract import create_booking_contract
+from app.services.contract_pdf import compute_contract_body_sha256
 from app.services.payment_evidence import (
     apply_evidence_urls,
     assert_evidence_uploads,
@@ -107,6 +115,16 @@ def _load_contractor_user(db: Session, contractor_id) -> User:
     return user
 
 
+@router.get("/cancellation-policy", response_model=CancellationPolicyPublicOut)
+def get_public_cancellation_policy():
+    """Single source of truth for the platform cancellation policy (FE4-04 / BUG4-06)."""
+    return CancellationPolicyPublicOut(
+        full_refund_min_days=int(settings.CANCEL_FULL_REFUND_MIN_DAYS),
+        partial_refund_min_days=int(settings.CANCEL_PARTIAL_REFUND_MIN_DAYS),
+        partial_refund_percent=int(settings.CANCEL_PARTIAL_REFUND_PERCENT),
+    )
+
+
 @router.post("", response_model=BookingOut, status_code=201)
 @router.post("/", response_model=BookingOut, status_code=201, include_in_schema=False)
 def create_booking(
@@ -143,12 +161,18 @@ def create_booking(
 
     if payload.event_date < get_lima_today():
         raise HTTPException(400, "La fecha del evento no puede ser anterior a hoy")
+    if (
+        payload.event_date == get_lima_today()
+        and payload.start_time < datetime.now(ZoneInfo("America/Lima")).time()
+    ):
+        raise HTTPException(400, "La hora del evento ya pasó")
 
     assert_musician_available(
         db,
         musician.id,
         payload.event_date,
         payload.start_time,
+        end_time=payload.end_time,
     )
 
     booking = Booking(
@@ -216,6 +240,50 @@ def create_booking_as_musician(
     return booking
 
 
+def _preview_requested_fee_percent(db: Session) -> Decimal:
+    from app.models.platform_payment import PlatformPaymentSettings
+
+    row = db.query(PlatformPaymentSettings.platform_fee_percent).first()
+    if row and row[0] is not None:
+        return Decimal(str(row[0]))
+    return Decimal("2")
+
+
+def _serialize_booking_clean(
+    db: Session,
+    booking: Booking,
+    *,
+    viewer_role: str = "owner",
+    member_invite_status: str | None = None,
+    requested_fee_percent: Decimal | None = None,
+) -> BookingOut:
+    out = serialize_booking_out(
+        booking,
+        viewer_role=viewer_role,
+        member_invite_status=member_invite_status,
+    )
+    is_requested = getattr(booking, "status", None) == BookingStatus.requested
+    if is_requested or out.platform_fee_percent is None:
+        pct = (
+            Decimal(str(booking.platform_fee_percent))
+            if booking.platform_fee_percent is not None
+            else (
+                requested_fee_percent
+                if requested_fee_percent is not None
+                else _preview_requested_fee_percent(db)
+            )
+        )
+        amt = out.platform_fee_amount
+        if is_requested or booking.price_agreed is None:
+            amt = None
+        elif amt is None:
+            from app.services.platform_payment import compute_platform_fee_amount
+
+            amt = compute_platform_fee_amount(Decimal(str(booking.price_agreed)), pct)
+        out = out.model_copy(update={"platform_fee_percent": pct, "platform_fee_amount": amt})
+    return out
+
+
 @router.get("", response_model=list[BookingOut])
 @router.get("/", response_model=list[BookingOut], include_in_schema=False)
 def list_bookings(
@@ -231,11 +299,20 @@ def list_bookings(
             .order_by(Booking.created_at.desc())
             .all()
         )
-        for b in bookings:
-            if getattr(b, "status", None) == BookingStatus.requested:
-                sync_booking_platform_fee(db, b, use_current_settings=True)
+        fee_pct = (
+            _preview_requested_fee_percent(db)
+            if any(
+                getattr(b, "status", None) == BookingStatus.requested
+                or b.platform_fee_percent is None
+                for b in bookings
+            )
+            else None
+        )
         return [
-            serialize_booking_out(b, viewer_role="owner") for b in bookings
+            _serialize_booking_clean(
+                db, b, viewer_role="owner", requested_fee_percent=fee_pct
+            )
+            for b in bookings
         ]
 
     if current_user.role == UserRole.musician:
@@ -259,11 +336,20 @@ def list_bookings(
                 .all()
             )
 
-        for b in owned:
-            if getattr(b, "status", None) == BookingStatus.requested:
-                sync_booking_platform_fee(db, b, use_current_settings=True)
+        fee_pct = (
+            _preview_requested_fee_percent(db)
+            if any(
+                getattr(b, "status", None) == BookingStatus.requested
+                or b.platform_fee_percent is None
+                for b in owned
+            )
+            else None
+        )
         results = [
-            serialize_booking_out(b, viewer_role="owner") for b in owned
+            _serialize_booking_clean(
+                db, b, viewer_role="owner", requested_fee_percent=fee_pct
+            )
+            for b in owned
         ] + [
             serialize_booking_out(
                 b,
@@ -293,9 +379,8 @@ def get_booking(
         if viewer_role == "member"
         else None
     )
-    if getattr(booking, "status", None) == BookingStatus.requested:
-        sync_booking_platform_fee(db, booking, use_current_settings=True)
-    return serialize_booking_out(
+    return _serialize_booking_clean(
+        db,
         booking,
         viewer_role=viewer_role,
         member_invite_status=invite_status,
@@ -314,12 +399,35 @@ def update_booking(
 
     assert_can_execute_action(booking, BookingAction.UPDATE_REQUEST, current_user)
 
-    update_data = payload.model_dump(exclude_unset=True)
+    update_data = {
+        k: v
+        for k, v in payload.model_dump(exclude_unset=True).items()
+        if v is not None or k in ("end_time", "location_reference", "event_description")
+    }
     if "event_date" in update_data and update_data["event_date"] < get_lima_today():
         raise HTTPException(400, "La fecha del evento no puede ser anterior a hoy")
 
     for field, value in update_data.items():
         setattr(booking, field, value)
+
+    if booking.end_time is not None and booking.end_time == booking.start_time:
+        raise HTTPException(400, "La hora de fin no puede ser igual a la hora de inicio")
+    if (
+        any(k in update_data for k in ("event_date", "start_time"))
+        and booking.event_date == get_lima_today()
+        and booking.start_time < datetime.now(ZoneInfo("America/Lima")).time()
+    ):
+        raise HTTPException(400, "La hora del evento ya pasó")
+
+    if any(k in update_data for k in ("event_date", "start_time", "end_time")):
+        assert_musician_available(
+            db,
+            booking.musician_id,
+            booking.event_date,
+            booking.start_time,
+            end_time=booking.end_time,
+            exclude_booking_id=booking.id,
+        )
 
     musician = (
         db.query(MusicianProfile)
@@ -352,6 +460,12 @@ def reject_booking(
     booking.cancelled_by = "musician"
     booking.rejection_reason = payload.rejection_reason or "Solicitud rechazada por el músico"
 
+    from app.models.booking_link import BookingLink, BookingLinkStatus
+
+    for bl in db.query(BookingLink).filter(BookingLink.booking_id == booking.id).all():
+        if bl.status != BookingLinkStatus.completed:
+            bl.status = BookingLinkStatus.expired
+
     contractor_user = _load_contractor_user(db, booking.contractor_id)
     notify_booking_rejected(
         db,
@@ -377,7 +491,22 @@ def quote_booking(
 
     assert_can_execute_action(booking, BookingAction.QUOTE, current_user)
 
+    assert_musician_available(
+        db,
+        booking.musician_id,
+        booking.event_date,
+        booking.start_time,
+        end_time=booking.end_time,
+        exclude_booking_id=booking.id,
+    )
+
     is_update = booking.status == BookingStatus.accepted
+
+    if not (musician.signature_image_url or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Debes registrar tu firma digital antes de enviar una cotización",
+        )
 
     if not musician.contract_template_body or len(musician.contract_template_body.strip()) < 50:
         from app.services.contract_pdf import (
@@ -405,7 +534,33 @@ def quote_booking(
     if payload.location_reference:
         booking.location_reference = payload.location_reference
 
+    existing_contract = (
+        db.query(Contract).filter(Contract.booking_id == booking.id).first()
+    )
+    if existing_contract and not existing_contract.contractor_signed:
+        db.delete(existing_contract)
+        db.flush()
+
     contractor_user = _load_contractor_user(db, booking.contractor_id)
+    musician_user = _load_musician_user(db, musician)
+    contractor_profile = (
+        db.query(ContractorProfile)
+        .filter(ContractorProfile.id == booking.contractor_id)
+        .first()
+    )
+    if musician_user and contractor_profile and contractor_user:
+        try:
+            create_booking_contract(
+                db,
+                booking,
+                musician=musician,
+                musician_user=musician_user,
+                contractor=contractor_profile,
+                contractor_user=contractor_user,
+            )
+            booking.status = BookingStatus.accepted
+        except ValueError:
+            booking.status = BookingStatus.accepted
     if is_update:
         notify_booking_quote_updated(db, contractor_user, str(booking.id))
     else:
@@ -432,6 +587,12 @@ def reject_quote(
     booking.cancelled_by = "contractor"
     booking.rejection_reason = payload.rejection_reason or "Cotización rechazada por el contratista"
 
+    from app.models.booking_link import BookingLink, BookingLinkStatus
+
+    for bl in db.query(BookingLink).filter(BookingLink.booking_id == booking.id).all():
+        if bl.status != BookingLinkStatus.completed:
+            bl.status = BookingLinkStatus.expired
+
     musician = db.query(MusicianProfile).filter(
         MusicianProfile.id == booking.musician_id
     ).first()
@@ -453,6 +614,7 @@ def reject_quote(
 @router.post("/{booking_id}/accept-quote", response_model=BookingOut)
 def accept_quote(
     booking_id: str,
+    payload: BookingAcceptQuote | None = None,
     current_user: User = Depends(deps.get_current_user),
     db: Session = Depends(deps.get_db),
 ):
@@ -460,6 +622,20 @@ def accept_quote(
     contractor = assert_booking_contractor_owner(db, booking, current_user)
 
     assert_can_execute_action(booking, BookingAction.ACCEPT_QUOTE, current_user)
+    if not is_pre_event(booking):
+        raise HTTPException(
+            status_code=400,
+            detail="No puedes aceptar la cotización porque la fecha u hora del evento ya pasó.",
+        )
+
+    assert_musician_available(
+        db,
+        booking.musician_id,
+        booking.event_date,
+        booking.start_time,
+        end_time=booking.end_time,
+        exclude_booking_id=booking.id,
+    )
 
     musician = db.query(MusicianProfile).filter(
         MusicianProfile.id == booking.musician_id
@@ -467,11 +643,17 @@ def accept_quote(
     if not musician:
         raise HTTPException(404, "Músico no encontrado")
 
+    if not (musician.signature_image_url or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail="El músico aún no ha registrado su firma digital para el contrato",
+        )
+
     musician_user = _load_musician_user(db, musician)
     contractor_user = current_user
 
     try:
-        create_booking_contract(
+        contract = create_booking_contract(
             db,
             booking,
             musician,
@@ -481,6 +663,19 @@ def accept_quote(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    expected_hash = compute_contract_body_sha256(contract.title, contract.body)
+    if payload and payload.contract_body_sha256:
+        if payload.contract_body_sha256.strip().lower() != expected_hash.lower():
+            db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="El contenido del contrato cambió desde que lo leíste. Recarga la página antes de aceptar.",
+            )
+    contract.context = {
+        **(contract.context or {}),
+        "__signed_body_sha256__": expected_hash,
+    }
 
     notify_booking_quote_accepted(db, musician_user, str(booking.id))
 
@@ -585,10 +780,24 @@ def reopen_quote(
 
     assert_can_execute_action(booking, BookingAction.REOPEN_QUOTE, current_user)
 
-    data = payload.model_dump(exclude_unset=True)
+    data = {
+        k: v
+        for k, v in payload.model_dump(exclude_unset=True).items()
+        if v is not None or k in ("end_time", "location_reference", "event_description", "requested_repertoire")
+    }
     repertoire = data.pop("requested_repertoire", None)
     for field, value in data.items():
         setattr(booking, field, value)
+
+    if booking.event_date < get_lima_today():
+        raise HTTPException(400, "La fecha del evento no puede ser anterior a hoy")
+    if booking.end_time is not None and booking.end_time == booking.start_time:
+        raise HTTPException(400, "La hora de fin no puede ser igual a la hora de inicio")
+    if (
+        booking.event_date == get_lima_today()
+        and booking.start_time < datetime.now(ZoneInfo("America/Lima")).time()
+    ):
+        raise HTTPException(400, "La hora del evento ya pasó")
 
     musician = (
         db.query(MusicianProfile)
@@ -603,6 +812,8 @@ def reopen_quote(
         booking.musician_id,
         booking.event_date,
         booking.start_time,
+        end_time=booking.end_time,
+        exclude_booking_id=booking.id,
     )
 
     contract = db.query(Contract).filter(Contract.booking_id == booking.id).first()
@@ -670,6 +881,12 @@ def cancel_booking(
     db.refresh(booking, with_for_update=True)
     if booking.status not in CANCELLABLE_STATUSES:
         raise HTTPException(400, "No se puede cancelar en este estado")
+    from app.services.booking_lifecycle import is_event_started
+    if booking.status in RETAINED_STATUSES and is_event_started(booking):
+        raise HTTPException(
+            400,
+            "No se puede cancelar una reserva cuyo evento ya inició. Si hubo un inconveniente, registra una queja al finalizar.",
+        )
 
     cancelled_by = "musician" if current_user.role == UserRole.musician else "contractor"
     quote = quote_cancellation(db, booking, cancelled_by)
@@ -681,8 +898,12 @@ def cancel_booking(
     _remove_calendar_event(booking)
 
     from app.services.booking_share import disable_booking_share
+    from app.models.booking_link import BookingLink, BookingLinkStatus
 
     disable_booking_share(booking)
+    for bl in db.query(BookingLink).filter(BookingLink.booking_id == booking.id).all():
+        if bl.status != BookingLinkStatus.completed:
+            bl.status = BookingLinkStatus.expired
 
     other_user = None
     if cancelled_by == "musician":
@@ -724,10 +945,11 @@ def cancel_booking(
 def _remove_calendar_event(booking: Booking) -> None:
     if not booking.calendar_event_id:
         return
-    from app.services.calendar_service import cancel_booking_event
+    from sqlalchemy.orm import object_session
+    from app.services.calendar_service import cancel_booking_calendar_event
 
     try:
-        cancel_booking_event(booking.calendar_event_id)
+        cancel_booking_calendar_event(object_session(booking), booking)
     except Exception:  # noqa: BLE001 - no bloquear la cancelación por Calendar
         logging.getLogger(__name__).exception("No se pudo borrar el evento de Calendar %s", booking.calendar_event_id)
 

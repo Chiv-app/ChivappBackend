@@ -83,6 +83,7 @@ class MercadoPagoPreferenceRequest(BaseModel):
     amount: float | None = None
     signature_image_url: str | None = None
     sign_ip: str | None = None
+    contract_body_sha256: str | None = None
     payer_email: str | None = None
 
 
@@ -118,6 +119,7 @@ class MercadoPagoProcessPaymentRequest(BaseModel):
     identification_number: str | None = None
     signature_image_url: str | None = None
     sign_ip: str | None = None
+    contract_body_sha256: str | None = None
 
 
 class MercadoPagoProcessPaymentResponse(BaseModel):

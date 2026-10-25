@@ -1,3 +1,5 @@
+import logging
+
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
@@ -107,7 +109,6 @@ MIGRATION_STATEMENTS = [
     "ALTER TABLE booking ADD COLUMN IF NOT EXISTS pending_event_description VARCHAR",
     "ALTER TABLE booking ADD COLUMN IF NOT EXISTS pending_change_notes VARCHAR",
     "ALTER TABLE booking ADD COLUMN IF NOT EXISTS pending_price_agreed NUMERIC",
-    "ALTER TABLE booking ADD COLUMN IF NOT EXISTS pending_advance_amount NUMERIC",
     "ALTER TABLE booking ADD COLUMN IF NOT EXISTS change_requested_by VARCHAR",
     "ALTER TABLE booking ADD COLUMN IF NOT EXISTS change_requested_at TIMESTAMP",
     # Allow multiple event reviews / reactions per booking (live show timeline).
@@ -346,8 +347,6 @@ MIGRATION_STATEMENTS = [
     """,
     "ALTER TABLE platform_payment_settings ADD COLUMN IF NOT EXISTS platform_fee_percent NUMERIC NOT NULL DEFAULT 2",
     "ALTER TABLE platform_payment_settings ALTER COLUMN platform_fee_percent SET DEFAULT 2",
-    # Seed initial commission for environments that still have the old 0% default.
-    "UPDATE platform_payment_settings SET platform_fee_percent = 2 WHERE platform_fee_percent = 0",
     "ALTER TABLE booking ADD COLUMN IF NOT EXISTS platform_fee_percent NUMERIC",
     "ALTER TABLE booking ADD COLUMN IF NOT EXISTS platform_fee_amount NUMERIC",
     "ALTER TABLE booking_complaint ADD COLUMN IF NOT EXISTS refund_status VARCHAR NOT NULL DEFAULT 'none'",
@@ -507,6 +506,7 @@ MIGRATION_STATEMENTS = [
 
     "ALTER TABLE \"user\" ADD COLUMN IF NOT EXISTS login_otp_hash VARCHAR",
     "ALTER TABLE \"user\" ADD COLUMN IF NOT EXISTS login_otp_expires_at TIMESTAMP",
+    "ALTER TABLE \"user\" ADD COLUMN IF NOT EXISTS login_otp_attempts INTEGER NOT NULL DEFAULT 0",
     """
     DO $$ BEGIN
         CREATE TYPE bookinglinkstatus AS ENUM ('active', 'completed', 'expired');
@@ -542,32 +542,65 @@ MIGRATION_STATEMENTS = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS ix_payout_request_musician_id ON payout_request (musician_id)",
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_payout_request_musician_pending
+    ON payout_request (musician_id)
+    WHERE status = 'pending'
+    """,
 ]
 
 
 
 
-def run_migrations(engine: Engine) -> None:
-    inspector = inspect(engine)
-    if "user" not in inspector.get_table_names():
-        return
+_STARTUP_SEED_ADVISORY_LOCK_KEY = 984512301
 
-    # Each statement gets its own transaction/savepoint so one failure
-    # does not abort later migrations (PostgreSQL transaction abort).
-    for statement in MIGRATION_STATEMENTS:
-        try:
-            with engine.begin() as connection:
-                connection.execute(text(statement))
-        except Exception:
-            # Best-effort migrations for dev environments.
-            pass
 
+def run_startup_seeds() -> None:
+    """Ejecuta seeds y backfills idempotentes una sola vez (con advisory lock en Postgres)."""
     db: Session = SessionLocal()
+    locked = False
     try:
+        bind = db.get_bind()
+        if bind.dialect.name == "postgresql":
+            locked = bool(
+                db.execute(
+                    text("SELECT pg_try_advisory_lock(:key)"),
+                    {"key": _STARTUP_SEED_ADVISORY_LOCK_KEY},
+                ).scalar()
+            )
+            if not locked:
+                return
         ensure_role_profiles(db)
         fix_unverified_published_profiles(db)
         ensure_email_templates(db)
         backfill_musician_slugs(db)
         backfill_user_usernames(db)
     finally:
+        if locked:
+            try:
+                db.execute(
+                    text("SELECT pg_advisory_unlock(:key)"),
+                    {"key": _STARTUP_SEED_ADVISORY_LOCK_KEY},
+                )
+            except Exception:
+                pass
         db.close()
+
+
+def run_migrations(engine: Engine) -> None:
+    inspector = inspect(engine)
+    if "user" not in inspector.get_table_names():
+        from app.db.session import Base
+        Base.metadata.create_all(bind=engine)
+
+    logger = logging.getLogger(__name__)
+    # Each statement gets its own transaction/savepoint so one failure
+    # does not abort later migrations (PostgreSQL transaction abort).
+    for statement in MIGRATION_STATEMENTS:
+        try:
+            with engine.begin() as connection:
+                connection.execute(text(statement))
+        except Exception as exc:
+            logger.warning("Migration statement failed: %s", exc)
+
+    run_startup_seeds()

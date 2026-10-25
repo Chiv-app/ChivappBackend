@@ -170,6 +170,13 @@ async def _facebook_profile(code: str) -> OAuthProfile:
 
 async def verify_google_id_token(id_token: str) -> OAuthProfile:
     """Verifica un ID Token de Google (emitido por Google Identity Services / One Tap / Credential)."""
+    expected_client_id = (settings.GOOGLE_CLIENT_ID or "").strip()
+    if not expected_client_id:
+        raise HTTPException(
+            503,
+            "El inicio de sesión con Google no está configurado en el servidor.",
+        )
+
     token_url = "https://oauth2.googleapis.com/tokeninfo"
     async with httpx.AsyncClient(timeout=15) as client:
         try:
@@ -182,7 +189,7 @@ async def verify_google_id_token(id_token: str) -> OAuthProfile:
         data = res.json()
 
     aud = data.get("aud")
-    if settings.GOOGLE_CLIENT_ID and aud != settings.GOOGLE_CLIENT_ID:
+    if aud != expected_client_id:
         raise HTTPException(400, "El token de Google no corresponde a esta aplicación")
 
     sub = data.get("sub")

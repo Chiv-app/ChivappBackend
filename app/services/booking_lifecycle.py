@@ -1,6 +1,7 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.timezone import PERU_TIMEZONE, combine_peru_datetime, now_peru
@@ -20,12 +21,30 @@ CONFIRMED_LIKE = {
 }
 
 
+DEFAULT_EVENT_DURATION_MINUTES = 120
+
+
 def booking_event_datetime(booking: Booking) -> datetime:
     return combine_peru_datetime(booking.event_date, booking.start_time)
 
 
-def is_event_started(booking: Booking, *, now: datetime | None = None) -> bool:
-    event_dt = booking_event_datetime(booking)
+def booking_event_end_datetime(booking: Booking) -> datetime:
+    start_dt = booking_event_datetime(booking)
+    if booking.end_time is not None:
+        end_dt = combine_peru_datetime(booking.event_date, booking.end_time)
+        if booking.end_time <= booking.start_time:
+            end_dt += timedelta(days=1)
+        return end_dt
+    return start_dt + timedelta(minutes=DEFAULT_EVENT_DURATION_MINUTES)
+
+
+def is_event_started(
+    booking: Booking,
+    *,
+    now: datetime | None = None,
+    tolerance_minutes: int = 0,
+) -> bool:
+    event_dt = booking_event_datetime(booking) - timedelta(minutes=tolerance_minutes)
     if now is None:
         current = now_peru()
     elif now.tzinfo is None:
@@ -33,6 +52,42 @@ def is_event_started(booking: Booking, *, now: datetime | None = None) -> bool:
     else:
         current = now.astimezone(PERU_TIMEZONE)
     return current >= event_dt
+
+
+def is_event_finished(
+    booking: Booking,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    if not is_event_started(booking, now=now):
+        return False
+    end_dt = booking_event_end_datetime(booking)
+    if now is None:
+        current = now_peru()
+    elif now.tzinfo is None:
+        current = now.replace(tzinfo=PERU_TIMEZONE)
+    else:
+        current = now.astimezone(PERU_TIMEZONE)
+    return current >= end_dt
+
+
+def assert_event_started(
+    booking: Booking,
+    *,
+    tolerance_minutes: int = 0,
+    detail: str = "Esta acción solo está disponible cuando inicia la fecha y hora del evento.",
+) -> None:
+    if not is_event_started(booking, tolerance_minutes=tolerance_minutes):
+        raise HTTPException(status_code=400, detail=detail)
+
+
+def assert_event_finished(
+    booking: Booking,
+    *,
+    detail: str = "Esta acción solo está disponible cuando haya finalizado el evento.",
+) -> None:
+    if not is_event_finished(booking):
+        raise HTTPException(status_code=400, detail=detail)
 
 
 def is_pre_event(booking: Booking, *, now: datetime | None = None) -> bool:

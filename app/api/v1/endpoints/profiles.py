@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import List
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session, joinedload
 
 from app.api import deps
@@ -53,6 +53,7 @@ from app.services.uniqueness import (
     assert_stage_name_unique,
     assert_username_unique,
     next_available_musician_slug,
+    normalize_username,
 )
 
 router = APIRouter(prefix="/profiles", tags=["Profiles"])
@@ -63,23 +64,23 @@ def check_username(
     db: Session = Depends(deps.get_db),
     current_user: User = Depends(deps.get_current_user),
 ):
-    from app.models.user import User
-    from app.utils.validators import normalize_username
-    import re
-    
+    norm = normalize_username(username)
+    if not norm:
+        return {"available": False, "message": "Ingresa un nombre de usuario."}
     try:
-        norm = normalize_username(username)
-        existing = db.query(User).filter(User.username == norm, User.id != current_user.id).first()
-        if existing:
-            return {"available": False, "message": "El nombre de usuario ya está en uso."}
-        return {"available": True, "message": "Nombre de usuario disponible.", "normalized": norm}
-    except ValueError as e:
-        return {"available": False, "message": str(e)}
+        valid_norm = assert_username_unique(db, norm, exclude_user_id=current_user.id)
+        return {
+            "available": True,
+            "message": "Nombre de usuario disponible.",
+            "normalized": valid_norm,
+        }
+    except HTTPException as exc:
+        return {"available": False, "message": str(exc.detail)}
 
 @router.get("/reviews/latest", response_model=list[MusicianPublicReviewOut])
 def get_latest_platform_reviews(
     db: Session = Depends(deps.get_db),
-    limit: int = 6
+    limit: int = Query(default=6, ge=1, le=50),
 ):
     """Devuelve las reseñas más recientes de toda la plataforma."""
     rows = (
@@ -320,8 +321,8 @@ def get_platform_stats(db: Session = Depends(deps.get_db)):
     status_code=status.HTTP_200_OK,
 )
 def list_musician_profiles(
-    skip: int = 0,
-    limit: int = 20,
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=50),
     db: Session = Depends(deps.get_db),
 ):
     candidates = _published_musician_query(db).all()
@@ -381,15 +382,9 @@ def submit_musician_profile(
     profile = _get_musician_profile_or_404(db, current_user)
     validation = validate_musician_profile(db, profile)
     if not validation.can_submit:
-        missing = [
-            field
-            for step in validation.steps
-            if step.required
-            for field in step.missing
-        ]
         raise HTTPException(
             status_code=400,
-            detail=f"Completa tu perfil antes de enviarlo. Faltan: {', '.join(missing)}",
+            detail=f"Completa tu perfil antes de enviarlo. Faltan: {', '.join(validation.missing_fields)}",
         )
 
     profile.status = ProfileStatus.pending_review
@@ -426,7 +421,7 @@ def generate_my_musician_contract(
             detail="Define la plantilla de contrato antes de generar el PDF",
         )
 
-    pdf_url = generate_musician_contract_pdf(profile, current_user)
+    pdf_url = generate_musician_contract_pdf(profile, current_user, db=db)
     profile.contract_pdf_url = pdf_url
     db.commit()
     return MusicianContractGenerateOut(contract_pdf_url=pdf_url)
@@ -474,7 +469,13 @@ def create_musician_profile(
             detail="El perfil de músico ya existe. Debes actualizarlo.",
         )
 
+    from app.services.uploads import assert_private_upload_owned
+
     data = prepare_musician_updates(payload.model_dump())
+    for priv_field, label in (("id_document_url", "documento de identidad"), ("signature_image_url", "firma")):
+        val = data.get(priv_field)
+        if val and str(val).startswith("/uploads/private/"):
+            assert_private_upload_owned(db, val, current_user.id, label)
     if data.get("availability_type") is None:
         data["availability_type"] = AvailabilityType.both
 
@@ -519,7 +520,13 @@ def update_musician_profile(
 
     profile = _get_musician_profile_or_404(db, current_user)
 
+    from app.services.uploads import assert_private_upload_owned
+
     updates = prepare_musician_updates(payload.model_dump(exclude_unset=True))
+    for priv_field, label in (("id_document_url", "documento de identidad"), ("signature_image_url", "firma")):
+        val = updates.get(priv_field)
+        if val and str(val).startswith("/uploads/private/"):
+            assert_private_upload_owned(db, val, current_user.id, label)
 
     new_username_val: str | None = None
     if "username" in updates:
@@ -610,31 +617,48 @@ def onboard_musician_profile(
     if profile.status in (ProfileStatus.published, ProfileStatus.pending_review):
         return profile
 
-    missing = []
-    if not profile.stage_name:
-        missing.append("stage_name")
-    if not profile.location_city:
-        missing.append("location_city")
+    missing_onboard: list[str] = []
+    if not (profile.stage_name and profile.stage_name.strip()):
+        missing_onboard.append("stage_name")
     if not profile.genres or len(profile.genres) == 0:
-        missing.append("genres")
-        
-    if missing:
+        missing_onboard.append("genres")
+    if not (profile.location_city and profile.location_city.strip()):
+        missing_onboard.append("location_city")
+    has_photo = bool(profile.profile_image_url and profile.profile_image_url.strip()) or (
+        db.query(MusicianMedia)
+        .filter(
+            MusicianMedia.musician_id == profile.id,
+            MusicianMedia.type == MediaType.image,
+        )
+        .first()
+        is not None
+    )
+    if not has_photo:
+        missing_onboard.append("profile_image_url")
+    if missing_onboard:
+        from app.services.profile_validation import format_missing_fields
+
         raise HTTPException(
             status_code=400,
-            detail=f"Completa tu perfil antes de enviarlo. Faltan: {', '.join(missing)}",
+            detail=f"Completa tu perfil antes de enviarlo. Faltan: {format_missing_fields(missing_onboard)}",
         )
 
-    # El perfil solo se publica cuando el admin lo aprueba.
-    profile.status = ProfileStatus.pending_review
-    profile.submitted_at = datetime.utcnow()
-    profile.rejection_reason = None
-    notify_profile_submitted(
-        db,
-        user=current_user,
-        profile_role="musician",
-        profile_id=str(profile.id),
-        display_name=profile.stage_name or current_user.fullname,
-    )
+    # El perfil solo pasa a pending_review si cumple todos los requisitos de publicación;
+    # de lo contrario permanece en borrador (FE3-04).
+    validation = validate_musician_profile(db, profile)
+    if validation.can_submit:
+        profile.status = ProfileStatus.pending_review
+        profile.submitted_at = datetime.utcnow()
+        profile.rejection_reason = None
+        notify_profile_submitted(
+            db,
+            user=current_user,
+            profile_role="musician",
+            profile_id=str(profile.id),
+            display_name=profile.stage_name or current_user.fullname,
+        )
+    else:
+        profile.status = ProfileStatus.draft
     db.commit()
     db.refresh(profile)
     return profile
@@ -777,10 +801,9 @@ def submit_contractor_profile(
     profile = _get_contractor_profile_or_404(db, current_user)
     validation = validate_contractor_profile(profile)
     if not validation.can_submit:
-        missing = [field for step in validation.steps for field in step.missing]
         raise HTTPException(
             status_code=400,
-            detail=f"Completa tu perfil antes de enviarlo. Faltan: {', '.join(missing)}",
+            detail=f"Completa tu perfil antes de enviarlo. Faltan: {', '.join(validation.missing_fields)}",
         )
 
     profile.status = ProfileStatus.pending_review
@@ -824,6 +847,10 @@ def create_contractor_profile(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="El perfil de contratista ya existe. Debes actualizarlo.",
         )
+
+    if payload.id_document_url and str(payload.id_document_url).startswith("/uploads/private/"):
+        from app.services.uploads import assert_private_upload_owned
+        assert_private_upload_owned(db, payload.id_document_url, current_user.id, "documento de identidad")
 
     profile = ContractorProfile(
         user_id=current_user.id,
@@ -904,6 +931,10 @@ def update_contractor_profile(
             updates.get("document_number"),
             exclude_profile_id=profile.id,
         )
+
+    if updates.get("id_document_url") and str(updates["id_document_url"]).startswith("/uploads/private/"):
+        from app.services.uploads import assert_private_upload_owned
+        assert_private_upload_owned(db, updates["id_document_url"], current_user.id, "documento de identidad")
 
     demoted = demote_published_profile_if_changed(profile, updates)
     if demoted:

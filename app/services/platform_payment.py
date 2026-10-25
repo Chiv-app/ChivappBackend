@@ -31,7 +31,7 @@ def get_or_create_platform_payment_settings(db: Session) -> PlatformPaymentSetti
 
 
 def compute_platform_fee_amount(price: Decimal, percent: Decimal) -> Decimal:
-    if price <= 0 or percent <= 0:
+    if price <= 0 or percent < 0:
         return Decimal("0.00")
     total = compute_contractor_payable_total(price, percent)
     return total - Decimal(str(price))
@@ -54,9 +54,9 @@ def sync_booking_platform_fee(
             if booking.platform_fee_percent is None:
                 booking.platform_fee_percent = Decimal("0")
         else:
-            settings = get_or_create_platform_payment_settings(db)
+            platform_settings = get_or_create_platform_payment_settings(db)
             booking.platform_fee_percent = Decimal(
-                str(settings.platform_fee_percent or 0)
+                str(platform_settings.platform_fee_percent or 0)
             )
 
     percent = Decimal(str(booking.platform_fee_percent or 0))

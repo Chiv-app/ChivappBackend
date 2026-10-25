@@ -3,7 +3,7 @@
 Reglas (configurables en settings):
 - Cancela el contratista con el pago retenido: según días de anticipación al evento,
   se reembolsa un % de lo pagado SIN el costo de la pasarela.
-    > CANCEL_FULL_REFUND_MIN_DAYS días            -> 100 %
+    >= CANCEL_FULL_REFUND_MIN_DAYS días            -> 100 %
     >= CANCEL_PARTIAL_REFUND_MIN_DAYS días         -> CANCEL_PARTIAL_REFUND_PERCENT %
     menos                                          -> 0 %
 - Cancela el músico: 100 % de lo pagado (incluido el costo de pasarela).
@@ -35,6 +35,7 @@ CENT = Decimal("0.01")
 RETAINED_STATUSES = {
     BookingStatus.payment_retained,
     BookingStatus.change_pending,
+    BookingStatus.in_progress,
     # Legacy (unreachable) statuses from the old advance/balance flow.
     BookingStatus.balance_pending,
     BookingStatus.balance_review,
@@ -104,10 +105,10 @@ def contractor_refund_percent(days_before_event: int) -> tuple[int, str]:
     full_days = settings.CANCEL_FULL_REFUND_MIN_DAYS
     partial_days = settings.CANCEL_PARTIAL_REFUND_MIN_DAYS
     partial = settings.CANCEL_PARTIAL_REFUND_PERCENT
-    if days_before_event > full_days:
-        return 100, f"Más de {full_days} días de anticipación: reembolso del 100 %"
+    if days_before_event >= full_days:
+        return 100, f"{full_days} días o más de anticipación: reembolso del 100 %"
     if days_before_event >= partial_days:
-        return partial, f"Entre {partial_days} y {full_days} días de anticipación: reembolso del {partial} %"
+        return partial, f"Entre {partial_days} y {full_days - 1} días de anticipación: reembolso del {partial} %"
     return 0, f"Menos de {partial_days} días de anticipación: sin reembolso"
 
 

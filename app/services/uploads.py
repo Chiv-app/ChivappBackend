@@ -148,7 +148,7 @@ def _store_private(filename: str, content: bytes, content_type: str) -> None:
         except Exception as exc:  # noqa: BLE001
             logger.exception("Fallo al subir archivo privado a GCS")
             raise ValueError("Error al subir el archivo. Intenta de nuevo.") from exc
-    if settings.GCP_BUCKET_NAME:
+    if settings.GCP_BUCKET_NAME and not settings.is_production:
         try:
             blob = _gcs_bucket(settings.GCP_BUCKET_NAME).blob(f"private/{filename}")
             blob.upload_from_string(content, content_type=content_type)
@@ -167,6 +167,8 @@ def save_data_url_upload(
     """Decodifica un data URL (`data:image/...;base64,...`) y lo almacena como archivo subido."""
     if not data_url or not data_url.startswith("data:"):
         return data_url
+    if len(data_url) > (MAX_FILE_SIZE * 4 // 3) + 1024:
+        raise ValueError("El archivo supera el tamaño máximo permitido (15 MB).")
     try:
         _, b64_data = data_url.split(",", 1)
         content = base64.b64decode(b64_data)
@@ -238,7 +240,7 @@ def read_private_file(filename: str) -> bytes | None:
     path = PRIVATE_UPLOAD_DIR / name
     if path.is_file():
         return path.read_bytes()
-    if settings.GCP_BUCKET_NAME:
+    if settings.GCP_BUCKET_NAME and not settings.is_production:
         try:
             blob = _gcs_bucket(settings.GCP_BUCKET_NAME).blob(f"private/{name}")
             if blob.exists():
@@ -253,6 +255,8 @@ def read_upload_bytes(url: str | None) -> bytes | None:
     if not url:
         return None
     if url.startswith("data:"):
+        if len(url) > (MAX_FILE_SIZE * 4 // 3) + 1024:
+            return None
         try:
             _, b64_data = url.split(",", 1)
             return base64.b64decode(b64_data)
@@ -303,17 +307,5 @@ def assert_private_upload_owned(db, url: str | None, user_id, label: str = "arch
     record = (
         db.query(UploadedFile).filter(UploadedFile.filename == name).first() if name else None
     )
-    if not record and name:
-        content = read_private_file(name)
-        if content:
-            ct = sniff_content_type(content[:16]) or "image/png"
-            record = UploadedFile(
-                filename=name,
-                owner_user_id=user_id,
-                content_type=ct,
-                size_bytes=len(content),
-            )
-            db.add(record)
-            db.flush()
     if not record or str(record.owner_user_id) != str(user_id):
         raise HTTPException(400, f"El {label} no es válido. Vuelve a subirlo.")

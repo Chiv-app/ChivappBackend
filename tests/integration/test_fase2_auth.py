@@ -19,6 +19,13 @@ def _register_and_login(client, email="sesion@example.com"):
         "/api/v1/auth/register",
         json={"email": email, "password": PASSWORD, "role": "musician", "accepted_terms": True},
     )
+    from datetime import datetime
+    from app.db.session import SessionLocal
+    with SessionLocal() as s:
+        u = s.query(User).filter(User.email == email).first()
+        if u:
+            u.email_verified_at = datetime.utcnow()
+            s.commit()
     client.cookies.clear()
     res = client.post("/api/v1/auth/login", json={"email": email, "password": PASSWORD})
     assert res.status_code == 200

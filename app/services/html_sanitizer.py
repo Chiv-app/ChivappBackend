@@ -25,7 +25,9 @@ for _tag in _ALIGNABLE:
 
 
 def _allowed_image_src(value: str) -> bool:
-    """Solo imágenes subidas a Chivapp (mismo origen o nuestro bucket)."""
+    """Solo imágenes públicas subidas a Chivapp (mismo origen o nuestro bucket)."""
+    if value.startswith("/uploads/private/"):
+        return False
     if value.startswith("/uploads/") and ".." not in value:
         return True
     if settings.GCP_BUCKET_NAME:

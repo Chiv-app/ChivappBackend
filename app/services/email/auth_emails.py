@@ -46,6 +46,8 @@ def issue_password_reset_token(user: User) -> str:
 
 
 def mark_email_verified(user: User) -> None:
+    if user.email_verified_at is None:
+        user.token_version = (user.token_version or 0) + 1
     user.email_verified_at = datetime.utcnow()
     user.email_verification_token = None
     user.email_verification_expires_at = None
@@ -208,6 +210,9 @@ def verify_email_token(db: Session, token: str) -> User:
         user.email_verification_expires_at
         and user.email_verification_expires_at < datetime.utcnow()
     ):
+        user.email_verification_token = None
+        user.email_verification_expires_at = None
+        db.commit()
         raise ValueError("expired")
     mark_email_verified(user)
     return user
@@ -221,6 +226,9 @@ def find_password_reset_user(db: Session, token: str) -> User:
         user.password_reset_expires_at
         and user.password_reset_expires_at < datetime.utcnow()
     ):
+        user.password_reset_token = None
+        user.password_reset_expires_at = None
+        db.commit()
         raise ValueError("expired")
     return user
 

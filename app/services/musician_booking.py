@@ -24,13 +24,16 @@ from app.models.musician_profile import MusicianProfile
 from app.models.profile_status import ProfileStatus
 from app.models.user import User, UserRole
 from app.schemas.booking import MusicianBookingCreate
+from app.services.availability_match import assert_musician_available
 from app.services.booking_contract import create_booking_contract
 from app.services.contract_pdf import contract_html_text_length
 from app.services.uploads import upload_exists
 from app.services.uniqueness import (
     assert_document_number_unique,
     assert_phone_unique,
+    normalize_document_number,
     normalize_email,
+    normalize_phone,
 )
 
 
@@ -64,6 +67,33 @@ def resolve_or_create_contractor_client(
             .filter(func.lower(User.email) == email_norm)
             .first()
         )
+    else:
+        phone_clean = normalize_phone(phone)
+        if phone_clean:
+            user = (
+                db.query(User)
+                .filter(
+                    User.role == UserRole.contractor,
+                    User.email.like("%@guest.local"),
+                    User.phone == phone_clean,
+                )
+                .first()
+            )
+        if user is None and document_number:
+            doc_clean = normalize_document_number(document_number)
+            if doc_clean:
+                existing_prof = (
+                    db.query(ContractorProfile)
+                    .join(User, ContractorProfile.user_id == User.id)
+                    .filter(
+                        User.role == UserRole.contractor,
+                        User.email.like("%@guest.local"),
+                        ContractorProfile.document_number == doc_clean,
+                    )
+                    .first()
+                )
+                if existing_prof:
+                    user = db.get(User, existing_prof.user_id)
 
     if user:
         if user.role != UserRole.contractor:
@@ -147,6 +177,12 @@ def create_musician_booking(
             detail="Tu perfil de músico debe estar verificado para crear contratas",
         )
 
+    if not (musician.signature_image_url or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Debes registrar tu firma digital antes de crear contratas",
+        )
+
     if contract_html_text_length(musician.contract_template_body) < 50:
         raise HTTPException(
             status_code=400,
@@ -155,6 +191,19 @@ def create_musician_booking(
 
     if payload.event_date < get_lima_today():
         raise HTTPException(400, "La fecha del evento no puede ser anterior a hoy")
+    if (
+        payload.event_date == get_lima_today()
+        and payload.start_time < datetime.now(ZoneInfo("America/Lima")).time()
+    ):
+        raise HTTPException(400, "La hora del evento ya pasó")
+
+    assert_musician_available(
+        db,
+        musician.id,
+        payload.event_date,
+        payload.start_time,
+        end_time=payload.end_time,
+    )
 
     contractor, contractor_user = resolve_or_create_contractor_client(
         db,

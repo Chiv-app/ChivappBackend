@@ -55,6 +55,8 @@ from app.services.email.auth_emails import (
 )
 from app.services.ensemble_members import (
     PASSWORD_SETUP_TTL_DAYS,
+    _hash_setup_token,
+    booking_respond_url,
     create_or_link_member_user,
     get_leader_musician_or_403,
     get_member_for_leader,
@@ -260,7 +262,6 @@ def create_member(
             ),
             meta={
                 "ensemble_member_id": str(member.id),
-                "invite_url": invite_url,
             },
         )
         if invite_url:
@@ -449,7 +450,7 @@ def resend_invite(
             type="ensemble_invite",
             title="Reenvío de invitación",
             message=f"{current_user.fullname} te reenvió el enlace para crear tu contraseña.",
-            meta={"ensemble_member_id": str(member.id), "invite_url": invite_url},
+            meta={"ensemble_member_id": str(member.id)},
         )
         send_ensemble_invite_email(
             db,
@@ -549,18 +550,20 @@ def create_booking_invites(
             )
             .first()
         )
+        raw_token = new_token()
+        token_hash = _hash_setup_token(raw_token)
         if invite:
             if invite.status != BookingMemberInviteStatus.pending:
                 invite.status = BookingMemberInviteStatus.pending
                 invite.responded_at = None
-            invite.response_token = new_token()
+            invite.response_token = token_hash
             invite.invited_at = datetime.utcnow()
         else:
             invite = BookingMemberInvite(
                 booking_id=booking_id,
                 ensemble_member_id=member.id,
                 status=BookingMemberInviteStatus.pending,
-                response_token=new_token(),
+                response_token=token_hash,
                 invited_at=datetime.utcnow(),
             )
             db.add(invite)
@@ -571,8 +574,7 @@ def create_booking_invites(
         if booking.calendar_event_id:
             add_attendee_to_booking_event(booking.calendar_event_id, member.email)
 
-        invite_data = serialize_booking_invite(invite)
-        respond_url = invite_data.get("respond_url")
+        respond_url = booking_respond_url(raw_token)
 
         # In-app notification ONLY if the user is registered
         if member.member_user_id:
@@ -589,7 +591,6 @@ def create_booking_invites(
                     ),
                     booking_id=str(booking.id),
                     meta={
-                        "respond_url": respond_url,
                         "ensemble_member_id": str(member.id),
                     },
                 )
@@ -630,18 +631,23 @@ def create_booking_invites(
     return [serialize_booking_invite(i) for i in results]
 
 
-@router.get(
-    "/invites/member/{token}",
-    response_model=BookingMemberInvitePreviewOut,
-)
-def preview_booking_invite(token: str, db: Session = Depends(deps.get_db)):
+def _get_invite_by_token(db: Session, token: str) -> BookingMemberInvite:
+    clean = (token or "").strip()
+    if not clean:
+        raise HTTPException(404, "Invitación no encontrada")
+    token_hash = _hash_setup_token(clean)
     invite = (
         db.query(BookingMemberInvite)
-        .filter(BookingMemberInvite.response_token == token)
+        .filter(BookingMemberInvite.response_token == token_hash)
         .first()
     )
     if not invite:
         raise HTTPException(404, "Invitación no encontrada")
+    return invite
+
+
+def _build_booking_invite_preview(db: Session, token: str) -> dict:
+    invite = _get_invite_by_token(db, token)
     booking = invite.booking
     member = invite.ensemble_member
     leader = db.get(User, member.leader_user_id) if member else None
@@ -657,8 +663,17 @@ def preview_booking_invite(token: str, db: Session = Depends(deps.get_db)):
         "status": invite.status.value,
         "can_respond": invite.status == BookingMemberInviteStatus.pending
         and booking.status != BookingStatus.cancelled,
-        "needs_password": bool(member_user and not member_user.password_hash)
+        "needs_password": bool(member_user and not member_user.password_hash),
     }
+
+
+@router.get(
+    "/invites/member/{token}",
+    response_model=BookingMemberInvitePreviewOut,
+)
+@limiter.limit(settings.RATE_LIMIT_PUBLIC)
+def preview_booking_invite(request: Request, token: str, db: Session = Depends(deps.get_db)):
+    return _build_booking_invite_preview(db, token)
 
 
 @router.post(
@@ -672,13 +687,7 @@ def respond_booking_invite(
     payload: BookingMemberRespondRequest,
     db: Session = Depends(deps.get_db),
 ):
-    invite = (
-        db.query(BookingMemberInvite)
-        .filter(BookingMemberInvite.response_token == token)
-        .first()
-    )
-    if not invite:
-        raise HTTPException(404, "Invitación no encontrada")
+    invite = _get_invite_by_token(db, token)
 
     member = invite.ensemble_member
     member_user = db.get(User, member.member_user_id) if member and member.member_user_id else None
@@ -708,7 +717,7 @@ def respond_booking_invite(
 
     _apply_booking_invite_response(db, invite, payload.action)
     db.commit()
-    return preview_booking_invite(token, db)
+    return _build_booking_invite_preview(db, token)
 
 
 @router.post(
@@ -743,14 +752,14 @@ def resend_booking_invite_email(
         raise HTTPException(400, f"No se puede reenviar porque la convocatoria ya fue {invite.status.value}")
         
     # Generate new token
-    invite.response_token = new_token()
+    raw_token = new_token()
+    invite.response_token = _hash_setup_token(raw_token)
     invite.invited_at = datetime.utcnow()
     db.commit()
     db.refresh(invite)
     
     # Send email ALWAYS
-    invite_data = serialize_booking_invite(invite)
-    respond_url = invite_data.get("respond_url")
+    respond_url = booking_respond_url(raw_token)
     if member.email:
         event_time = booking.start_time or "Por confirmar"
         if booking.end_time:
@@ -1033,6 +1042,11 @@ def mark_payout_paid(
     )
     if not payout:
         raise HTTPException(404, "Reparto no encontrado")
+    if (payout.amount or Decimal("0")) <= 0:
+        raise HTTPException(
+            400,
+            "El monto del reparto debe ser mayor a cero para marcarlo como pagado",
+        )
     payout.status = BookingMemberPayoutStatus.paid
     payout.paid_at = datetime.utcnow()
     db.commit()

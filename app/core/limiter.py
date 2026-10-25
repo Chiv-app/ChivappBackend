@@ -36,7 +36,7 @@ limiter = Limiter(
     key_func=get_client_ip,
     default_limits=[settings.RATE_LIMIT_DEFAULT],
     enabled=settings.RATE_LIMITING_ENABLED,
-    storage_uri=settings.RATE_LIMIT_STORAGE_URI,
+    storage_uri=settings.RATE_LIMIT_STORAGE_URI, in_memory_fallback_enabled=True,
 )
 
 

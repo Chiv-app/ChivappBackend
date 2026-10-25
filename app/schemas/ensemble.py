@@ -146,6 +146,16 @@ class BookingMemberPayoutItem(BaseModel):
     amount: Decimal = Field(ge=0)
     note: str | None = None
 
+    @field_validator("amount")
+    @classmethod
+    def quantize_amount(cls, value: Decimal) -> Decimal:
+        from decimal import ROUND_HALF_UP
+
+        q = Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        if q != Decimal(str(value)):
+            raise ValueError("El monto puede tener como máximo 2 decimales")
+        return q
+
 
 class BookingMemberPayoutUpdate(BaseModel):
     items: list[BookingMemberPayoutItem] = Field(default_factory=list)

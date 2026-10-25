@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from app.core.timezone import now_peru_naive
 
@@ -21,16 +21,22 @@ from app.models.payment import Payment, PaymentStatus
 from app.services.platform_payment import musician_portion_of_paid
 
 
+def _round_money(value: Decimal) -> float:
+    return float(value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
 def retained_total_for_booking(db: Session, booking_id) -> float:
     rows = (
         db.query(Payment)
         .filter(
             Payment.booking_id == booking_id,
             Payment.status == PaymentStatus.retained,
+            Payment.payment_type.is_distinct_from("refund"),
         )
         .all()
     )
-    return sum(float(p.amount) for p in rows)
+    total = sum((Decimal(str(p.amount or 0)) for p in rows), Decimal("0.00"))
+    return _round_money(total)
 
 
 def released_total_for_booking(db: Session, booking_id) -> float:
@@ -39,10 +45,12 @@ def released_total_for_booking(db: Session, booking_id) -> float:
         .filter(
             Payment.booking_id == booking_id,
             Payment.status == PaymentStatus.released,
+            Payment.payment_type.is_distinct_from("refund"),
         )
         .all()
     )
-    return sum(float(p.amount) for p in rows)
+    total = sum((Decimal(str(p.amount or 0)) for p in rows), Decimal("0.00"))
+    return _round_money(total)
 
 
 def paid_total_for_booking(db: Session, booking_id) -> float:
@@ -58,15 +66,16 @@ def paid_total_for_booking(db: Session, booking_id) -> float:
                     PaymentStatus.released,
                 ]
             ),
+            Payment.payment_type.is_distinct_from("refund"),
         )
         .all()
     )
-    total = 0.0
+    total = Decimal("0.00")
     for payment in rows:
         if (payment.payment_type or "").lower() == "refund":
             continue
-        total += float(payment.amount)
-    return total
+        total += Decimal(str(payment.amount or 0))
+    return _round_money(total)
 
 
 def complaint_refund_amount(complaint: BookingComplaint | None) -> float:
@@ -124,8 +133,11 @@ def settlement_state_for_booking(
     complaint: BookingComplaint | None,
     retained: float,
     released: float,
+    *,
+    effective_status: BookingStatus | None = None,
 ) -> str:
-    if booking.status == BookingStatus.cancelled:
+    status = effective_status or booking.status
+    if status == BookingStatus.cancelled:
         from app.services.cancellation_policy import REFUND_UNRESOLVED
 
         # Primero se resuelve el reembolso; luego lo no reembolsado se liquida al músico.
@@ -135,7 +147,7 @@ def settlement_state_for_booking(
             return "payable"
         return "settled" if released > 0 else "none"
 
-    if booking.status != BookingStatus.completed:
+    if status != BookingStatus.completed:
         if retained > 0:
             return "in_progress"
         return "none"
@@ -174,7 +186,7 @@ def release_retained_payments(
     payout_evidence_url: str | None = None,
     payout_notes: str | None = None,
 ) -> list[Payment]:
-    now = now_peru_naive()
+    now = datetime.utcnow()
     payments = (
         db.query(Payment)
         .filter(
@@ -194,22 +206,37 @@ def release_retained_payments(
             payment.payout_notes = payout_notes
 
     if payments:
+        db.flush()
         try:
             from app.models.payout_request import PayoutRequest
 
             booking = db.get(Booking, booking_id)
             if booking and booking.musician_id:
-                pending_requests = (
-                    db.query(PayoutRequest)
+                remaining_retained = (
+                    db.query(Payment.id)
+                    .join(Booking, Booking.id == Payment.booking_id)
                     .filter(
-                        PayoutRequest.musician_id == booking.musician_id,
-                        PayoutRequest.status == "pending",
+                        Booking.musician_id == booking.musician_id,
+                        Booking.status.in_(
+                            [BookingStatus.completed, BookingStatus.cancelled]
+                        ),
+                        Payment.status == PaymentStatus.retained,
+                        Payment.payment_type.is_distinct_from("refund"),
                     )
-                    .all()
+                    .first()
                 )
-                for req in pending_requests:
-                    req.status = "processed"
-                    req.processed_at = now
+                if not remaining_retained:
+                    pending_requests = (
+                        db.query(PayoutRequest)
+                        .filter(
+                            PayoutRequest.musician_id == booking.musician_id,
+                            PayoutRequest.status == "pending",
+                        )
+                        .all()
+                    )
+                    for req in pending_requests:
+                        req.status = "processed"
+                        req.processed_at = now
         except Exception:
             pass
 

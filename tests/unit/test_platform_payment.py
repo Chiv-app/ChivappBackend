@@ -22,7 +22,9 @@ def test_compute_platform_fee_amount_rounds_half_up():
 
 def test_compute_platform_fee_amount_zero_when_price_or_percent_not_positive():
     assert compute_platform_fee_amount(Decimal("0"), Decimal("2")) == Decimal("0.00")
-    assert compute_platform_fee_amount(Decimal("500"), Decimal("0")) == Decimal("0.00")
+    assert compute_platform_fee_amount(Decimal("500"), Decimal("-1")) == Decimal("0.00")
+    # BUG2-07: 0% platform commission still includes the Mercado Pago pass-through fee
+    assert compute_platform_fee_amount(Decimal("500"), Decimal("0")) == Decimal("22.72")
 
 
 def test_contractor_payable_total_adds_fee_to_price():

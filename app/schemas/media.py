@@ -1,8 +1,9 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from app.models.musician_media import MediaType
+from app.schemas.profiles import validate_safe_public_url
 
 
 class MusicianMediaBase(BaseModel):
@@ -13,7 +14,10 @@ class MusicianMediaBase(BaseModel):
 
 
 class MusicianMediaCreate(MusicianMediaBase):
-    pass
+    @field_validator("url", "thumbnail_url", mode="before")
+    @classmethod
+    def _validate_urls(cls, value):
+        return validate_safe_public_url(value)
 
 
 class MusicianMediaUpdate(BaseModel):
@@ -21,6 +25,11 @@ class MusicianMediaUpdate(BaseModel):
     url: str | None = None
     thumbnail_url: str | None = None
     order_index: int | None = None
+
+    @field_validator("url", "thumbnail_url", mode="before")
+    @classmethod
+    def _validate_urls(cls, value):
+        return validate_safe_public_url(value)
 
 
 class MusicianMediaOut(MusicianMediaBase):

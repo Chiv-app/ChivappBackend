@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.api import deps
 from app.api.booking_helpers import parse_uuid
+from app.core.config import settings
 from app.models.booking import Booking, BookingStatus
 from app.models.contractor_profile import ContractorProfile
 from app.models.musician_profile import MusicianProfile
@@ -20,6 +21,8 @@ from app.schemas.admin import (
     AdminBookingDetailOut,
     AdminBookingOut,
     AdminPaymentOut,
+    AdminPayoutRequestAction,
+    AdminPayoutRequestOut,
     AdminProfileStatusUpdate,
     AdminSettleBooking,
     AdminStatsOut,
@@ -47,6 +50,7 @@ from app.services.booking_notifications import (
     notify_profile_approved,
     notify_profile_needs_resubmit,
     notify_profile_rejected,
+    notify_user,
 )
 from app.services.cancellation_policy import (
     approve_cancellation_refund,
@@ -138,6 +142,7 @@ def _payment_admin_out(payment: Payment) -> AdminPaymentOut:
     booking = payment.booking
     musician = booking.musician if booking else None
     contractor = booking.contractor if booking else None
+    meta = payment.gateway_metadata if isinstance(payment.gateway_metadata, dict) else {}
     return AdminPaymentOut(
         id=payment.id,
         booking_id=payment.booking_id,
@@ -161,6 +166,12 @@ def _payment_admin_out(payment: Payment) -> AdminPaymentOut:
             else (musician.user.fullname if musician and musician.user else None)
         ),
         contractor_name=contractor.user.fullname if contractor and contractor.user else None,
+        needs_refund=bool(meta.get("needs_refund")),
+        needs_refund_reason=(
+            str(meta.get("needs_refund_reason"))
+            if meta.get("needs_refund_reason") is not None
+            else None
+        ),
     )
 
 
@@ -256,7 +267,7 @@ def get_admin_stats(
 def list_users(
     _: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
-    skip: int = 0,
+    skip: int = Query(default=0, ge=0),
     limit: int = Query(default=50, le=200),
     role: str | None = None,
     q: str | None = None,
@@ -291,7 +302,8 @@ def update_user(
     current_admin: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
 ):
-    user = db.query(User).filter(User.id == user_id).first()
+    user_uuid = parse_uuid(user_id, "user_id")
+    user = db.query(User).filter(User.id == user_uuid).first()
     if not user:
         raise HTTPException(404, "Usuario no encontrado")
     if user.id == current_admin.id and payload.is_active is False:
@@ -318,7 +330,7 @@ def list_musicians(
     db: Session = Depends(deps.get_db),
     status_filter: str | None = Query(default=None, alias="status"),
     q: str | None = None,
-    skip: int = 0,
+    skip: int = Query(default=0, ge=0),
     limit: int = Query(default=50, le=200),
 ):
     query = db.query(MusicianProfile).options(joinedload(MusicianProfile.user)).join(User)
@@ -348,7 +360,7 @@ def list_contractors(
     db: Session = Depends(deps.get_db),
     status_filter: str | None = Query(default=None, alias="status"),
     q: str | None = None,
-    skip: int = 0,
+    skip: int = Query(default=0, ge=0),
     limit: int = Query(default=50, le=200),
 ):
     query = (
@@ -413,10 +425,11 @@ def get_musician_admin_detail(
     _: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
 ):
+    musician_uuid = parse_uuid(musician_id, "musician_id")
     profile = (
         db.query(MusicianProfile)
         .options(joinedload(MusicianProfile.user))
-        .filter(MusicianProfile.id == musician_id)
+        .filter(MusicianProfile.id == musician_uuid)
         .first()
     )
     if not profile:
@@ -430,10 +443,11 @@ def get_contractor_admin_detail(
     _: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
 ):
+    contractor_uuid = parse_uuid(contractor_id, "contractor_id")
     profile = (
         db.query(ContractorProfile)
         .options(joinedload(ContractorProfile.user))
-        .filter(ContractorProfile.id == contractor_id)
+        .filter(ContractorProfile.id == contractor_uuid)
         .first()
     )
     if not profile:
@@ -447,11 +461,21 @@ def approve_musician_profile(
     _: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
 ):
-    profile = db.query(MusicianProfile).filter(MusicianProfile.id == musician_id).first()
+    musician_uuid = parse_uuid(musician_id, "musician_id")
+    profile = db.query(MusicianProfile).filter(MusicianProfile.id == musician_uuid).first()
     if not profile:
         raise HTTPException(status_code=404, detail="Perfil de músico no encontrado")
     if profile.status not in {ProfileStatus.pending_review, ProfileStatus.rejected}:
         raise HTTPException(status_code=400, detail="El perfil no puede aprobarse en este estado")
+
+    from app.services.profile_validation import validate_musician_profile
+
+    validation = validate_musician_profile(db, profile)
+    if not validation.can_submit:
+        raise HTTPException(
+            status_code=400,
+            detail=f"El perfil está incompleto y no puede publicarse. Faltan: {', '.join(validation.missing_fields)}",
+        )
 
     profile.status = ProfileStatus.published
     profile.published_at = datetime.utcnow()
@@ -475,7 +499,8 @@ def reject_musician_profile(
     _: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
 ):
-    profile = db.query(MusicianProfile).filter(MusicianProfile.id == musician_id).first()
+    musician_uuid = parse_uuid(musician_id, "musician_id")
+    profile = db.query(MusicianProfile).filter(MusicianProfile.id == musician_uuid).first()
     if not profile:
         raise HTTPException(status_code=404, detail="Perfil de músico no encontrado")
     if profile.status not in {
@@ -505,7 +530,8 @@ def moderate_musician_profile(
     _: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
 ):
-    profile = db.query(MusicianProfile).filter(MusicianProfile.id == musician_id).first()
+    musician_uuid = parse_uuid(musician_id, "musician_id")
+    profile = db.query(MusicianProfile).filter(MusicianProfile.id == musician_uuid).first()
     if not profile:
         raise HTTPException(404, "Perfil de músico no encontrado")
 
@@ -538,11 +564,21 @@ def approve_contractor_profile(
     _: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
 ):
-    profile = db.query(ContractorProfile).filter(ContractorProfile.id == contractor_id).first()
+    contractor_uuid = parse_uuid(contractor_id, "contractor_id")
+    profile = db.query(ContractorProfile).filter(ContractorProfile.id == contractor_uuid).first()
     if not profile:
         raise HTTPException(status_code=404, detail="Perfil de contratista no encontrado")
     if profile.status not in {ProfileStatus.pending_review, ProfileStatus.rejected}:
         raise HTTPException(status_code=400, detail="El perfil no puede aprobarse en este estado")
+
+    from app.services.profile_validation import validate_contractor_profile
+
+    validation = validate_contractor_profile(profile)
+    if not validation.can_submit:
+        raise HTTPException(
+            status_code=400,
+            detail=f"El perfil está incompleto y no puede publicarse. Faltan: {', '.join(validation.missing_fields)}",
+        )
 
     profile.status = ProfileStatus.published
     profile.published_at = datetime.utcnow()
@@ -566,7 +602,8 @@ def reject_contractor_profile(
     _: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
 ):
-    profile = db.query(ContractorProfile).filter(ContractorProfile.id == contractor_id).first()
+    contractor_uuid = parse_uuid(contractor_id, "contractor_id")
+    profile = db.query(ContractorProfile).filter(ContractorProfile.id == contractor_uuid).first()
     if not profile:
         raise HTTPException(status_code=404, detail="Perfil de contratista no encontrado")
     if profile.status not in {
@@ -599,7 +636,8 @@ def moderate_contractor_profile(
     _: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
 ):
-    profile = db.query(ContractorProfile).filter(ContractorProfile.id == contractor_id).first()
+    contractor_uuid = parse_uuid(contractor_id, "contractor_id")
+    profile = db.query(ContractorProfile).filter(ContractorProfile.id == contractor_uuid).first()
     if not profile:
         raise HTTPException(404, "Perfil de contratista no encontrado")
 
@@ -636,7 +674,7 @@ def list_bookings(
     status_filter: str | None = Query(default=None, alias="status"),
     refund_status: str | None = Query(default=None, max_length=40),
     q: str | None = None,
-    skip: int = 0,
+    skip: int = Query(default=0, ge=0),
     limit: int = Query(default=50, le=200),
 ):
     query = db.query(Booking).options(
@@ -676,17 +714,7 @@ def get_booking_admin(
     _: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
 ):
-    booking = (
-        db.query(Booking)
-        .options(
-            joinedload(Booking.musician).joinedload(MusicianProfile.user),
-            joinedload(Booking.contractor).joinedload(ContractorProfile.user),
-        )
-        .filter(Booking.id == booking_id)
-        .first()
-    )
-    if not booking:
-        raise HTTPException(404, "Reserva no encontrada")
+    booking = _load_booking_with_parties(db, booking_id)
     return _booking_admin_out(booking)
 
 
@@ -797,18 +825,7 @@ def cancel_booking_admin(
     _: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
 ):
-    booking = (
-        db.query(Booking)
-        .options(
-            joinedload(Booking.musician).joinedload(MusicianProfile.user),
-            joinedload(Booking.contractor).joinedload(ContractorProfile.user),
-        )
-        .filter(Booking.id == booking_id)
-        .first()
-    )
-    if not booking:
-        raise HTTPException(404, "Reserva no encontrada")
-    db.refresh(booking, with_for_update=True)
+    booking = _load_booking_with_parties(db, booking_id, for_update=True)
     if booking.status in {BookingStatus.completed, BookingStatus.cancelled}:
         raise HTTPException(400, "Esta reserva ya está cerrada")
 
@@ -816,6 +833,46 @@ def cancel_booking_admin(
     record_cancellation(booking, quote, approved=True)
     if payload.reason:
         booking.rejection_reason = payload.reason
+    from app.models.booking_link import BookingLink, BookingLinkStatus
+    from app.services.booking_share import disable_booking_share
+    disable_booking_share(booking)
+    for link in (
+        db.query(BookingLink)
+        .filter(
+            BookingLink.booking_id == booking.id,
+            BookingLink.status == BookingLinkStatus.active,
+        )
+        .all()
+    ):
+        link.status = BookingLinkStatus.expired
+    if getattr(booking, "calendar_event_id", None):
+        from app.services.calendar_service import cancel_booking_calendar_event
+        try:
+            cancel_booking_calendar_event(
+                db,
+                booking,
+                booking.musician.user if booking.musician else None,
+            )
+        except Exception:
+            pass
+
+    from app.services.booking_notifications import notify_booking_cancelled
+
+    if booking.contractor and booking.contractor.user:
+        notify_booking_cancelled(
+            db,
+            booking.contractor.user,
+            str(booking.id),
+            by_role="admin",
+        )
+    if booking.musician and booking.musician.user:
+        notify_booking_cancelled(
+            db,
+            booking.musician.user,
+            str(booking.id),
+            by_role="admin",
+        )
+
     db.commit()
     if booking.cancellation_refund_status == "processing":
         execute_cancellation_refund(db, booking)
@@ -832,8 +889,7 @@ def approve_refund(
 ):
     """Aprueba (y ejecuta en Mercado Pago) el reembolso de una cancelación.
     `amount` permite ajustar el monto; 0 rechaza el reembolso."""
-    booking = _load_booking_with_parties(db, booking_id)
-    db.refresh(booking, with_for_update=True)
+    booking = _load_booking_with_parties(db, booking_id, for_update=True)
     if booking.status != BookingStatus.cancelled or booking.cancellation_refund_status != "pending_approval":
         raise HTTPException(400, "Esta reserva no tiene un reembolso pendiente de aprobación")
     try:
@@ -851,8 +907,7 @@ def retry_cancellation_refund(
     db: Session = Depends(deps.get_db),
 ):
     """Reintenta un reembolso de cancelación que falló en Mercado Pago."""
-    booking = _load_booking_with_parties(db, booking_id)
-    db.refresh(booking, with_for_update=True)
+    booking = _load_booking_with_parties(db, booking_id, for_update=True)
     if booking.status != BookingStatus.cancelled or booking.cancellation_refund_status not in {"failed", "processing"}:
         raise HTTPException(400, "Esta reserva no tiene un reembolso pendiente")
     execute_cancellation_refund(db, booking)
@@ -866,19 +921,37 @@ def disable_booking_share(
     _: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
 ):
-    booking = (
-        db.query(Booking)
-        .options(
-            joinedload(Booking.musician).joinedload(MusicianProfile.user),
-            joinedload(Booking.contractor).joinedload(ContractorProfile.user),
-        )
-        .filter(Booking.id == booking_id)
-        .first()
-    )
-    if not booking:
-        raise HTTPException(404, "Reserva no encontrada")
+    booking = _load_booking_with_parties(db, booking_id)
     booking.share_enabled = False
     booking.share_enabled_at = None
+    db.commit()
+    db.refresh(booking)
+    return _booking_admin_out(booking)
+
+
+@router.post("/bookings/{booking_id}/force-complete", response_model=AdminBookingOut)
+def force_complete_booking_admin(
+    booking_id: str,
+    _: User = Depends(deps.get_current_admin),
+    db: Session = Depends(deps.get_db),
+):
+    """Permite al administrador cerrar reservas con evento pasado que quedaron en payment_retained/in_progress."""
+    from app.services.booking_lifecycle import is_event_finished
+    from app.services.booking_share import disable_booking_share as _disable_share
+
+    booking = _load_booking_with_parties(db, booking_id, for_update=True)
+    if booking.status == BookingStatus.completed:
+        return _booking_admin_out(booking)
+    if booking.status not in {
+        BookingStatus.payment_retained,
+        BookingStatus.in_progress,
+        BookingStatus.payment_released,
+    }:
+        raise HTTPException(400, "Solo se pueden cerrar administrativamente reservas en fase de evento o con pago retenido")
+    if not is_event_finished(booking):
+        raise HTTPException(400, "El horario del evento aún no ha terminado")
+    booking.status = BookingStatus.completed
+    _disable_share(booking)
     db.commit()
     db.refresh(booking)
     return _booking_admin_out(booking)
@@ -892,7 +965,7 @@ def list_payments(
     _: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
     status_filter: str | None = Query(default=None, alias="status"),
-    skip: int = 0,
+    skip: int = Query(default=0, ge=0),
     limit: int = Query(default=50, le=200),
 ):
     query = db.query(Payment).options(
@@ -912,14 +985,63 @@ def list_payments(
     return [_payment_admin_out(payment) for payment in payments]
 
 
-def _load_booking_with_parties(db: Session, booking_id: str) -> Booking:
+@router.post("/payments/{payment_id}/refund", response_model=AdminPaymentOut)
+def refund_flagged_payment_admin(
+    payment_id: str,
+    current_admin: User = Depends(deps.get_current_admin),
+    db: Session = Depends(deps.get_db),
+):
+    """Reembolsa en Mercado Pago un pago marcado con needs_refund (SEC4-06)."""
+    from app.services import mercadopago_service
+
+    payment_uuid = parse_uuid(payment_id, "payment_id")
+    payment = db.get(Payment, payment_uuid, with_for_update=True)
+    if not payment:
+        raise HTTPException(404, "Pago no encontrado")
+    if payment.status == PaymentStatus.refunded:
+        raise HTTPException(400, "Este pago ya fue reembolsado")
+    meta = dict(payment.gateway_metadata or {}) if isinstance(payment.gateway_metadata, dict) else {}
+    if not meta.get("needs_refund"):
+        raise HTTPException(400, "Este pago no está marcado para reembolso directo")
+    if payment.gateway_payment_id and settings.MERCADO_PAGO_ACCESS_TOKEN.strip():
+        try:
+            refund_resp = mercadopago_service.issue_refund(
+                payment.gateway_payment_id,
+                float(payment.amount),
+                idempotency_key=f"needs-refund-{payment.id}",
+            )
+            meta["mp_refund_id"] = str(refund_resp.get("id") or "")
+        except ValueError as exc:
+            raise HTTPException(502, detail=str(exc)) from exc
+    payment.status = PaymentStatus.refunded
+    payment.released_at = datetime.utcnow()
+    meta["needs_refund"] = False
+    meta["refunded_by_admin"] = current_admin.email
+    meta["refunded_at"] = datetime.utcnow().isoformat()
+    payment.gateway_metadata = meta
+    db.commit()
+    db.refresh(payment)
+    return _payment_admin_out(payment)
+
+
+def _load_booking_with_parties(
+    db: Session,
+    booking_id: str,
+    *,
+    for_update: bool = False,
+) -> Booking:
+    booking_uuid = parse_uuid(booking_id, "booking_id")
+    if for_update:
+        locked = db.get(Booking, booking_uuid, with_for_update=True)
+        if not locked:
+            raise HTTPException(404, "Reserva no encontrada")
     booking = (
         db.query(Booking)
         .options(
             joinedload(Booking.musician).joinedload(MusicianProfile.user),
             joinedload(Booking.contractor).joinedload(ContractorProfile.user),
         )
-        .filter(Booking.id == parse_uuid(booking_id, "booking_id"))
+        .filter(Booking.id == booking_uuid)
         .first()
     )
     if not booking:
@@ -968,7 +1090,8 @@ def list_admin_settlements(
     _: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
     state: str | None = Query(default=None),
-    limit: int = Query(default=50, le=200),
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
 ):
     from decimal import Decimal
 
@@ -991,7 +1114,7 @@ def list_admin_settlements(
         )
         .filter(Booking.status.in_(SETTLEABLE_BOOKING_STATUSES))
         .order_by(Booking.updated_at.desc())
-        .limit(limit * 3)
+        .limit((skip + limit) * 3)
         .all()
     )
     complaints = (
@@ -1004,6 +1127,7 @@ def list_admin_settlements(
     complaint_by_id = {c.booking_id: c for c in complaints}
 
     items: list[AdminSettlementOut] = []
+    matched_skipped = 0
     for booking in bookings:
         retained_gross = retained_total_for_booking(db, booking.id)
         released_gross = released_total_for_booking(db, booking.id)
@@ -1020,6 +1144,9 @@ def list_admin_settlements(
         if settlement_state in {"none", "in_progress"}:
             continue
         if state and settlement_state != state:
+            continue
+        if matched_skipped < skip:
+            matched_skipped += 1
             continue
         musician = booking.musician
         contractor = booking.contractor
@@ -1189,25 +1316,31 @@ def export_admin_settlements(
             "mercadopago": "Mercado Pago",
         }.get(musician.payout_method if musician else "", musician.payout_method if musician and musician.payout_method else "No registrado")
 
+        def _csv_safe(val):
+            s = "" if val is None else str(val)
+            if s.lstrip().startswith(("=", "+", "-", "@", "\t", "\r")):
+                return f"'{s}"
+            return s
+
         writer.writerow([
-            str(booking.id),
-            str(booking.event_date),
-            booking.event_type or "",
-            booking.location_city or "",
-            musician_name,
+            _csv_safe(booking.id),
+            _csv_safe(booking.event_date),
+            _csv_safe(booking.event_type or ""),
+            _csv_safe(booking.location_city or ""),
+            _csv_safe(musician_name),
             f"{payout_amount:.2f}",
-            payout_method_label,
-            musician.payout_bank_name if musician else "",
-            musician.payout_account_number if musician else "",
-            musician.payout_cci if musician else "",
-            musician.payout_phone if musician else "",
-            musician.payout_beneficiary_name if musician else "",
-            musician.payout_beneficiary_document if musician else "",
-            musician.payout_mp_email if musician else "",
-            contractor_name,
-            settlement_state,
-            latest_payment.payout_reference if latest_payment and latest_payment.payout_reference else "",
-            latest_payment.payout_notes if latest_payment and latest_payment.payout_notes else "",
+            _csv_safe(payout_method_label),
+            _csv_safe(musician.payout_bank_name if musician else ""),
+            _csv_safe(musician.payout_account_number if musician else ""),
+            _csv_safe(musician.payout_cci if musician else ""),
+            _csv_safe(musician.payout_phone if musician else ""),
+            _csv_safe(musician.payout_beneficiary_name if musician else ""),
+            _csv_safe(musician.payout_beneficiary_document if musician else ""),
+            _csv_safe(musician.payout_mp_email if musician else ""),
+            _csv_safe(contractor_name),
+            _csv_safe(settlement_state),
+            _csv_safe(latest_payment.payout_reference if latest_payment and latest_payment.payout_reference else ""),
+            _csv_safe(latest_payment.payout_notes if latest_payment and latest_payment.payout_notes else ""),
         ])
 
     csv_data = output.getvalue().encode("utf-8-sig")
@@ -1233,12 +1366,14 @@ def settle_admin_booking(
 
     from app.models.booking_complaint import (
         REFUND_STATUS_AWAITING_TRANSFER,
+        REFUND_STATUS_COMPLETED,
         REFUND_STATUS_NONE,
         BookingComplaint,
         BookingComplaintStatus,
     )
     from app.schemas.settlement import AdminSettlementOut
     from app.services.booking_notifications import notify_settlement_completed
+    from app.services.cancellation_policy import REFUND_UNRESOLVED
     from app.services.platform_payment import musician_portion_of_paid
     from app.services.settlement import (
         fee_portion_from_gross,
@@ -1250,11 +1385,19 @@ def settle_admin_booking(
     )
 
     body = payload
-    booking = db.get(Booking, UUID(booking_id))
+    booking = db.get(Booking, parse_uuid(booking_id, "booking_id"), with_for_update=True)
     if not booking:
         raise HTTPException(404, "Reserva no encontrada")
     if booking.status not in SETTLEABLE_BOOKING_STATUSES:
         raise HTTPException(400, "Solo se liquidan reservas finalizadas o canceladas con fondos retenidos")
+    if (
+        booking.status == BookingStatus.cancelled
+        and booking.cancellation_refund_status in REFUND_UNRESOLVED
+    ):
+        raise HTTPException(
+            400,
+            "No se puede liquidar una reserva cancelada mientras tenga un reembolso pendiente de resolución",
+        )
 
     complaint = (
         db.query(BookingComplaint)
@@ -1292,27 +1435,57 @@ def settle_admin_booking(
         complaint.settled_at = datetime.utcnow()
         complaint.status = BookingComplaintStatus.settled
         if body.contractor_refund > 0:
-            from app.models.payment import Payment
+            from app.models.payment import Payment, PaymentStatus
             from app.services.mercadopago_service import issue_refund
-            
-            original_payment = db.query(Payment).filter(
-                Payment.booking_id == booking.id,
-                Payment.gateway_payment_id.isnot(None)
-            ).first()
-            
+
+            original_payment = (
+                db.query(Payment)
+                .filter(
+                    Payment.booking_id == booking.id,
+                    Payment.gateway_payment_id.isnot(None),
+                    Payment.payment_type != "refund",
+                    Payment.status == PaymentStatus.retained,
+                )
+                .order_by(Payment.created_at.desc())
+                .first()
+            )
+
             if not original_payment:
-                 raise HTTPException(400, "No se encontró el pago original en Mercado Pago para reembolsar automáticamente")
-            
+                raise HTTPException(
+                    400,
+                    "No se encontró el pago original en Mercado Pago para reembolsar automáticamente",
+                )
+
             try:
-                issue_refund(original_payment.gateway_payment_id, float(body.contractor_refund))
+                mp_refund = issue_refund(
+                    original_payment.gateway_payment_id,
+                    float(body.contractor_refund),
+                    idempotency_key=f"complaint-refund-{complaint.id}",
+                )
+                refund_payment = Payment(
+                    booking_id=booking.id,
+                    amount=Decimal(str(round(body.contractor_refund, 2))),
+                    currency="PEN",
+                    payment_type="refund",
+                    status=PaymentStatus.released,
+                    released_at=datetime.utcnow(),
+                    gateway_provider="mercadopago",
+                    gateway_payment_id=str(mp_refund.get("id") or "") or None,
+                    gateway_metadata=mp_refund if isinstance(mp_refund, dict) else None,
+                    payout_notes=f"Reembolso por reclamo #{complaint.id}",
+                )
+                db.add(refund_payment)
+                db.flush()
                 complaint.refund_status = REFUND_STATUS_COMPLETED
                 complaint.refund_validated_at = datetime.utcnow()
                 complaint.refund_rejection_reason = None
-                complaint.refund_payment_id = original_payment.id
+                complaint.refund_payment_id = refund_payment.id
                 complaint.refund_evidence_url = "Reembolso automático de Mercado Pago"
                 complaint.refund_sent_at = datetime.utcnow()
             except Exception as e:
-                raise HTTPException(500, f"Error al ejecutar reembolso en Mercado Pago: {str(e)}")
+                raise HTTPException(
+                    500, f"Error al ejecutar reembolso en Mercado Pago: {str(e)}"
+                ) from e
         else:
             complaint.refund_status = REFUND_STATUS_NONE
     elif body.contractor_refund > 0:
@@ -1418,6 +1591,7 @@ def release_admin_settlement(
     from app.models.booking_complaint import BookingComplaint, BookingComplaintStatus
     from app.schemas.settlement import AdminSettlementOut, MusicianPayoutInfoOut
     from app.services.booking_notifications import notify_settlement_completed
+    from app.services.cancellation_policy import REFUND_UNRESOLVED
     from app.services.platform_payment import musician_portion_of_paid
     from app.services.settlement import (
         release_retained_payments,
@@ -1428,11 +1602,19 @@ def release_admin_settlement(
     )
 
     body = payload or AdminReleaseSettlement()
-    booking = db.get(Booking, UUID(booking_id))
+    booking = db.get(Booking, parse_uuid(booking_id, "booking_id"), with_for_update=True)
     if not booking:
         raise HTTPException(404, "Reserva no encontrada")
     if booking.status not in SETTLEABLE_BOOKING_STATUSES:
         raise HTTPException(400, "Solo se liquidan reservas finalizadas o canceladas con fondos retenidos")
+    if (
+        booking.status == BookingStatus.cancelled
+        and booking.cancellation_refund_status in REFUND_UNRESOLVED
+    ):
+        raise HTTPException(
+            400,
+            "No se puede liberar el pago de una reserva cancelada mientras tenga un reembolso pendiente de resolución",
+        )
 
     complaint = (
         db.query(BookingComplaint)
@@ -1567,7 +1749,7 @@ def send_admin_refund_transfer(
     )
 
     body = payload
-    booking = db.get(Booking, UUID(booking_id))
+    booking = db.get(Booking, parse_uuid(booking_id, "booking_id"))
     if not booking:
         raise HTTPException(404, "Reserva no encontrada")
 
@@ -1811,7 +1993,7 @@ def list_support_tickets(
     _: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
     status_filter: str | None = Query(default=None, alias="status"),
-    skip: int = 0,
+    skip: int = Query(default=0, ge=0),
     limit: int = Query(default=50, le=200),
 ):
     query = db.query(SupportTicket).options(joinedload(SupportTicket.user))
@@ -1861,3 +2043,273 @@ def respond_support_ticket(
     db.commit()
     db.refresh(ticket)
     return _support_ticket_admin_out(ticket)
+
+
+def _serialize_admin_payout_request(
+    req: "PayoutRequest", musician: MusicianProfile | None
+) -> AdminPayoutRequestOut:
+    payout_info = None
+    if musician:
+        payout_info = MusicianPayoutInfoOut(
+            payout_method=musician.payout_method,
+            payout_bank_name=musician.payout_bank_name,
+            payout_account_number=musician.payout_account_number,
+            payout_cci=musician.payout_cci,
+            payout_phone=musician.payout_phone,
+            payout_beneficiary_name=musician.payout_beneficiary_name,
+            payout_beneficiary_document=musician.payout_beneficiary_document,
+            payout_mp_email=musician.payout_mp_email,
+        )
+
+    return AdminPayoutRequestOut(
+        id=req.id,
+        musician_id=req.musician_id,
+        musician_name=(
+            musician.stage_name
+            if musician and musician.stage_name
+            else (musician.user.fullname if musician and musician.user else None)
+        ),
+        musician_email=musician.user.email if musician and musician.user else None,
+        musician_phone=musician.user.phone if musician and musician.user else None,
+        amount=float(req.amount or 0),
+        status=req.status,
+        notes=req.notes,
+        created_at=req.created_at,
+        processed_at=req.processed_at,
+        musician_payout_info=payout_info,
+    )
+
+
+@router.get("/payout-requests")
+def list_admin_payout_requests(
+    status: str | None = Query(default=None),
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=500),
+    _: User = Depends(deps.get_current_admin),
+    db: Session = Depends(deps.get_db),
+):
+    from app.models.booking_complaint import BookingComplaint
+    from app.models.payout_request import PayoutRequest
+    from app.services.settlement import (
+        release_retained_payments,
+        released_total_for_booking,
+        retained_total_for_booking,
+        settlement_state_for_booking,
+    )
+
+    query = db.query(PayoutRequest)
+    if status and status != "all":
+        query = query.filter(PayoutRequest.status == status)
+    rows = query.order_by(PayoutRequest.created_at.desc()).offset(skip).limit(limit).all()
+
+    musician_ids = {r.musician_id for r in rows if r.musician_id}
+    musicians = (
+        db.query(MusicianProfile)
+        .options(joinedload(MusicianProfile.user))
+        .filter(MusicianProfile.id.in_(musician_ids))
+        .all()
+        if musician_ids
+        else []
+    )
+    musician_by_id = {m.id: m for m in musicians}
+
+    return [_serialize_admin_payout_request(r, musician_by_id.get(r.musician_id)) for r in rows]
+
+
+@router.post("/payout-requests/{request_id}/process")
+def process_admin_payout_request(
+    request_id: str,
+    payload: AdminPayoutRequestAction | None = None,
+    current_admin: User = Depends(deps.get_current_admin),
+    db: Session = Depends(deps.get_db),
+):
+    from app.models.booking_complaint import BookingComplaint
+    from app.models.payout_request import PayoutRequest
+    from app.services.settlement import (
+        release_retained_payments,
+        released_total_for_booking,
+        retained_total_for_booking,
+        settlement_state_for_booking,
+    )
+
+    req = db.get(PayoutRequest, parse_uuid(request_id, "request_id"), with_for_update=True)
+    if not req:
+        raise HTTPException(404, "Solicitud de retiro no encontrada")
+    if req.status != "pending":
+        raise HTTPException(400, f"La solicitud ya fue procesada ({req.status})")
+
+    body = payload or AdminPayoutRequestAction()
+    admin_note = body.notes.strip() if body.notes and body.notes.strip() else None
+
+    musician = (
+        db.query(MusicianProfile)
+        .options(joinedload(MusicianProfile.user))
+        .filter(MusicianProfile.id == req.musician_id)
+        .first()
+    )
+
+    # Liberar únicamente las reservas vinculadas a la solicitud de retiro (SEC4-03 / BUG4-02)
+    import re
+    from decimal import Decimal
+    from uuid import UUID as _UUID
+
+    from app.services.platform_payment import musician_portion_of_paid
+
+    linked_raw_uuids = re.findall(
+        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+        req.notes or "",
+    )
+    linked_booking_ids = [_UUID(u) for u in linked_raw_uuids]
+
+    eligible_booking_ids: dict[_UUID, Decimal] = {}
+    if musician and musician.user:
+        from app.api.v1.endpoints.payments import get_musician_earnings
+
+        earnings = get_musician_earnings(
+            current_user=musician.user,
+            db=db,
+            _require_verified=False,
+        )
+        for d in earnings.debts:
+            if d.debt_state == "payable":
+                eligible_booking_ids[d.booking_id] = Decimal(str(d.retained_total)).quantize(Decimal("0.01"))
+
+    musician_bookings = (
+        db.query(Booking)
+        .filter(
+            Booking.musician_id == req.musician_id,
+            Booking.status.in_([BookingStatus.completed, BookingStatus.cancelled]),
+        )
+        .all()
+    )
+    for b in musician_bookings:
+        if b.id in eligible_booking_ids:
+            continue
+        complaint = (
+            db.query(BookingComplaint)
+            .filter(BookingComplaint.booking_id == b.id)
+            .first()
+        )
+        ret = retained_total_for_booking(db, b.id)
+        rel = released_total_for_booking(db, b.id)
+        if ret > 0 and settlement_state_for_booking(b, complaint, ret, rel) == "payable":
+            net_ret = musician_portion_of_paid(b, Decimal(str(ret))).quantize(Decimal("0.01"))
+            eligible_booking_ids[b.id] = net_ret
+
+    target_booking_ids: list[_UUID] = []
+    if linked_booking_ids:
+        for b_id in linked_booking_ids:
+            if b_id not in eligible_booking_ids:
+                raise HTTPException(
+                    409,
+                    f"La reserva vinculada {str(b_id)[:8]} ya no es elegible para retiro o ya fue liberada.",
+                )
+            target_booking_ids.append(b_id)
+        target_total = sum((eligible_booking_ids[b_id] for b_id in target_booking_ids), Decimal("0.00"))
+        req_amount_dec = Decimal(str(req.amount))
+        if abs(target_total - req_amount_dec) > Decimal("0.05"):
+            raise HTTPException(
+                409,
+                f"El monto elegible de las reservas vinculadas (S/ {target_total:.2f}) ya no coincide con el monto solicitado (S/ {req_amount_dec:.2f}). Rechaza esta solicitud para que el músico genere una nueva.",
+            )
+    elif eligible_booking_ids:
+        req_amount_dec = Decimal(str(req.amount))
+        running = Decimal("0.00")
+        for b_id, b_amt in eligible_booking_ids.items():
+            if running + b_amt <= req_amount_dec + Decimal("0.05"):
+                target_booking_ids.append(b_id)
+                running += b_amt
+        if abs(running - req_amount_dec) > Decimal("0.05"):
+            raise HTTPException(
+                409,
+                f"El monto elegible de las reservas (S/ {running:.2f}) no coincide con el monto solicitado (S/ {req_amount_dec:.2f}). Rechaza esta solicitud para que el músico genere una nueva.",
+            )
+
+    for b_id in target_booking_ids:
+        b_row = db.get(Booking, b_id)
+        if b_row and b_row.status not in {BookingStatus.completed, BookingStatus.cancelled}:
+            b_row.status = BookingStatus.completed
+        release_retained_payments(
+            db,
+            b_id,
+            payout_reference=f"payout_request:{req.id}",
+            payout_notes=admin_note,
+        )
+
+    req.status = "processed"
+    req.processed_at = datetime.utcnow()
+    audit_suffix = f"Procesado por {current_admin.email}"
+    if admin_note:
+        audit_suffix = f"{audit_suffix}: {admin_note}"
+    req.notes = f"{req.notes} | {audit_suffix}" if req.notes else audit_suffix
+
+    if musician and musician.user:
+        notify_user(
+            db,
+            user=musician.user,
+            type="payout_processed",
+            title="Solicitud de retiro procesada",
+            message=f"Tu solicitud de retiro por S/ {float(req.amount):.2f} ha sido procesada.",
+            meta={"payout_request_id": str(req.id), "status": "processed"},
+        )
+
+    db.commit()
+    db.refresh(req)
+    return _serialize_admin_payout_request(req, musician)
+
+
+@router.post("/payout-requests/{request_id}/reject")
+def reject_admin_payout_request(
+    request_id: str,
+    payload: AdminPayoutRequestAction | None = None,
+    _: User = Depends(deps.get_current_admin),
+    db: Session = Depends(deps.get_db),
+):
+    from app.models.booking_complaint import BookingComplaint
+    from app.models.payout_request import PayoutRequest
+    from app.services.settlement import (
+        release_retained_payments,
+        released_total_for_booking,
+        retained_total_for_booking,
+        settlement_state_for_booking,
+    )
+
+    req = db.get(PayoutRequest, parse_uuid(request_id, "request_id"), with_for_update=True)
+    if not req:
+        raise HTTPException(404, "Solicitud de retiro no encontrada")
+    if req.status != "pending":
+        raise HTTPException(400, f"La solicitud ya fue procesada ({req.status})")
+
+    body = payload or AdminPayoutRequestAction()
+    req.status = "rejected"
+    req.processed_at = datetime.utcnow()
+    if body.notes and body.notes.strip():
+        req.notes = (
+            f"{req.notes} | Motivo rechazo: {body.notes.strip()}"
+            if req.notes
+            else f"Motivo rechazo: {body.notes.strip()}"
+        )
+
+    musician = (
+        db.query(MusicianProfile)
+        .options(joinedload(MusicianProfile.user))
+        .filter(MusicianProfile.id == req.musician_id)
+        .first()
+    )
+    if musician and musician.user:
+        notify_user(
+            db,
+            user=musician.user,
+            type="payout_rejected",
+            title="Solicitud de retiro observada",
+            message=(
+                f"Tu solicitud de retiro por S/ {float(req.amount):.2f} fue observada. "
+                f"{body.notes.strip() if body.notes and body.notes.strip() else 'Revisa tus datos de desembolso.'}"
+            ),
+            meta={"payout_request_id": str(req.id), "status": "rejected"},
+        )
+
+    db.commit()
+    db.refresh(req)
+    return _serialize_admin_payout_request(req, musician)
+

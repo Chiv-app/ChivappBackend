@@ -38,6 +38,7 @@ class User(Base):
 
     login_otp_hash = Column(String, nullable=True)
     login_otp_expires_at = Column(DateTime, nullable=True)
+    login_otp_attempts = Column(Integer, nullable=False, default=0, server_default="0")
 
     terms_accepted_at = Column(DateTime, nullable=True)
     terms_accepted_ip = Column(String, nullable=True)

@@ -107,7 +107,9 @@ def build_musician_reports(
     status: str | None = None,
 ) -> MusicianReportsOut:
     musician = get_leader_musician_or_403(db, current_user)
-    today = date.today()
+    from app.core.timezone import now_peru
+
+    today = now_peru().date()
     period_to = _parse_date(date_to, fallback=today)
     period_from = _parse_date(
         date_from, fallback=period_to.replace(day=1) - timedelta(days=150)

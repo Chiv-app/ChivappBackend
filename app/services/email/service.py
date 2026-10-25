@@ -13,7 +13,7 @@ from app.services.email.renderer import render_template
 from app.services.uniqueness import normalize_email
 
 
-def ensure_email_templates(db: Session, update_existing: bool = True) -> None:
+def ensure_email_templates(db: Session, update_existing: bool = False) -> None:
     """Inserta las plantillas por defecto o actualiza el diseño de las existentes."""
     for item in EMAIL_TEMPLATE_DEFAULTS:
         existing = (
@@ -42,6 +42,8 @@ def ensure_email_templates(db: Session, update_existing: bool = True) -> None:
             existing.text_body = item["text_body"]
             existing.available_variables = item["available_variables"]
             existing.updated_at = datetime.utcnow()
+        else:
+            existing.available_variables = item["available_variables"]
     db.commit()
 
 

@@ -1,4 +1,4 @@
-"""Create an admin user for the Chivapp platform."""
+"""Create or update an admin user for the Chivapp platform."""
 
 import sys
 from datetime import datetime
@@ -10,7 +10,7 @@ from app.models.user import User, UserRole
 
 def main() -> None:
     if len(sys.argv) < 4:
-        print("Uso: python -m scripts.create_admin <email> <fullname> <password>")
+        print("Uso: python -m app.cli.create_admin <email> <fullname> <password>")
         sys.exit(1)
 
     email, fullname, password = sys.argv[1:4]

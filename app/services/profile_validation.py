@@ -11,6 +11,37 @@ from app.services.contract_pdf import contract_html_text_length
 from app.services.profile_visibility import is_profile_public
 
 
+MISSING_FIELD_LABELS: dict[str, str] = {
+    "username": "nombre de usuario",
+    "fullname": "nombre completo",
+    "stage_name": "nombre artístico",
+    "bio": "biografía (mínimo 40 caracteres)",
+    "profile_image_url": "foto de perfil",
+    "genres": "géneros musicales",
+    "instruments": "instrumentos",
+    "availability_type": "modalidad de disponibilidad",
+    "location_city": "ciudad",
+    "location_zone": "distrito o zona",
+    "price": "tarifa",
+    "songs": "repertorio",
+    "media_images": "fotos en galería",
+    "videos": "videos",
+    "social_links": "redes sociales",
+    "availability": "horarios de disponibilidad",
+    "id_document_url": "documento de identidad",
+    "contract_template_body": "plantilla de contrato",
+    "signature_image_url": "firma digital",
+    "document_type": "tipo de documento",
+    "document_number": "número de documento",
+    "address": "dirección",
+    "city": "ciudad",
+}
+
+
+def format_missing_fields(fields: list[str]) -> str:
+    return ", ".join(MISSING_FIELD_LABELS.get(item, item) for item in fields)
+
+
 @dataclass
 class ValidationStep:
     id: int
@@ -29,6 +60,15 @@ class ProfileValidationResult:
     can_submit: bool
     is_public: bool
     is_ensemble_only: bool = False
+
+    @property
+    def missing_fields(self) -> list[str]:
+        return [
+            MISSING_FIELD_LABELS.get(item, item)
+            for step in self.steps
+            if step.required
+            for item in step.missing
+        ]
 
 
 def _has_price(profile: MusicianProfile) -> bool:
@@ -204,7 +244,7 @@ def validate_musician_profile(db: Session, profile: MusicianProfile) -> ProfileV
             "Plantilla y firma de contrato",
             not contract_missing,
             contract_missing,
-            required=False,
+            required=True,
         ),
     ]
 

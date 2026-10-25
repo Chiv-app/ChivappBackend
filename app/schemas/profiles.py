@@ -1,4 +1,4 @@
-﻿from datetime import datetime
+from datetime import datetime
 from uuid import UUID
 from decimal import Decimal
 
@@ -39,6 +39,42 @@ class ProfileReviewAction(BaseModel):
 class RepertoireItem(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     youtube_url: str | None = None
+
+    @field_validator("youtube_url", mode="before")
+    @classmethod
+    def _validate_youtube_url(cls, value):
+        return validate_safe_public_url(value)
+
+
+def validate_safe_public_url(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("URL inválida")
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    if len(cleaned) > 500:
+        raise ValueError("La URL supera la longitud máxima permitida (500 caracteres)")
+    lower = cleaned.lower()
+    if lower.startswith(("javascript:", "data:", "vbscript:", "file:", "blob:")):
+        raise ValueError("Esquema de URL no permitido")
+    if lower.startswith("/uploads/private/"):
+        raise ValueError("No se permite publicar archivos privados en campos públicos")
+    if not (lower.startswith("https://") or lower.startswith("http://") or lower.startswith("/uploads/")):
+        raise ValueError("La URL debe comenzar con https:// o /uploads/")
+    return cleaned
+
+
+def _validate_safe_public_url_list(values: list[str] | None) -> list[str] | None:
+    if values is None:
+        return None
+    out: list[str] = []
+    for item in values:
+        checked = validate_safe_public_url(item)
+        if checked:
+            out.append(checked)
+    return out
 
 
 # ---------- MUSICIAN PROFILE ----------
@@ -86,8 +122,47 @@ class MusicianProfileBase(BaseModel):
 class MusicianProfileCreate(MusicianProfileBase):
     stage_name: str
 
+    @field_validator(
+        "profile_image_url",
+        "showreel_video_url",
+        "instagram_url",
+        "facebook_url",
+        "tiktok_url",
+        "youtube_channel_url",
+        "spotify_url",
+        "website_url",
+        mode="before",
+    )
+    @classmethod
+    def _validate_create_urls(cls, value):
+        return validate_safe_public_url(value)
+
+    @field_validator("gallery_images", "videos", mode="before")
+    @classmethod
+    def _validate_create_url_lists(cls, value):
+        return _validate_safe_public_url_list(value) or []
+
 
 class MusicianProfileUpdate(BaseModel):
+    @field_validator(
+        "profile_image_url",
+        "showreel_video_url",
+        "instagram_url",
+        "facebook_url",
+        "tiktok_url",
+        "youtube_channel_url",
+        "spotify_url",
+        "website_url",
+        mode="before",
+    )
+    @classmethod
+    def _validate_update_urls(cls, value):
+        return validate_safe_public_url(value)
+
+    @field_validator("gallery_images", "videos", mode="before")
+    @classmethod
+    def _validate_update_url_lists(cls, value):
+        return _validate_safe_public_url_list(value)
     is_ensemble_only: bool | None = None
     stage_name: str | None = None
     username: str | None = None

@@ -2,6 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.api import deps
+from app.core.config import settings
+from app.core.limiter import get_client_ip, limiter
 from app.models.support_ticket import SupportTicket
 from app.models.user import User
 from app.schemas.support import SupportTicketCreate, SupportTicketOut
@@ -9,16 +11,8 @@ from app.schemas.support import SupportTicketCreate, SupportTicketOut
 router = APIRouter(prefix="/support", tags=["Support"])
 
 
-def _client_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    if request.client and request.client.host:
-        return request.client.host
-    return "unknown"
-
-
 @router.post("/tickets", response_model=SupportTicketOut, status_code=201)
+@limiter.limit(settings.RATE_LIMIT_PUBLIC)
 def create_support_ticket(
     payload: SupportTicketCreate,
     request: Request,
@@ -36,7 +30,7 @@ def create_support_ticket(
         guest_name=None if current_user else payload.guest_name,
         guest_email=None if current_user else payload.guest_email,
         message=payload.message,
-        submitted_ip=_client_ip(request),
+        submitted_ip=get_client_ip(request),
         submitted_user_agent=request.headers.get("user-agent"),
         submitted_path=payload.page_path,
     )

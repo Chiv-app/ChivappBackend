@@ -49,22 +49,26 @@ def review_author_label(review: BookingReview) -> str:
         return format_guest_display_name(review.guest_name)
     author = getattr(review, "author", None)
     if author and getattr(author, "fullname", None):
-        return author.fullname
-    if author and getattr(author, "email", None):
-        return author.email
+        cleaned_fullname = str(author.fullname).strip()
+        if cleaned_fullname and "@" not in cleaned_fullname:
+            return cleaned_fullname
     label = getattr(review, "author_label", None)
-    if label:
+    if label and "@" not in str(label):
         return label
     return "Participante"
 
 
-def serialize_review(review: BookingReview | BookingReviewOut) -> BookingReviewOut:
+def serialize_review(
+    review: BookingReview | BookingReviewOut,
+    *,
+    public: bool = False,
+) -> BookingReviewOut:
     if isinstance(review, BookingReviewOut):
         return review
     return BookingReviewOut(
         id=review.id,
         booking_id=review.booking_id,
-        author_user_id=review.author_user_id,
+        author_user_id=None if public else review.author_user_id,
         guest_name=review.guest_name,
         author_label=review_author_label(review),
         rating=review.rating,

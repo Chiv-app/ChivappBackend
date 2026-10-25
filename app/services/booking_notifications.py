@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
@@ -158,7 +158,8 @@ def notify_booking_requested_contractor(db: Session, contractor_user: User, book
                 from app.core.jwt import create_magic_token
                 magic_token = create_magic_token(
                     subject=str(contractor_user.id),
-                    redirect_to=f"/contractor/bookings/{booking_id}"
+                    redirect_to=f"/contractor/bookings/{booking_id}",
+                    version=contractor_user.token_version or 0,
                 )
                 action_url = f"{settings.FRONTEND_URL.rstrip('/')}/api/v1/auth/magic-link/login?token={magic_token}"
 
@@ -280,7 +281,7 @@ def notify_booking_quote_updated(db: Session, contractor_user: User, booking_id:
             
             if not contractor_user.password_hash:
                 from app.core.jwt import create_magic_token
-                magic_token = create_magic_token(subject=str(contractor_user.id), redirect_to=f"/contractor/bookings/{booking_id}")
+                magic_token = create_magic_token(subject=str(contractor_user.id), redirect_to=f"/contractor/bookings/{booking_id}", version=contractor_user.token_version or 0)
                 action_url = f"{settings.FRONTEND_URL.rstrip('/')}/api/v1/auth/magic-link/login?token={magic_token}"
 
             send_templated_email(
@@ -457,7 +458,7 @@ def notify_payment_validated(
             action_url_cont = f"{settings.FRONTEND_URL.rstrip('/')}/contractor/bookings/{booking_id}"
             if not contractor_user.password_hash:
                 from app.core.jwt import create_magic_token
-                magic_token = create_magic_token(subject=str(contractor_user.id), redirect_to=f"/contractor/bookings/{booking_id}")
+                magic_token = create_magic_token(subject=str(contractor_user.id), redirect_to=f"/contractor/bookings/{booking_id}", version=contractor_user.token_version or 0)
                 action_url_cont = f"{settings.FRONTEND_URL.rstrip('/')}/api/v1/auth/magic-link/login?token={magic_token}"
             send_templated_email(
                 db, slug="payment_validated_contractor", to=contractor_user.email,
@@ -524,7 +525,7 @@ def notify_payment_rejected(
             action_url_cont = f"{settings.FRONTEND_URL.rstrip('/')}/contractor/bookings/{booking_id}"
             if not contractor_user.password_hash:
                 from app.core.jwt import create_magic_token
-                magic_token = create_magic_token(subject=str(contractor_user.id), redirect_to=f"/contractor/bookings/{booking_id}")
+                magic_token = create_magic_token(subject=str(contractor_user.id), redirect_to=f"/contractor/bookings/{booking_id}", version=contractor_user.token_version or 0)
                 action_url_cont = f"{settings.FRONTEND_URL.rstrip('/')}/api/v1/auth/magic-link/login?token={magic_token}"
             send_templated_email(
                 db, slug="payment_rejected", to=contractor_user.email,
@@ -729,7 +730,7 @@ def notify_booking_rejected(
     *,
     by_role: str,
 ) -> None:
-    role_label = "músico" if by_role == "musician" else "contratista"
+    role_label = "músico" if by_role == "musician" else ("administrador" if by_role == "admin" else "contratista")
     notify_user(
         db,
         user=target_user,
@@ -754,7 +755,7 @@ def notify_booking_rejected(
             
             if target_user.role.value == "contractor" and not target_user.password_hash:
                 from app.core.jwt import create_magic_token
-                magic_token = create_magic_token(subject=str(target_user.id), redirect_to=f"/contractor/bookings/{booking_id}")
+                magic_token = create_magic_token(subject=str(target_user.id), redirect_to=f"/contractor/bookings/{booking_id}", version=target_user.token_version or 0)
                 action_url = f"{settings.FRONTEND_URL.rstrip('/')}/api/v1/auth/magic-link/login?token={magic_token}"
 
             send_templated_email(
@@ -783,7 +784,7 @@ def notify_booking_cancelled(
     *,
     by_role: str,
 ) -> None:
-    role_label = "músico" if by_role == "musician" else "contratista"
+    role_label = "músico" if by_role == "musician" else ("administrador" if by_role == "admin" else "contratista")
     notify_user(
         db,
         user=target_user,
@@ -808,7 +809,7 @@ def notify_booking_cancelled(
             
             if target_user.role.value == "contractor" and not target_user.password_hash:
                 from app.core.jwt import create_magic_token
-                magic_token = create_magic_token(subject=str(target_user.id), redirect_to=f"/contractor/bookings/{booking_id}")
+                magic_token = create_magic_token(subject=str(target_user.id), redirect_to=f"/contractor/bookings/{booking_id}", version=target_user.token_version or 0)
                 action_url = f"{settings.FRONTEND_URL.rstrip('/')}/api/v1/auth/magic-link/login?token={magic_token}"
 
             send_templated_email(

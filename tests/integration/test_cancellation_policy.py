@@ -65,7 +65,7 @@ APP_TOTAL = PRICE * (1 + FEE_PERCENT / 100)  # lo pagado sin el costo de pasarel
 
 @pytest.mark.parametrize(
     ("days", "percent"),
-    [(30, 100), (16, 100), (15, 50), (7, 50), (6, 0), (0, 0)],
+    [(30, 100), (16, 100), (15, 100), (14, 50), (7, 50), (6, 0), (0, 0)],
 )
 def test_contractor_refund_tiers(db_session, days, percent):
     booking = _booking(db_session, days_before=days)

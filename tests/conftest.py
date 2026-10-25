@@ -10,10 +10,24 @@ from sqlalchemy.orm import sessionmaker
 TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/mariachi_test"
 )
+if not TEST_DATABASE_URL.split("?")[0].rstrip("/").endswith("_test"):
+    raise RuntimeError(
+        f"Refusing to run tests against non-test database: {TEST_DATABASE_URL}"
+    )
 os.environ["SQLALCHEMY_DATABASE_URI"] = TEST_DATABASE_URL
-os.environ.setdefault("JWT_SECRET_KEY", "test-secret")
-os.environ.setdefault("RESEND_API_KEY", "")
-os.environ.setdefault("FRONTEND_URL", "http://localhost:3000")
+os.environ["ENVIRONMENT"] = "development"
+os.environ["JWT_SECRET_KEY"] = "test-secret"
+os.environ["RESEND_API_KEY"] = ""
+os.environ["BREVO_API_KEY"] = ""
+os.environ["EMAIL_ENABLED"] = "false"
+os.environ["MERCADO_PAGO_ACCESS_TOKEN"] = ""
+os.environ["MERCADO_PAGO_PUBLIC_KEY"] = ""
+os.environ["GOOGLE_CREDENTIALS_JSON"] = ""
+os.environ["GOOGLE_CALENDAR_ID"] = ""
+os.environ["GOOGLE_CLIENT_ID"] = ""
+os.environ["GCP_BUCKET_NAME"] = ""
+os.environ["GCP_PRIVATE_BUCKET_NAME"] = ""
+os.environ["FRONTEND_URL"] = "http://localhost:3000"
 
 
 def _db_reachable(url: str) -> bool:
@@ -33,12 +47,16 @@ def _db_reachable(url: str) -> bool:
 DB_AVAILABLE = _db_reachable(TEST_DATABASE_URL)
 
 if DB_AVAILABLE:
+    import app.main as main_module
     from app.api import deps
+    from app.db.migrate import run_migrations
     from app.db.session import Base
-    from app.main import app  # noqa: F401  (dispara create_all + run_migrations)
+    from app.main import app  # noqa: F401
 
     engine = create_engine(TEST_DATABASE_URL, future=True)
     Base.metadata.create_all(bind=engine)
+    run_migrations(engine)
+    main_module._startup_initialized = True
     TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 
@@ -51,6 +69,15 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if "db" in item.keywords:
             item.add_marker(skip_db)
+
+
+@pytest.fixture(autouse=True)
+def _disable_external_calendar(monkeypatch):
+    """Evita que cualquier test conecte al Google Calendar real aunque exista google_credentials.json en disco."""
+    import app.services.calendar_service as cal_svc
+
+    monkeypatch.setattr(cal_svc, "_get_calendar_service", lambda: None)
+    monkeypatch.setattr(cal_svc, "_get_calendar_service_oauth", lambda *_a, **_kw: None)
 
 
 @pytest.fixture

@@ -20,9 +20,9 @@ def create_access_token(subject: str, role: str, version: int = 0) -> str:
     return _encode({"sub": subject, "role": role, "ver": version, "typ": SESSION_TYP, "exp": expire})
 
 
-def create_magic_token(subject: str, redirect_to: str) -> str:
-    expire = datetime.utcnow() + timedelta(hours=24)
-    return _encode({"sub": subject, "magic": True, "redirect_to": redirect_to, "exp": expire})
+def create_magic_token(subject: str, redirect_to: str, version: int = 0) -> str:
+    expire = datetime.utcnow() + timedelta(minutes=60)
+    return _encode({"sub": subject, "typ": "magic", "magic": True, "ver": version, "redirect_to": redirect_to, "exp": expire})
 
 
 def create_oauth_pending_token(payload: dict, *, minutes: int = 30) -> str:
@@ -55,13 +55,12 @@ def decode_access_token(token: str) -> dict | None:
 
 
 def decode_session_token(token: str) -> dict | None:
-    """Decodifica un token de sesión. Rechaza magic links, estados OAuth y
-    tokens pendientes, que comparten secreto pero no deben servir como cookie.
-    Los tokens emitidos antes de agregar `typ` (sin ese campo) se aceptan."""
+    """Decodifica un token de sesión. Exige explícitamente `typ == 'access'` y
+    rechaza magic links, estados OAuth y tokens pendientes."""
     payload = decode_access_token(token)
     if not payload or payload.get("magic"):
         return None
-    if payload.get("typ") not in (None, SESSION_TYP):
+    if payload.get("typ") != SESSION_TYP:
         return None
     return payload
 
