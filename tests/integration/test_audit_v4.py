@@ -725,6 +725,11 @@ def test_fe5_01_pending_mercadopago_persists_initiated_and_blocks_second_charge(
             return _FakeResp()
 
     _auth_cookie(client, contractor_user)
+    initial_check = client.get(f"/api/v1/payments/mercadopago/check-status/{booking.id}")
+    assert initial_check.status_code == 200, initial_check.text
+    assert initial_check.json()["status"] == "not_started"
+    assert initial_check.json()["payment_id"] is None
+
     with patch("app.services.mercadopago_service.httpx.Client", _FakeHttpxClient):
         res1 = client.post(
             "/api/v1/payments/mercadopago/process",
@@ -741,6 +746,11 @@ def test_fe5_01_pending_mercadopago_persists_initiated_and_blocks_second_charge(
     body1 = res1.json()
     assert body1["status"] == "in_process"
     assert body1["payment_id"] == "998877501"
+
+    pending_check = client.get(f"/api/v1/payments/mercadopago/check-status/{booking.id}")
+    assert pending_check.status_code == 200, pending_check.text
+    assert pending_check.json()["status"] == "pending"
+    assert pending_check.json()["payment_id"] == "998877501"
 
     persisted = (
         db_session.query(Payment)

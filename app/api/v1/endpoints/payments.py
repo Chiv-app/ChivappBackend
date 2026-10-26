@@ -965,11 +965,16 @@ def check_mercadopago_payment_status(
     assert_booking_contractor_owner(db, booking, current_user)
 
     effective_payment_id = payment_id or collection_id
+    recent_payment: Payment | None = None
     if not effective_payment_id:
         # Fallback: buscar el pago más reciente asociado a esta reserva que posea gateway_payment_id
         recent_payment = (
             db.query(Payment)
-            .filter(Payment.booking_id == booking.id)
+            .filter(
+                Payment.booking_id == booking.id,
+                Payment.payment_type.is_distinct_from("refund"),
+                Payment.gateway_payment_id.isnot(None),
+            )
             .order_by(Payment.created_at.desc())
             .first()
         )
@@ -994,6 +999,11 @@ def check_mercadopago_payment_status(
             raise
         except Exception as exc:
             logger.warning("No se pudo sincronizar pago %s: %s", effective_payment_id, exc)
+            if recent_payment is not None:
+                if recent_payment.status == PaymentStatus.rejected:
+                    mp_status = "rejected"
+                elif recent_payment.status == PaymentStatus.initiated:
+                    mp_status = "pending"
 
     is_approved = booking.status in (
         BookingStatus.payment_retained,
@@ -1001,7 +1011,11 @@ def check_mercadopago_payment_status(
         BookingStatus.payment_released,
         BookingStatus.completed,
     )
-    is_rejected = not is_approved and mp_status in ("rejected", "cancelled")
+    is_rejected = not is_approved and (
+        mp_status in ("rejected", "cancelled")
+        or (mp_status is None and recent_payment is not None and recent_payment.status == PaymentStatus.rejected)
+    )
+    has_payment_in_flight = bool(effective_payment_id) or booking.status == BookingStatus.payment_pending
 
     if is_approved:
         status_value = "approved"
@@ -1009,9 +1023,12 @@ def check_mercadopago_payment_status(
     elif is_rejected:
         status_value = "rejected"
         message = "Mercado Pago rechazó el pago. Puedes intentarlo nuevamente."
-    else:
+    elif has_payment_in_flight:
         status_value = "pending"
         message = "El pago se encuentra en proceso de validación por Mercado Pago."
+    else:
+        status_value = "not_started"
+        message = "Aún no se ha iniciado ningún pago para esta reserva."
 
     return MercadoPagoPaymentCheckResponse(
         status=status_value,
