@@ -1917,11 +1917,13 @@ def send_admin_refund_transfer(
 def get_admin_activity(
     _: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
-    limit: int = Query(default=30, le=100),
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=30, ge=1, le=500),
 ):
+    fetch_window = min(skip + limit, 1000)
     activity: list[AdminActivityItem] = []
 
-    recent_users = db.query(User).order_by(User.created_at.desc()).limit(limit).all()
+    recent_users = db.query(User).order_by(User.created_at.desc()).limit(fetch_window).all()
     for user in recent_users:
         activity.append(
             AdminActivityItem(
@@ -1939,7 +1941,7 @@ def get_admin_activity(
         .join(User)
         .filter(MusicianProfile.status == ProfileStatus.pending_review)
         .order_by(MusicianProfile.submitted_at.desc())
-        .limit(limit)
+        .limit(fetch_window)
         .all()
     )
     for profile in pending_musicians:
@@ -1960,7 +1962,7 @@ def get_admin_activity(
         .join(User)
         .filter(ContractorProfile.status == ProfileStatus.pending_review)
         .order_by(ContractorProfile.submitted_at.desc())
-        .limit(limit)
+        .limit(fetch_window)
         .all()
     )
     for profile in pending_contractors:
@@ -1977,7 +1979,7 @@ def get_admin_activity(
             )
 
     recent_bookings = (
-        db.query(Booking).order_by(Booking.updated_at.desc()).limit(limit).all()
+        db.query(Booking).order_by(Booking.updated_at.desc()).limit(fetch_window).all()
     )
     for booking in recent_bookings:
         activity.append(
@@ -1992,7 +1994,7 @@ def get_admin_activity(
         )
 
     recent_payments = (
-        db.query(Payment).order_by(Payment.created_at.desc()).limit(limit).all()
+        db.query(Payment).order_by(Payment.created_at.desc()).limit(fetch_window).all()
     )
     for payment in recent_payments:
         activity.append(
@@ -2007,7 +2009,7 @@ def get_admin_activity(
         )
 
     activity.sort(key=lambda item: item.created_at, reverse=True)
-    return activity[:limit]
+    return activity[skip : skip + limit]
 
 
 def _support_ticket_admin_out(ticket: SupportTicket) -> AdminSupportTicketOut:
