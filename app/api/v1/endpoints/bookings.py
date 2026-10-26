@@ -228,11 +228,36 @@ def create_booking_as_musician(
         sign_ip=_client_ip(request),
     )
 
-    # Notifica al contratista si ya tiene cuenta activa
+    # Notifica al contratista si ya tiene cuenta activa; si es cliente sin correo
+    # (@guest.local) o inactivo, avisa al músico con instrucciones para compartir la contrata.
     try:
         contractor_user = _load_contractor_user(db, booking.contractor_id)
-        if contractor_user and contractor_user.is_active:
+        if (
+            contractor_user
+            and contractor_user.is_active
+            and contractor_user.email
+            and not contractor_user.email.endswith("@guest.local")
+        ):
             notify_booking_created(db, contractor_user, str(booking.id))
+            db.commit()
+        else:
+            from app.services.booking_notifications import notify_user
+
+            notify_user(
+                db,
+                user=current_user,
+                type="booking_created_guest",
+                title="Propuesta creada para cliente sin correo",
+                message=(
+                    "Creaste una contrata para un cliente sin correo electrónico. "
+                    "Comparte el enlace de la reserva por WhatsApp o teléfono para que pueda firmar y pagar."
+                ),
+                booking_id=str(booking.id),
+                meta={
+                    "contractor_phone": contractor_user.phone if contractor_user else None,
+                    "requires_manual_share": True,
+                },
+            )
             db.commit()
     except HTTPException:
         pass

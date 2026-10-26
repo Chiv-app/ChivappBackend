@@ -387,14 +387,37 @@ def compute_contract_body_sha256(title: str | None, body: str | None) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def build_default_contract_template_body() -> str:
+_CURRENT_DEFAULT_POLICY_PHRASE = (
+    "con 15 días calendario o más de anticipación se le reembolsa el 100 % de lo pagado "
+    "(sin el costo de la pasarela de pagos); entre 7 y 14 días calendario, el 50 %; "
+    "y con menos de 7 días calendario no hay reembolso."
+)
+_LEGACY_DEFAULT_POLICY_PHRASE = (
+    "con más de 15 días de anticipación se le reembolsa el 100 % de lo pagado "
+    "(sin el costo de la pasarela de pagos); entre 7 y 15 días, el 50 %; "
+    "y con menos de 7 días no hay reembolso."
+)
+
+
+def apply_cancellation_policy_to_contract_html(html: str | None) -> str:
+    if not html:
+        return ""
     full_days = int(settings.CANCEL_FULL_REFUND_MIN_DAYS)
     partial_days = int(settings.CANCEL_PARTIAL_REFUND_MIN_DAYS)
     partial_pct = int(settings.CANCEL_PARTIAL_REFUND_PERCENT)
-    return DEFAULT_CONTRACT_TEMPLATE_BODY.replace(
-        "con más de 15 días de anticipación se le reembolsa el 100 % de lo pagado (sin el costo de la pasarela de pagos); entre 7 y 15 días, el 50 %; y con menos de 7 días no hay reembolso.",
-        f"con {full_days} días calendario o más de anticipación se le reembolsa el 100 % de lo pagado (sin el costo de la pasarela de pagos); entre {partial_days} y {full_days - 1} días calendario, el {partial_pct} %; y con menos de {partial_days} días calendario no hay reembolso.",
+    replacement = (
+        f"con {full_days} días calendario o más de anticipación se le reembolsa el 100 % de lo pagado "
+        f"(sin el costo de la pasarela de pagos); entre {partial_days} y {max(partial_days, full_days - 1)} días calendario, "
+        f"el {partial_pct} %; y con menos de {partial_days} días calendario no hay reembolso."
     )
+    return (
+        html.replace(_CURRENT_DEFAULT_POLICY_PHRASE, replacement)
+        .replace(_LEGACY_DEFAULT_POLICY_PHRASE, replacement)
+    )
+
+
+def build_default_contract_template_body() -> str:
+    return apply_cancellation_policy_to_contract_html(DEFAULT_CONTRACT_TEMPLATE_BODY)
 
 
 def _booking_contract_content(
@@ -407,8 +430,8 @@ def _booking_contract_content(
     template_body = profile.contract_template_body
     if contract_html_text_length(template_body) < 50:
         template_body = build_default_contract_template_body()
-    elif template_body == DEFAULT_CONTRACT_TEMPLATE_BODY:
-        template_body = build_default_contract_template_body()
+    else:
+        template_body = apply_cancellation_policy_to_contract_html(template_body)
 
     raw_title = (
         profile.contract_template_title

@@ -91,7 +91,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["X-Unread-Count"],
+    expose_headers=["X-Unread-Count", "X-Total-Count"],
 )
 
 @app.middleware("http")

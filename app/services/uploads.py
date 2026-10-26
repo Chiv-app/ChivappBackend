@@ -14,6 +14,7 @@ from __future__ import annotations
 import base64
 import logging
 import re
+import time
 import uuid
 from pathlib import Path
 
@@ -89,10 +90,43 @@ async def _read_limited(file: UploadFile) -> bytes:
     return b"".join(chunks)
 
 
-def _gcs_bucket(name: str):
-    from google.cloud import storage
+_gcs_client = None
+_MISSING_GCS_BLOBS: dict[tuple[str, str], float] = {}
+_MISSING_GCS_TTL_SECONDS = 60.0
 
-    return storage.Client().bucket(name)
+
+def _get_gcs_client():
+    global _gcs_client
+    if _gcs_client is None:
+        from google.cloud import storage
+
+        _gcs_client = storage.Client()
+    return _gcs_client
+
+
+def _gcs_bucket(name: str):
+    return _get_gcs_client().bucket(name)
+
+
+def _clear_missing_gcs_cache(bucket_name: str | None, blob_name: str | None) -> None:
+    if bucket_name and blob_name:
+        _MISSING_GCS_BLOBS.pop((bucket_name, blob_name), None)
+
+
+def _download_gcs_blob_cached(bucket_name: str, blob_name: str) -> bytes | None:
+    key = (bucket_name, blob_name)
+    now = time.monotonic()
+    expires_at = _MISSING_GCS_BLOBS.get(key)
+    if expires_at is not None:
+        if now < expires_at:
+            return None
+        _MISSING_GCS_BLOBS.pop(key, None)
+
+    blob = _gcs_bucket(bucket_name).blob(blob_name)
+    if not blob.exists():
+        _MISSING_GCS_BLOBS[key] = now + _MISSING_GCS_TTL_SECONDS
+        return None
+    return blob.download_as_bytes()
 
 
 async def save_upload(file: UploadFile, *, private: bool = False, owner_id=None, db=None) -> str:
@@ -158,6 +192,7 @@ async def save_upload(file: UploadFile, *, private: bool = False, owner_id=None,
         try:
             blob = _gcs_bucket(settings.GCP_BUCKET_NAME).blob(filename)
             blob.upload_from_string(content, content_type=content_type)
+            _clear_missing_gcs_cache(settings.GCP_BUCKET_NAME, filename)
         except Exception as exc:  # noqa: BLE001
             logger.exception("Fallo al subir a GCS")
             raise ValueError("Error al subir el archivo. Intenta de nuevo.") from exc
@@ -250,6 +285,7 @@ def save_data_url_upload(
         try:
             blob = _gcs_bucket(settings.GCP_BUCKET_NAME).blob(filename)
             blob.upload_from_string(content, content_type=content_type)
+            _clear_missing_gcs_cache(settings.GCP_BUCKET_NAME, filename)
         except Exception as exc:  # noqa: BLE001
             logger.exception("Fallo al subir data_url a GCS")
             raise ValueError("Error al subir el archivo. Intenta de nuevo.") from exc
@@ -323,8 +359,7 @@ def read_upload_bytes(url: str | None) -> bytes | None:
         if bucket != settings.GCP_BUCKET_NAME or not _safe_name(blob_name):
             return None
         try:
-            blob = _gcs_bucket(bucket).blob(blob_name)
-            return blob.download_as_bytes() if blob.exists() else None
+            return _download_gcs_blob_cached(bucket, blob_name)
         except Exception:  # noqa: BLE001
             logger.exception("No se pudo leer %s de GCS", blob_name)
             return None
@@ -337,12 +372,58 @@ def read_upload_bytes(url: str | None) -> bytes | None:
         return path.read_bytes()
     if settings.GCP_BUCKET_NAME:
         try:
-            blob = _gcs_bucket(settings.GCP_BUCKET_NAME).blob(name)
-            return blob.download_as_bytes() if blob.exists() else None
+            return _download_gcs_blob_cached(settings.GCP_BUCKET_NAME, name)
         except Exception:  # noqa: BLE001
             logger.exception("No se pudo leer %s de GCS", name)
             return None
     return None
+
+
+def delete_public_upload(url: str | None) -> bool:
+    """Elimina un archivo público tanto de disco local (`uploads/`) como del bucket público GCS."""
+    if not url or url.startswith(PRIVATE_URL_PREFIX):
+        return False
+
+    blob_name: str | None = None
+    bucket_name: str | None = settings.GCP_BUCKET_NAME or None
+
+    if url.startswith(GCS_PUBLIC_PREFIX):
+        bucket_and_name = url[len(GCS_PUBLIC_PREFIX):].split("/", 1)
+        if len(bucket_and_name) != 2:
+            return False
+        bucket_candidate, name_candidate = bucket_and_name
+        if bucket_name and bucket_candidate != bucket_name:
+            return False
+        bucket_name = bucket_candidate
+        blob_name = _safe_name(name_candidate)
+    elif url.startswith(PUBLIC_URL_PREFIX):
+        blob_name = _safe_name(url.rsplit("/", 1)[-1])
+
+    if not blob_name:
+        return False
+
+    deleted = False
+    path = UPLOAD_DIR / blob_name
+    if path.is_file():
+        try:
+            path.unlink()
+            deleted = True
+        except Exception:  # noqa: BLE001
+            logger.exception("No se pudo eliminar archivo local público %s", blob_name)
+
+    if bucket_name:
+        try:
+            blob = _gcs_bucket(bucket_name).blob(blob_name)
+            if blob.exists():
+                blob.delete()
+                deleted = True
+            _MISSING_GCS_BLOBS[(bucket_name, blob_name)] = (
+                time.monotonic() + _MISSING_GCS_TTL_SECONDS
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("No se pudo eliminar %s del bucket público %s", blob_name, bucket_name)
+
+    return deleted
 
 
 def upload_exists(url: str | None) -> bool:

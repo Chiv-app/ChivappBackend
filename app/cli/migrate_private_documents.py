@@ -14,6 +14,7 @@ from app.models.booking_complaint import BookingComplaint
 from app.models.contract import Contract
 from app.models.contractor_profile import ContractorProfile
 from app.models.musician_profile import MusicianProfile
+from app.models.payment import Payment
 from app.models.uploaded_file import UploadedFile
 from app.services.uploads import (
     ALLOWED_TYPES,
@@ -21,6 +22,8 @@ from app.services.uploads import (
     PRIVATE_URL_PREFIX,
     PUBLIC_URL_PREFIX,
     _store_private,
+    delete_public_upload,
+    read_private_file,
     read_upload_bytes,
     sniff_content_type,
 )
@@ -109,6 +112,11 @@ def migrate_url(db: Session, record, field_name: str, owner_user_id, execute: bo
     if execute:
         try:
             _store_private(new_filename, content, content_type)
+            verified_bytes = read_private_file(new_filename)
+            if verified_bytes != content:
+                raise RuntimeError(
+                    f"Verification failed after writing private file {new_filename}"
+                )
             uploaded_file = UploadedFile(
                 filename=new_filename,
                 owner_user_id=owner_user_id,
@@ -118,7 +126,8 @@ def migrate_url(db: Session, record, field_name: str, owner_user_id, execute: bo
             db.add(uploaded_file)
             setattr(record, field_name, new_url)
             db.commit()
-            logger.info(" -> Success.")
+            delete_public_upload(url)
+            logger.info(" -> Success (migrated and removed public copy).")
         except Exception as exc:
             db.rollback()
             logger.exception(" -> Failed to migrate %s: %s", url, exc)
@@ -186,6 +195,26 @@ def main() -> None:
                     complaint.refund_sent_by_admin_id,
                     args.execute,
                 )
+
+        payments = db.query(Payment).all()
+        for payment in payments:
+            booking = (
+                db.query(Booking).filter(Booking.id == payment.booking_id).first()
+                if payment.booking_id
+                else None
+            )
+            contractor_owner = (
+                booking.contractor.user_id if booking and booking.contractor else None
+            )
+            payout_owner = (
+                payment.reviewed_by_user_id
+                or (booking.musician.user_id if booking and booking.musician else None)
+                or contractor_owner
+            )
+            if payment.evidence_url:
+                migrate_url(db, payment, "evidence_url", contractor_owner, args.execute)
+            if payment.payout_evidence_url:
+                migrate_url(db, payment, "payout_evidence_url", payout_owner, args.execute)
 
         logger.info("Migration completed.")
     finally:

@@ -70,30 +70,31 @@ def resolve_or_create_contractor_client(
         )
     else:
         phone_clean = normalize_phone(phone)
-        if phone_clean:
-            q_phone = db.query(User).filter(
-                User.role == UserRole.contractor,
-                User.email.like("%@guest.local"),
-                User.phone == phone_clean,
+        if phone_clean and musician_id is not None:
+            user = (
+                db.query(User)
+                .filter(
+                    User.role == UserRole.contractor,
+                    User.email.like("%@guest.local"),
+                    User.phone == phone_clean,
+                    User.created_by_musician_id == musician_id,
+                )
+                .first()
             )
-            if musician_id is not None:
-                q_phone = q_phone.filter(User.created_by_musician_id == musician_id)
-            user = q_phone.first()
-        if user is None and document_number:
+        if user is None and document_number and musician_id is not None:
             doc_clean = normalize_document_number(document_number)
             if doc_clean:
-                q_doc = (
+                existing_prof = (
                     db.query(ContractorProfile)
                     .join(User, ContractorProfile.user_id == User.id)
                     .filter(
                         User.role == UserRole.contractor,
                         User.email.like("%@guest.local"),
                         ContractorProfile.document_number == doc_clean,
+                        User.created_by_musician_id == musician_id,
                     )
+                    .first()
                 )
-                if musician_id is not None:
-                    q_doc = q_doc.filter(User.created_by_musician_id == musician_id)
-                existing_prof = q_doc.first()
                 if existing_prof:
                     user = db.get(User, existing_prof.user_id)
 

@@ -46,6 +46,31 @@ class RepertoireItem(BaseModel):
         return validate_safe_public_url(value)
 
 
+def normalize_safe_public_url_for_output(value: str | None) -> str | None:
+    if value is None or not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    lower = cleaned.lower()
+    if not lower.startswith(("https://", "http://", "/")) and "." in lower.split("/")[0] and ":" not in lower.split("/")[0]:
+        cleaned = f"https://{cleaned}"
+    try:
+        return validate_safe_public_url(cleaned)
+    except ValueError:
+        return None
+
+
+class RepertoireItemOut(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    youtube_url: str | None = None
+
+    @field_validator("youtube_url", mode="before")
+    @classmethod
+    def _normalize_youtube_url(cls, value):
+        return normalize_safe_public_url_for_output(value)
+
+
 def validate_safe_public_url(value: str | None) -> str | None:
     if value is None:
         return None
@@ -237,13 +262,13 @@ class MusicianProfileUpdate(BaseModel):
 
 def _sync_songs_and_repertoire(
     songs: list[str],
-    repertoire: list[RepertoireItem],
-) -> tuple[list[str], list[RepertoireItem]]:
+    repertoire: list,
+) -> tuple[list[str], list]:
     if repertoire:
         titles = [item.title for item in repertoire]
         return titles, repertoire
     if songs:
-        items = [RepertoireItem(title=title) for title in songs if title]
+        items = [RepertoireItemOut(title=title) for title in songs if title]
         return songs, items
     return [], []
 
@@ -251,6 +276,7 @@ def _sync_songs_and_repertoire(
 class MusicianProfileOut(MusicianProfileBase):
     id: UUID
     user_id: UUID
+    repertoire: list[RepertoireItemOut] = Field(default_factory=list)
     stage_name: str | None = None
     slug: str | None = None
     username: str | None = None
@@ -268,6 +294,20 @@ class MusicianProfileOut(MusicianProfileBase):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+    @field_validator(
+        "showreel_video_url",
+        "instagram_url",
+        "facebook_url",
+        "tiktok_url",
+        "youtube_channel_url",
+        "spotify_url",
+        "website_url",
+        mode="before",
+    )
+    @classmethod
+    def _normalize_output_urls(cls, value):
+        return normalize_safe_public_url_for_output(value)
 
     @field_validator(
         "genres",
@@ -298,7 +338,7 @@ class MusicianProfileListOut(BaseModel):
     genres: list[str]
     instruments: list[str]
     songs: list[str]
-    repertoire: list[RepertoireItem] = Field(default_factory=list)
+    repertoire: list[RepertoireItemOut] = Field(default_factory=list)
     price_per_hour: float | None
     price_per_event: float | None
     availability_type: AvailabilityType | None = None
@@ -313,6 +353,11 @@ class MusicianProfileListOut(BaseModel):
     is_verified: bool = True
 
     model_config = {"from_attributes": True}
+
+    @field_validator("showreel_video_url", mode="before")
+    @classmethod
+    def _normalize_list_showreel_url(cls, value):
+        return normalize_safe_public_url_for_output(value)
 
     @field_validator(
         "genres",
@@ -352,7 +397,7 @@ class MusicianProfilePublicOut(BaseModel):
     genres: list[str]
     instruments: list[str]
     songs: list[str]
-    repertoire: list[RepertoireItem] = Field(default_factory=list)
+    repertoire: list[RepertoireItemOut] = Field(default_factory=list)
     price_per_hour: float | None
     price_per_event: float | None
     portfolio_description: str | None
@@ -375,6 +420,20 @@ class MusicianProfilePublicOut(BaseModel):
     reviews: list[MusicianPublicReviewOut] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
+
+    @field_validator(
+        "showreel_video_url",
+        "instagram_url",
+        "facebook_url",
+        "tiktok_url",
+        "youtube_channel_url",
+        "spotify_url",
+        "website_url",
+        mode="before",
+    )
+    @classmethod
+    def _normalize_public_urls(cls, value):
+        return normalize_safe_public_url_for_output(value)
 
     @field_validator(
         "genres",

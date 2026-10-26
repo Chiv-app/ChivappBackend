@@ -5,6 +5,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from app.core.timezone import now_peru_naive
 
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, object_session
 
 from app.models.booking import Booking, BookingStatus
@@ -265,8 +266,14 @@ def release_retained_payments(
                     for req in pending_requests:
                         req.status = "processed"
                         req.processed_at = now
-        except Exception:
-            pass
+        except SQLAlchemyError as exc:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "No se pudieron actualizar solicitudes de retiro pendientes para músico %s: %s",
+                booking.musician_id,
+                exc,
+            )
 
     return payments
 

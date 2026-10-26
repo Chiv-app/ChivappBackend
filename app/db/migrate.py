@@ -588,7 +588,6 @@ def run_startup_seeds() -> None:
             if not locked:
                 return
         ensure_role_profiles(db)
-        fix_unverified_published_profiles(db)
         ensure_email_templates(db)
         backfill_musician_slugs(db)
         backfill_user_usernames(db)

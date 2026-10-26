@@ -101,10 +101,57 @@ def _without_gateway_cost(booking: Booking, gross: Decimal) -> Decimal:
     return min(gross, gross * app_total / total)
 
 
-def contractor_refund_percent(days_before_event: int) -> tuple[int, str]:
-    full_days = settings.CANCEL_FULL_REFUND_MIN_DAYS
-    partial_days = settings.CANCEL_PARTIAL_REFUND_MIN_DAYS
-    partial = settings.CANCEL_PARTIAL_REFUND_PERCENT
+def parse_frozen_cancellation_policy(raw: str | None) -> tuple[int, int, int] | None:
+    if not raw or not isinstance(raw, str):
+        return None
+    parts = raw.strip().split("/")
+    if len(parts) != 3:
+        return None
+    try:
+        full_days = int(parts[0].rstrip("dD"))
+        partial_days = int(parts[1].rstrip("dD"))
+        partial_pct = int(parts[2].rstrip("%"))
+    except ValueError:
+        return None
+    if full_days <= 0 or partial_days < 0 or not (0 <= partial_pct <= 100):
+        return None
+    return full_days, partial_days, partial_pct
+
+
+def _resolve_booking_cancellation_policy(
+    db: Session | None, booking: Booking | None
+) -> tuple[int, int, int]:
+    if db is not None and booking is not None and getattr(booking, "id", None) is not None:
+        from app.models.contract import Contract
+
+        contract = (
+            db.query(Contract)
+            .filter(Contract.booking_id == booking.id)
+            .first()
+        )
+        if contract and isinstance(contract.context, dict):
+            frozen = parse_frozen_cancellation_policy(
+                contract.context.get("__cancellation_policy__")
+            )
+            if frozen is not None:
+                return frozen
+    return (
+        int(settings.CANCEL_FULL_REFUND_MIN_DAYS),
+        int(settings.CANCEL_PARTIAL_REFUND_MIN_DAYS),
+        int(settings.CANCEL_PARTIAL_REFUND_PERCENT),
+    )
+
+
+def contractor_refund_percent(
+    days_before_event: int,
+    *,
+    full_days: int | None = None,
+    partial_days: int | None = None,
+    partial_percent: int | None = None,
+) -> tuple[int, str]:
+    full_days = settings.CANCEL_FULL_REFUND_MIN_DAYS if full_days is None else full_days
+    partial_days = settings.CANCEL_PARTIAL_REFUND_MIN_DAYS if partial_days is None else partial_days
+    partial = settings.CANCEL_PARTIAL_REFUND_PERCENT if partial_percent is None else partial_percent
     if days_before_event >= full_days:
         return 100, f"{full_days} días o más de anticipación: reembolso del 100 %"
     if days_before_event >= partial_days:
@@ -132,7 +179,13 @@ def quote_cancellation(
         base = paid
         rule = f"Cancelación de la plataforma: reembolso del {percent} %"
     else:
-        percent, rule = contractor_refund_percent(days)
+        full_d, partial_d, partial_pct = _resolve_booking_cancellation_policy(db, booking)
+        percent, rule = contractor_refund_percent(
+            days,
+            full_days=full_d,
+            partial_days=partial_d,
+            partial_percent=partial_pct,
+        )
         base = _without_gateway_cost(booking, paid)
 
     amount = (base * Decimal(percent) / Decimal("100")).quantize(CENT, rounding=ROUND_HALF_UP)

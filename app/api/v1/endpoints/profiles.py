@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import List
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session, joinedload
 
 from app.api import deps
@@ -126,6 +126,7 @@ def _published_musician_query(db: Session):
             MusicianProfile.status == ProfileStatus.published,
             User.is_verified.is_(True),
         )
+        .order_by(MusicianProfile.created_at.desc(), MusicianProfile.id.asc())
     )
 
 
@@ -321,17 +322,28 @@ def get_platform_stats(db: Session = Depends(deps.get_db)):
     status_code=status.HTTP_200_OK,
 )
 def list_musician_profiles(
+    response: Response,
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=50),
     db: Session = Depends(deps.get_db),
 ):
-    candidates = _published_musician_query(db).all()
-    listed = [
-        profile
-        for profile in candidates
-        if is_musician_listed_publicly(db, profile)
-    ]
-    page = listed[skip : skip + limit]
+    base_query = (
+        db.query(MusicianProfile)
+        .join(User)
+        .filter(
+            MusicianProfile.status == ProfileStatus.published,
+            User.is_verified.is_(True),
+        )
+    )
+    total = base_query.count()
+    response.headers["X-Total-Count"] = str(total)
+    page = (
+        base_query.options(joinedload(MusicianProfile.user))
+        .order_by(MusicianProfile.created_at.desc(), MusicianProfile.id.asc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
     return [_to_musician_list_out(db, profile) for profile in page]
 
 

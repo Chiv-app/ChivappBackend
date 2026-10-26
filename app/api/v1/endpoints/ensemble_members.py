@@ -1047,6 +1047,16 @@ def mark_payout_paid(
             400,
             "El monto del reparto debe ser mayor a cero para marcarlo como pagado",
         )
+    if booking.status not in (
+        BookingStatus.payment_retained,
+        BookingStatus.in_progress,
+        BookingStatus.payment_released,
+        BookingStatus.completed,
+    ):
+        raise HTTPException(
+            400,
+            "La reserva aún no tiene un pago confirmado para marcar el reparto como pagado",
+        )
     payout.status = BookingMemberPayoutStatus.paid
     payout.paid_at = datetime.utcnow()
     db.commit()

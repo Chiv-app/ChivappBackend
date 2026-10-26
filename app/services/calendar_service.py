@@ -1,9 +1,12 @@
+import base64
+import hashlib
 import logging
 import os
 import json
 from datetime import datetime
 from typing import Any
 
+from cryptography.fernet import Fernet, InvalidToken
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -13,18 +16,51 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 SCOPES = ['https://www.googleapis.com/auth/calendar.events']
+_ENC_PREFIX = "enc:v1:"
+
+
+def _calendar_fernet() -> Fernet:
+    secret = (getattr(settings, "JWT_SECRET_KEY", None) or "dev-calendar-token-secret").encode("utf-8")
+    key = base64.urlsafe_b64encode(hashlib.sha256(secret).digest())
+    return Fernet(key)
+
+
+def encrypt_refresh_token(token: str) -> str:
+    """Cifra un refresh token de Google OAuth en reposo (SEC3-13)."""
+    if not token:
+        return token
+    if token.startswith(_ENC_PREFIX):
+        return token
+    ciphertext = _calendar_fernet().encrypt(token.encode("utf-8")).decode("ascii")
+    return f"{_ENC_PREFIX}{ciphertext}"
+
+
+def decrypt_refresh_token(value: str | None) -> str | None:
+    """Descifra un refresh token cifrado con `encrypt_refresh_token` (o devuelve texto plano legado)."""
+    if not value:
+        return None
+    if not value.startswith(_ENC_PREFIX):
+        return value
+    raw = value[len(_ENC_PREFIX):]
+    try:
+        return _calendar_fernet().decrypt(raw.encode("ascii")).decode("utf-8")
+    except (InvalidToken, ValueError):
+        logger.warning("No se pudo descifrar google_calendar_refresh_token.")
+        return None
+
 
 def _get_calendar_service_oauth(refresh_token: str):
     """Inicializa y devuelve el servicio de Google Calendar usando OAuth 2.0."""
     from google.oauth2.credentials import Credentials
     from googleapiclient.discovery import build
 
-    if not refresh_token or not settings.GOOGLE_CLIENT_ID or not settings.GOOGLE_CLIENT_SECRET:
+    resolved_token = decrypt_refresh_token(refresh_token)
+    if not resolved_token or not settings.GOOGLE_CLIENT_ID or not settings.GOOGLE_CLIENT_SECRET:
         return None
         
     creds = Credentials(
         token=None,
-        refresh_token=refresh_token,
+        refresh_token=resolved_token,
         token_uri="https://oauth2.googleapis.com/token",
         client_id=settings.GOOGLE_CLIENT_ID,
         client_secret=settings.GOOGLE_CLIENT_SECRET

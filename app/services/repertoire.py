@@ -3,6 +3,22 @@
 from __future__ import annotations
 
 
+def _normalize_youtube_url(raw_url) -> str | None:
+    if not isinstance(raw_url, str):
+        return None
+    cleaned = raw_url.strip()
+    if not cleaned or len(cleaned) > 500:
+        return None
+    lower = cleaned.lower()
+    if lower.startswith(("javascript:", "data:", "vbscript:", "file:", "blob:", "/uploads/private/")):
+        return None
+    if lower.startswith(("https://", "http://", "/uploads/")):
+        return cleaned
+    if not lower.startswith("/") and "." in lower.split("/")[0] and ":" not in lower.split("/")[0]:
+        return f"https://{cleaned}"
+    return None
+
+
 def normalize_repertoire_items(raw) -> list[dict]:
     """Normalize repertoire payloads to [{title, youtube_url}]."""
     if not raw:
@@ -21,11 +37,7 @@ def normalize_repertoire_items(raw) -> list[dict]:
             title = str(entry.get("title") or "").strip()
             if not title:
                 continue
-            youtube = entry.get("youtube_url")
-            if isinstance(youtube, str):
-                youtube = youtube.strip() or None
-            else:
-                youtube = None
+            youtube = _normalize_youtube_url(entry.get("youtube_url"))
             items.append({"title": title, "youtube_url": youtube})
     return items
 

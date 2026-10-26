@@ -152,22 +152,18 @@ def get_booking_link(
 
     _assert_musician_eligible_for_link(link.musician, for_owner=False)
         
+    effective_status = link.status
     if link.expires_at and link.expires_at < datetime.utcnow():
-        if link.status == BookingLinkStatus.active:
-            link.status = BookingLinkStatus.expired
-            db.commit()
-            db.refresh(link)
+        if effective_status == BookingLinkStatus.active:
+            effective_status = BookingLinkStatus.expired
 
-    # Si el link tiene una reserva vinculada que fue cancelada, expirar el link.
+    # Si el link tiene una reserva vinculada que fue cancelada, tratar el link como expirado.
     if link.booking_id:
         existing_booking = db.get(Booking, link.booking_id)
         if existing_booking and existing_booking.status == BookingStatus.cancelled:
-            if link.status != BookingLinkStatus.expired:
-                link.status = BookingLinkStatus.expired
-                db.commit()
-                db.refresh(link)
+            effective_status = BookingLinkStatus.expired
         elif (
-            link.status == BookingLinkStatus.completed
+            effective_status == BookingLinkStatus.completed
             and existing_booking
             and existing_booking.status
             in (
@@ -178,16 +174,14 @@ def get_booking_link(
             )
         ):
             if not link.expires_at or link.expires_at >= datetime.utcnow():
-                link.status = BookingLinkStatus.active
-                db.commit()
-                db.refresh(link)
-            
-    if link.status == BookingLinkStatus.expired:
+                effective_status = BookingLinkStatus.active
+
+    if effective_status == BookingLinkStatus.expired:
         raise HTTPException(status_code=400, detail="Este link de pago ha expirado.")
-    elif link.status == BookingLinkStatus.completed:
+    elif effective_status == BookingLinkStatus.completed:
         raise HTTPException(status_code=400, detail="Este link de pago ya ha sido completado.")
-    elif link.status != BookingLinkStatus.active:
-        raise HTTPException(status_code=400, detail=f"Este link de pago ya no está activo ({link.status.value}).")
+    elif effective_status != BookingLinkStatus.active:
+        raise HTTPException(status_code=400, detail=f"Este link de pago ya no está activo ({effective_status.value}).")
         
     # Extraer multimedia del músico (fotos y videos) desde MusicianMedia
     media_records = (
@@ -261,11 +255,16 @@ def get_booking_link(
     from app.services.contract_pdf import (
         DEFAULT_CONTRACT_TEMPLATE_BODY,
         DEFAULT_CONTRACT_TEMPLATE_TITLE,
+        apply_cancellation_policy_to_contract_html,
+        build_default_contract_template_body,
     )
     from app.services.html_sanitizer import sanitize_contract_html
 
     raw_title = (link.musician.contract_template_title or "").strip() or DEFAULT_CONTRACT_TEMPLATE_TITLE
-    raw_body = (link.musician.contract_template_body or "").strip() or DEFAULT_CONTRACT_TEMPLATE_BODY
+    raw_body = (
+        apply_cancellation_policy_to_contract_html((link.musician.contract_template_body or "").strip())
+        or build_default_contract_template_body()
+    )
 
     return BookingLinkPublicOut(
         token=link.token,
@@ -291,7 +290,7 @@ def get_booking_link(
             location_city=link.musician.location_city,
             reviews=reviews_data
         ),
-        status=link.status.value,
+        status=effective_status.value,
         expires_at=link.expires_at,
         cancellation_policy=CancellationPolicyPublicOut(
             full_refund_min_days=int(settings.CANCEL_FULL_REFUND_MIN_DAYS),
@@ -578,13 +577,14 @@ def checkout_booking_link(
             contractor.document_number = norm_doc
             db.flush()
 
-        if norm_phone and not user.phone:
+        if norm_phone:
             try:
                 assert_phone_unique(db, norm_phone, exclude_user_id=user.id)
             except HTTPException:
                 raise HTTPException(status_code=400, detail="Este celular ya está registrado a otra cuenta.")
-            user.phone = norm_phone
-            db.flush()
+            if not user.phone:
+                user.phone = norm_phone
+                db.flush()
 
     reuse_existing = False
     if existing_booking and booking_is_unpaid:
@@ -724,14 +724,25 @@ def reset_link_expiration(
     if link.musician.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="No autorizado.")
         
+    existing_booking = db.get(Booking, link.booking_id) if link.booking_id else None
     if link.status == BookingLinkStatus.completed:
-        raise HTTPException(status_code=400, detail="El link ya fue completado.")
-        
+        if not existing_booking or existing_booking.status not in (
+            BookingStatus.cancelled,
+            BookingStatus.accepted,
+            BookingStatus.contract_pending,
+            BookingStatus.contract_signed,
+            BookingStatus.payment_pending,
+        ):
+            raise HTTPException(status_code=400, detail="El link ya fue completado.")
+
+    if existing_booking and existing_booking.status == BookingStatus.cancelled:
+        link.booking_id = None
+
     link.status = BookingLinkStatus.active
     link.expires_at = datetime.utcnow() + timedelta(hours=24)
     db.commit()
     db.refresh(link)
-    
+
     return link
 
 # Trigger deployment
