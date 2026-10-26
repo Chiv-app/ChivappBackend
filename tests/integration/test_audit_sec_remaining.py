@@ -94,10 +94,16 @@ def test_sec06_magic_link_respects_token_version_and_active_status(client, db_se
     res = client.get(f"/api/v1/auth/magic-link/login?token={stale_token}", follow_redirects=False)
     assert "error=invalid_magic_link" in res.headers["location"]
     assert "access_token" not in res.cookies
+    assert client.post("/api/v1/auth/magic-link/login", json={"token": stale_token}).status_code == 401
 
     valid_token = create_magic_token(str(user.id), "/contractor/bookings", version=2)
-    res_ok = client.get(f"/api/v1/auth/magic-link/login?token={valid_token}", follow_redirects=False)
-    assert res_ok.headers["location"].endswith("/contractor/bookings")
+    res_get = client.get(f"/api/v1/auth/magic-link/login?token={valid_token}", follow_redirects=False)
+    assert "/magic-link?" in res_get.headers["location"]
+    assert "access_token" not in res_get.cookies
+
+    res_ok = client.post("/api/v1/auth/magic-link/login", json={"token": valid_token})
+    assert res_ok.status_code == 200
+    assert res_ok.json()["redirect_to"] == "/contractor/bookings"
     assert "access_token" in res_ok.cookies
 
 

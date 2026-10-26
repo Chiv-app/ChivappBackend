@@ -464,15 +464,21 @@ def checkout_booking_link(
             detail="No puedes usar tu propia cuenta de músico para contratarte a ti mismo.",
         )
 
-    from app.services.uniqueness import normalize_document_number
+    from app.services.uniqueness import (
+        assert_phone_unique,
+        normalize_document_number,
+        normalize_phone,
+    )
 
     norm_doc = normalize_document_number(payload.document_number)
+    norm_phone = normalize_phone(payload.phone)
     user = db.query(User).filter(func.lower(User.email) == email).first()
-    
+
     if not user:
-        if payload.phone:
-            existing_phone = db.query(User).filter(User.phone == payload.phone).first()
-            if existing_phone:
+        if norm_phone:
+            try:
+                assert_phone_unique(db, norm_phone)
+            except HTTPException:
                 raise HTTPException(status_code=400, detail="Este celular ya está registrado a otra cuenta.")
         if norm_doc:
             existing_doc = (
@@ -488,11 +494,11 @@ def checkout_booking_link(
                     status_code=409,
                     detail="Este número de documento ya está registrado en otra cuenta.",
                 )
-        
+
         user = User(
             email=email,
             fullname=payload.fullname,
-            phone=payload.phone,
+            phone=norm_phone,
             role=UserRole.contractor,
             is_active=True,
             is_verified=False,
@@ -504,10 +510,12 @@ def checkout_booking_link(
             send_email_verification(db, user)
         except Exception:
             pass
-        
+
+        # SEC4-08: una cuenta recién creada sin verificar correo no bloquea el DNI
+        # en el índice único de contractor_profile (se guarda en el snapshot del contrato).
         contractor = ContractorProfile(
             user_id=user.id,
-            document_number=norm_doc,
+            document_number=None,
         )
         db.add(contractor)
         db.flush()
@@ -556,21 +564,26 @@ def checkout_booking_link(
                     detail="Este número de documento ya está registrado en otra cuenta.",
                 )
 
+        user_is_verified = bool(user.is_verified or user.email_verified_at is not None)
         contractor_check = db.query(ContractorProfile).filter(ContractorProfile.user_id == user.id).first()
         contractor = contractor_check
         if not contractor:
-            contractor = ContractorProfile(user_id=user.id, document_number=norm_doc)
+            contractor = ContractorProfile(
+                user_id=user.id,
+                document_number=norm_doc if user_is_verified else None,
+            )
             db.add(contractor)
             db.flush()
-        elif norm_doc and not contractor.document_number:
+        elif norm_doc and not contractor.document_number and user_is_verified:
             contractor.document_number = norm_doc
             db.flush()
-            
-        if payload.phone and not user.phone:
-            existing_phone = db.query(User).filter(User.phone == payload.phone).first()
-            if existing_phone and existing_phone.id != user.id:
+
+        if norm_phone and not user.phone:
+            try:
+                assert_phone_unique(db, norm_phone, exclude_user_id=user.id)
+            except HTTPException:
                 raise HTTPException(status_code=400, detail="Este celular ya está registrado a otra cuenta.")
-            user.phone = payload.phone
+            user.phone = norm_phone
             db.flush()
 
     reuse_existing = False
@@ -638,16 +651,25 @@ def checkout_booking_link(
     
     # Generate contract
     db.flush()
+    keep_doc_in_profile = bool(
+        contractor.document_number
+        and (user.is_verified or user.email_verified_at is not None)
+    )
     try:
-        contract = create_booking_contract(
-            db, 
-            booking, 
-            musician=link.musician, 
-            musician_user=link.musician.user, 
-            contractor=contractor, 
-            contractor_user=user,
-            refresh_snapshot=True,
-        )
+        with db.no_autoflush:
+            if not keep_doc_in_profile and norm_doc:
+                contractor.document_number = norm_doc
+            contract = create_booking_contract(
+                db, 
+                booking, 
+                musician=link.musician, 
+                musician_user=link.musician.user, 
+                contractor=contractor, 
+                contractor_user=user,
+                refresh_snapshot=True,
+            )
+            if not keep_doc_in_profile:
+                contractor.document_number = None
         # Mark terms as implicitly accepted via the public checkout form checkbox
         from app.services.contract_pdf import compute_contract_body_sha256
 

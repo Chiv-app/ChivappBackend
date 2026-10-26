@@ -48,7 +48,10 @@ def test_magic_link_login_blocks_open_redirect(client):
     assert res.status_code in (302, 307)
     location = res.headers["location"]
     assert "evil.com" not in location
-    assert location.endswith("/")
+
+    post_res = client.post("/api/v1/auth/magic-link/login", json={"token": token, "redirect": "//evil.com"})
+    assert post_res.status_code == 200
+    assert post_res.json()["redirect_to"] == "/"
 
 
 def test_contractor_cannot_retain_or_release_payment(client):

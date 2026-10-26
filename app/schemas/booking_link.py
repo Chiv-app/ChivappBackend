@@ -99,7 +99,7 @@ class BookingLinkCheckout(BaseModel):
     start_time: time
     event_type: str = Field(..., min_length=2, max_length=100)
     location_address: str = Field(..., min_length=5, max_length=300)
-    location_city: Optional[str] = None
+    location_city: Optional[str] = Field(default=None, max_length=100)
 
     # Customer fields
     fullname: str = Field(..., min_length=2, max_length=100)
@@ -109,7 +109,7 @@ class BookingLinkCheckout(BaseModel):
     signature_image_url: Optional[str] = None
     accept_terms: bool = True
     otp: Optional[str] = Field(default=None, min_length=6, max_length=6)
-    password: Optional[str] = None
+    password: Optional[str] = Field(default=None, max_length=128)
 
     @field_validator("accept_terms")
     @classmethod

@@ -2164,12 +2164,12 @@ def process_admin_payout_request(
 
     eligible_booking_ids: dict[_UUID, Decimal] = {}
     if musician and musician.user:
-        from app.api.v1.endpoints.payments import get_musician_earnings
+        from app.api.v1.endpoints.payments import compute_musician_earnings
 
-        earnings = get_musician_earnings(
+        earnings = compute_musician_earnings(
             current_user=musician.user,
             db=db,
-            _require_verified=False,
+            require_verified=False,
         )
         for d in earnings.debts:
             if d.debt_state == "payable":

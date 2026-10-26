@@ -55,6 +55,7 @@ def resolve_or_create_contractor_client(
     document_number: str | None,
     address: str | None,
     city: str | None,
+    musician_id=None,
 ) -> tuple[ContractorProfile, User]:
     email_raw = normalize_email(email)
     has_real_email = bool(email_raw)
@@ -70,19 +71,18 @@ def resolve_or_create_contractor_client(
     else:
         phone_clean = normalize_phone(phone)
         if phone_clean:
-            user = (
-                db.query(User)
-                .filter(
-                    User.role == UserRole.contractor,
-                    User.email.like("%@guest.local"),
-                    User.phone == phone_clean,
-                )
-                .first()
+            q_phone = db.query(User).filter(
+                User.role == UserRole.contractor,
+                User.email.like("%@guest.local"),
+                User.phone == phone_clean,
             )
+            if musician_id is not None:
+                q_phone = q_phone.filter(User.created_by_musician_id == musician_id)
+            user = q_phone.first()
         if user is None and document_number:
             doc_clean = normalize_document_number(document_number)
             if doc_clean:
-                existing_prof = (
+                q_doc = (
                     db.query(ContractorProfile)
                     .join(User, ContractorProfile.user_id == User.id)
                     .filter(
@@ -90,8 +90,10 @@ def resolve_or_create_contractor_client(
                         User.email.like("%@guest.local"),
                         ContractorProfile.document_number == doc_clean,
                     )
-                    .first()
                 )
+                if musician_id is not None:
+                    q_doc = q_doc.filter(User.created_by_musician_id == musician_id)
+                existing_prof = q_doc.first()
                 if existing_prof:
                     user = db.get(User, existing_prof.user_id)
 
@@ -119,15 +121,20 @@ def resolve_or_create_contractor_client(
         if fullname and fullname.strip() and not (user.fullname or "").strip():
             user.fullname = fullname.strip()
         if phone and not user.phone:
-            user.phone = assert_phone_unique(db, phone, exclude_user_id=user.id)
+            user.phone = (
+                normalize_phone(phone)
+                if not has_real_email
+                else assert_phone_unique(db, phone, exclude_user_id=user.id)
+            )
         if document_type and not profile.document_type:
             profile.document_type = document_type
         if document_number and not profile.document_number:
-            profile.document_number = assert_document_number_unique(
-                db,
-                document_number,
-                exclude_profile_id=profile.id,
-            )
+            if has_real_email and (user.is_verified or user.email_verified_at is not None):
+                profile.document_number = assert_document_number_unique(
+                    db,
+                    document_number,
+                    exclude_profile_id=profile.id,
+                )
         if address and not profile.address:
             profile.address = address
         if city and not profile.city:
@@ -135,7 +142,11 @@ def resolve_or_create_contractor_client(
         db.flush()
         return profile, user
 
-    phone_norm = assert_phone_unique(db, phone)
+    phone_norm = (
+        assert_phone_unique(db, phone)
+        if has_real_email
+        else normalize_phone(phone)
+    )
     user = User(
         email=email_norm,
         fullname=fullname.strip(),
@@ -145,15 +156,36 @@ def resolve_or_create_contractor_client(
         is_verified=False,
         # Sin correo real: cuenta solo de soporte a la contrata (sin login útil)
         is_active=has_real_email,
+        created_by_musician_id=musician_id if not has_real_email else None,
     )
     db.add(user)
     db.flush()
 
-    doc_norm = assert_document_number_unique(db, document_number)
+    # SEC4-08 / SEC4-13: una cuenta sin verificar (o walk-in @guest.local) no
+    # reserva el DNI en el índice único de contractor_profile.
+    if document_number:
+        norm_doc = normalize_document_number(document_number)
+        if norm_doc:
+            existing_verified = (
+                db.query(ContractorProfile)
+                .join(User, ContractorProfile.user_id == User.id)
+                .filter(
+                    func.upper(func.replace(func.btrim(ContractorProfile.document_number), " ", ""))
+                    == norm_doc,
+                )
+                .first()
+            )
+            if existing_verified:
+                owner = db.get(User, existing_verified.user_id)
+                if owner is not None and (owner.is_verified or owner.email_verified_at is not None):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Ya existe una cuenta con ese número de documento (DNI)",
+                    )
     profile = ContractorProfile(
         user_id=user.id,
         document_type=document_type,
-        document_number=doc_norm,
+        document_number=None,
         address=address,
         city=city,
         status=ProfileStatus.draft,
@@ -214,6 +246,7 @@ def create_musician_booking(
         document_number=payload.document_number,
         address=payload.contractor_address,
         city=payload.contractor_city,
+        musician_id=musician.id,
     )
 
     booking = Booking(
@@ -239,16 +272,28 @@ def create_musician_booking(
 
     sync_booking_platform_fee(db, booking, use_current_settings=True)
 
+    transient_doc = normalize_document_number(payload.document_number)
+    keep_doc_in_profile = bool(
+        contractor.document_number
+        and (contractor_user.is_verified or contractor_user.email_verified_at is not None)
+    )
     try:
-        create_booking_contract(
-            db,
-            booking,
-            musician,
-            musician_user,
-            contractor,
-            contractor_user,
-        )
+        with db.no_autoflush:
+            if not keep_doc_in_profile and transient_doc:
+                contractor.document_number = transient_doc
+            create_booking_contract(
+                db,
+                booking,
+                musician,
+                musician_user,
+                contractor,
+                contractor_user,
+            )
+            if not keep_doc_in_profile:
+                contractor.document_number = None
     except ValueError as exc:
+        if not keep_doc_in_profile:
+            contractor.document_number = None
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     db.commit()

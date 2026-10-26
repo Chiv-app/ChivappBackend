@@ -1088,7 +1088,7 @@ def complete_booking(
     db: Session = Depends(deps.get_db),
 ):
     booking = get_booking_or_404(db, booking_id)
-    booking = db.get(Booking, booking.id, with_for_update=True) or booking
+    db.refresh(booking, with_for_update=True)
     assert_booking_participant(db, booking, current_user)
 
     if booking.status == BookingStatus.completed:

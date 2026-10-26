@@ -24,8 +24,8 @@ class EmailTemplateUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=500)
     subject: str | None = Field(default=None, min_length=1, max_length=200)
-    html_body: str | None = Field(default=None, min_length=1)
-    text_body: str | None = Field(default=None, min_length=1)
+    html_body: str | None = Field(default=None, min_length=1, max_length=100000)
+    text_body: str | None = Field(default=None, min_length=1, max_length=50000)
     enabled: bool | None = None
 
 
@@ -36,9 +36,9 @@ class EmailTemplatePreviewRequest(BaseModel):
 
 class EmailTemplateRenderRequest(BaseModel):
     context: dict[str, str] = Field(default_factory=dict)
-    subject: str | None = None
-    html_body: str | None = None
-    text_body: str | None = None
+    subject: str | None = Field(default=None, max_length=200)
+    html_body: str | None = Field(default=None, max_length=100000)
+    text_body: str | None = Field(default=None, max_length=50000)
 
 
 class EmailTemplateRenderOut(BaseModel):
@@ -80,3 +80,4 @@ class PasswordResetPreviewOut(BaseModel):
 class EmailVerificationResult(BaseModel):
     message: str
     email_verified: bool = True
+    password_reset_sent: bool = False

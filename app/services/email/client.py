@@ -15,6 +15,15 @@ class EmailDeliveryError(Exception):
     pass
 
 
+def _mask_email(email_addr: str | None) -> str:
+    if not email_addr or "@" not in email_addr:
+        return "***"
+    local, domain = email_addr.split("@", 1)
+    if len(local) <= 2:
+        return f"{local[:1]}***@{domain}"
+    return f"{local[:2]}***@{domain}"
+
+
 def parse_sender_info(raw_sender: str) -> tuple[str, str]:
     """Extrae el nombre y correo del remitente configurado."""
     name, addr = email.utils.parseaddr(raw_sender)
@@ -33,13 +42,14 @@ def send_via_brevo(
     extra_attachments: list[dict] | None = None,
 ) -> str | None:
     """Envía un correo transaccional utilizando la API v3 de Brevo."""
+    masked_to = _mask_email(to)
     if not settings.EMAIL_ENABLED:
-        logger.info("Envío de correos deshabilitado; omitiendo a %s — asunto: %s", to, subject)
+        logger.info("Envío de correos deshabilitado; omitiendo a %s — asunto: %s", masked_to, subject)
         return None
 
     if not settings.BREVO_API_KEY:
         logger.warning(
-            "BREVO_API_KEY no configurada; omitiendo envío a %s — asunto: %s", to, subject
+            "BREVO_API_KEY no configurada; omitiendo envío a %s — asunto: %s", masked_to, subject
         )
         return None
 
@@ -96,5 +106,5 @@ def send_via_brevo(
 
     data = response.json()
     message_id = data.get("messageId")
-    logger.info("Correo enviado exitosamente vía Brevo a %s — messageId: %s", to, message_id)
+    logger.info("Correo enviado exitosamente vía Brevo a %s — messageId: %s", masked_to, message_id)
     return message_id

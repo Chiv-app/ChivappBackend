@@ -239,10 +239,11 @@ MIGRATION_STATEMENTS = [
     CREATE UNIQUE INDEX IF NOT EXISTS uq_musician_profile_stage_name_lower
     ON musician_profile (lower(btrim(stage_name)))
     """,
+    "DROP INDEX IF EXISTS uq_user_phone_normalized",
     """
     CREATE UNIQUE INDEX IF NOT EXISTS uq_user_phone_normalized
     ON "user" (phone)
-    WHERE phone IS NOT NULL AND btrim(phone) <> ''
+    WHERE phone IS NOT NULL AND btrim(phone) <> '' AND email NOT LIKE '%@guest.local'
     """,
     'ALTER TABLE "user" ADD COLUMN IF NOT EXISTS username VARCHAR',
     """
@@ -507,6 +508,13 @@ MIGRATION_STATEMENTS = [
     "ALTER TABLE \"user\" ADD COLUMN IF NOT EXISTS login_otp_hash VARCHAR",
     "ALTER TABLE \"user\" ADD COLUMN IF NOT EXISTS login_otp_expires_at TIMESTAMP",
     "ALTER TABLE \"user\" ADD COLUMN IF NOT EXISTS login_otp_attempts INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE \"user\" ADD COLUMN IF NOT EXISTS login_otp_last_sent_at TIMESTAMP",
+    "ALTER TABLE \"user\" ADD COLUMN IF NOT EXISTS login_otp_sent_count INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE \"user\" ADD COLUMN IF NOT EXISTS login_otp_window_started_at TIMESTAMP",
+    "ALTER TABLE \"user\" ADD COLUMN IF NOT EXISTS email_verification_sent_at TIMESTAMP",
+    "ALTER TABLE \"user\" ADD COLUMN IF NOT EXISTS email_verification_sent_count INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE \"user\" ADD COLUMN IF NOT EXISTS email_verification_window_started_at TIMESTAMP",
+    "ALTER TABLE \"user\" ADD COLUMN IF NOT EXISTS created_by_musician_id UUID",
     """
     DO $$ BEGIN
         CREATE TYPE bookinglinkstatus AS ENUM ('active', 'completed', 'expired');

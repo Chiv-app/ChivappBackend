@@ -36,6 +36,7 @@ from app.schemas.auth import (
     GoogleAuthResponse,
     GoogleCredentialRequest,
     LoginRequest,
+    MagicLinkConsumeRequest,
     OAuthAccountOut,
     OAuthAccountsOut,
     OAuthCompleteRequest,
@@ -44,6 +45,7 @@ from app.schemas.auth import (
     RegisterRequest,
     SetPasswordRequest,
     TokenOut,
+    VerifyEmailRequest,
 )
 from app.schemas.email import (
     EmailVerificationResult,
@@ -94,15 +96,42 @@ def _is_secure_cookie() -> bool:
     return settings.FRONTEND_URL.startswith("https://")
 
 
+def _mask_email(email: str | None) -> str:
+    if not email or "@" not in email:
+        return "***"
+    local, domain = email.strip().split("@", 1)
+    prefix = local[0] if local else "*"
+    return f"{prefix}***@{domain}"
+
+
 def _get_cookie_domain() -> str | None:
+    explicit = getattr(settings, "COOKIE_DOMAIN", None)
+    if explicit:
+        return explicit.strip() or None
     from urllib.parse import urlparse
-    host = urlparse(settings.FRONTEND_URL).hostname
-    if not host or host in ('localhost', '127.0.0.1'):
+    front_host = (urlparse(settings.FRONTEND_URL).hostname or "").lower()
+    if not front_host or front_host in ("localhost", "127.0.0.1"):
         return None
-    parts = host.split('.')
+    shared_suffixes = (
+        ".run.app",
+        ".vercel.app",
+        ".netlify.app",
+        ".com.pe",
+        ".org.pe",
+        ".gob.pe",
+        ".edu.pe",
+    )
+    if any(front_host.endswith(suf) for suf in shared_suffixes):
+        return None
+    back_host = (urlparse(getattr(settings, "BACKEND_PUBLIC_URL", "") or "").hostname or "").lower()
+    oauth_host = (urlparse(getattr(settings, "GOOGLE_OAUTH_REDIRECT_URI", "") or "").hostname or "").lower()
+    parts = front_host.split(".")
     if len(parts) >= 2:
-        return f".{parts[-2]}.{parts[-1]}"
-    return host
+        apex = f"{parts[-2]}.{parts[-1]}"
+        for other in (back_host, oauth_host):
+            if other and other != front_host and (other == apex or other.endswith(f".{apex}")):
+                return apex
+    return None
 
 def _set_auth_cookie(response: Response, token: str) -> None:
     response.set_cookie(
@@ -181,6 +210,36 @@ def _revoke_sessions(user: User) -> None:
     """Invalida todas las sesiones activas del usuario (incluida la actual:
     quien llame debe emitir una cookie nueva con _issue_login si corresponde)."""
     user.token_version = (user.token_version or 0) + 1
+
+
+def claim_email_ownership(
+    db: Session,
+    user: User,
+    *,
+    proof_was_password: bool = False,
+) -> bool:
+    """Si la cuenta tenía una contraseña pre-registrada antes de verificar el correo
+    y la verificación ocurre sin probar esa contraseña (OTP, magic link, invitación
+    o enlace abierto desde otro dispositivo sin contraseña), anula password_hash,
+    rota token_version y envía correo de restablecimiento (SEC6-03 / SEC6-14)."""
+    if (
+        user.password_hash
+        and user.email_verified_at is None
+        and not user.is_verified
+        and not proof_was_password
+    ):
+        user.password_hash = None
+        _revoke_sessions(user)
+        try:
+            send_password_reset_email(db, user)
+        except Exception as exc:
+            logger.warning(
+                "Failed to send password reset after ownership claim for %s: %s",
+                _mask_email(user.email),
+                exc,
+            )
+        return True
+    return False
 
 
 def _assert_strong_password(password: str) -> None:
@@ -361,6 +420,8 @@ import hashlib
 import hmac
 
 OTP_MAX_ATTEMPTS = 5
+OTP_COOLDOWN_SECONDS = 60
+OTP_MAX_SENDS_PER_HOUR = 5
 
 
 def _compute_otp_hmac(user_id: object, otp: str) -> str:
@@ -374,9 +435,7 @@ def generate_and_send_login_otp(db: Session, user: User) -> str:
     from app.services.email.defaults import APP_NAME
     import secrets
 
-    locked = db.get(User, user.id, with_for_update=True)
-    if locked is not None:
-        user = locked
+    db.refresh(user, with_for_update=True)
 
     now = datetime.utcnow()
     if (
@@ -389,10 +448,36 @@ def generate_and_send_login_otp(db: Session, user: User) -> str:
             detail="Demasiados intentos. Espera unos minutos antes de solicitar un código nuevo.",
         )
 
+    last_sent_at = getattr(user, "login_otp_last_sent_at", None)
+    if (
+        getattr(user, "login_otp_hash", None)
+        and getattr(user, "login_otp_expires_at", None)
+        and user.login_otp_expires_at > now
+        and last_sent_at
+        and (now - last_sent_at) < timedelta(seconds=OTP_COOLDOWN_SECONDS)
+    ):
+        raise HTTPException(
+            status_code=429,
+            detail="Ya te enviamos un código hace unos segundos. Espera un minuto antes de solicitar otro.",
+        )
+
+    window_start = getattr(user, "login_otp_window_started_at", None)
+    if not window_start or (now - window_start) >= timedelta(hours=1):
+        user.login_otp_window_started_at = now
+        user.login_otp_sent_count = 0
+
+    if (getattr(user, "login_otp_sent_count", 0) or 0) >= OTP_MAX_SENDS_PER_HOUR:
+        raise HTTPException(
+            status_code=429,
+            detail="Has solicitado demasiados códigos en la última hora. Intenta nuevamente más tarde.",
+        )
+
     previous_expires = getattr(user, "login_otp_expires_at", None)
     otp = str(secrets.randbelow(1000000)).zfill(6)
     user.login_otp_hash = _compute_otp_hmac(user.id, otp)
     user.login_otp_expires_at = now + timedelta(minutes=10)
+    user.login_otp_last_sent_at = now
+    user.login_otp_sent_count = (getattr(user, "login_otp_sent_count", 0) or 0) + 1
     if not previous_expires or previous_expires <= now:
         user.login_otp_attempts = 0
     db.commit()
@@ -411,16 +496,16 @@ def generate_and_send_login_otp(db: Session, user: User) -> str:
         )
         db.commit()
     except Exception as exc:
-        logger.warning("Failed to send login_otp email to %s: %s", user.email, exc)
+        logger.warning("Failed to send login_otp email to %s: %s", _mask_email(user.email), exc)
 
     return otp
 
 
 def verify_login_otp_or_raise(db: Session, user: User, otp: str) -> None:
-    """Verifica el OTP con límite de intentos e invalidación automática."""
-    locked = db.get(User, user.id, with_for_update=True)
-    if locked is not None:
-        user = locked
+    """Verifica el OTP con límite de intentos atómico e invalidación automática."""
+    from sqlalchemy import text
+
+    db.refresh(user, with_for_update=True)
 
     now = datetime.utcnow()
     expires_at = getattr(user, "login_otp_expires_at", None)
@@ -450,7 +535,13 @@ def verify_login_otp_or_raise(db: Session, user: User, otp: str) -> None:
     is_valid = hmac.compare_digest(stored_hash, expected_hmac)
 
     if not is_valid:
-        attempts = (getattr(user, "login_otp_attempts", 0) or 0) + 1
+        attempts = db.execute(
+            text(
+                'UPDATE "user" SET login_otp_attempts = COALESCE(login_otp_attempts, 0) + 1 '
+                'WHERE id = :uid RETURNING login_otp_attempts'
+            ),
+            {"uid": user.id},
+        ).scalar_one()
         user.login_otp_attempts = attempts
         if attempts >= OTP_MAX_ATTEMPTS:
             user.login_otp_hash = None
@@ -466,6 +557,7 @@ def verify_login_otp_or_raise(db: Session, user: User, otp: str) -> None:
     user.login_otp_hash = None
     user.login_otp_expires_at = None
     user.login_otp_attempts = 0
+    claim_email_ownership(db, user, proof_was_password=False)
     if user.email_verified_at is None:
         mark_email_verified(user)
 
@@ -484,7 +576,10 @@ def login_step_one(payload: LoginStepOneRequest, request: Request, db: Session =
     if getattr(user, "is_active", True) is False:
         raise HTTPException(status_code=403, detail="Tu cuenta está desactivada")
 
-    if user.role == UserRole.admin or (not user.is_verified and not user.email_verified_at):
+    if user.role == UserRole.admin:
+        return LoginStepOneResponse(status="requires_password")
+
+    if not user.is_verified and not user.email_verified_at and user.password_hash:
         return LoginStepOneResponse(status="requires_password")
 
     generate_and_send_login_otp(db, user)
@@ -535,8 +630,7 @@ def login(payload: LoginRequest, request: Request, response: Response, db: Sessi
 
     if (
         user.role != UserRole.admin
-        and user.email_verification_token
-        and not user.email_verified_at
+        and user.email_verified_at is None
         and not user.is_verified
     ):
         raise HTTPException(
@@ -602,11 +696,16 @@ def preview_password_setup(token: str, request: Request, db: Session = Depends(d
     if not user:
         raise HTTPException(404, "Cuenta no encontrada")
 
-    # Si ya tiene contraseña, activar el integrante al abrir el enlace.
+    # Si ya tiene contraseña verificada, activar el integrante al abrir el enlace.
+    # Si la contraseña era de un pre-registro sin verificar (SEC6-03), reclamar propiedad.
     if user.password_hash:
-        activate_member_after_password(db, member)
-        mark_email_verified(user)
-        db.commit()
+        if user.email_verified_at is None and not user.is_verified:
+            claim_email_ownership(db, user, proof_was_password=False)
+            db.commit()
+        else:
+            activate_member_after_password(db, member)
+            mark_email_verified(user)
+            db.commit()
 
     return PasswordSetupPreviewOut(
         email=user.email,
@@ -653,8 +752,11 @@ def set_password(
         raise HTTPException(404, "Cuenta no encontrada")
 
     if user.password_hash:
-        # Un enlace de invitación nunca inicia sesión en una cuenta con contraseña.
-        raise HTTPException(400, "Tu cuenta ya tiene contraseña. Inicia sesión con ella.")
+        if member and user.email_verified_at is None and not user.is_verified:
+            claim_email_ownership(db, user, proof_was_password=False)
+        else:
+            # Un enlace de invitación nunca inicia sesión en una cuenta verificada con contraseña.
+            raise HTTPException(400, "Tu cuenta ya tiene contraseña. Inicia sesión con ella.")
 
     user.password_hash = hash_password(password)
     _revoke_sessions(user)
@@ -1157,10 +1259,12 @@ def unlink_oauth_account(
 
 
 @router.post("/verify-email/{token}", response_model=EmailVerificationResult)
+@limiter.limit(settings.RATE_LIMIT_LOGIN)
 def verify_email(
     token: str,
     request: Request,
     response: Response,
+    payload: VerifyEmailRequest | None = Body(default=None),
     db: Session = Depends(deps.get_db),
 ):
     session_user = _optional_user(request, db)
@@ -1171,18 +1275,34 @@ def verify_email(
         if code == "expired":
             raise HTTPException(410, "El enlace de verificación expiró. Solicita uno nuevo.") from exc
         raise HTTPException(400, "Enlace de verificación no válido") from exc
-    if session_user is not None and session_user.id == user.id:
+
+    same_session = session_user is not None and session_user.id == user.id
+    password_matches = bool(
+        payload
+        and payload.password
+        and user.password_hash
+        and verify_password(payload.password, user.password_hash)
+    )
+    password_reset_sent = False
+    if same_session or password_matches:
         _issue_login(response, user)
     elif user.password_hash:
         user.password_hash = None
+        _revoke_sessions(user)
+        password_reset_sent = True
         try:
             send_password_reset_email(db, user)
         except Exception as exc:
-            logger.warning("Failed to send password reset after cross-session verify for %s: %s", user.email, exc)
+            logger.warning(
+                "Failed to send password reset after cross-session verify for %s: %s",
+                _mask_email(user.email),
+                exc,
+            )
     db.commit()
     return EmailVerificationResult(
         message=f"Correo {user.email} verificado correctamente.",
         email_verified=True,
+        password_reset_sent=password_reset_sent,
     )
 
 
@@ -1381,45 +1501,77 @@ def _safe_redirect_path(path: str | None) -> str:
 # Los magic links solo se generan dentro de los emails de notificación
 # (booking_notifications). No existe endpoint público para pedirlos.
 @router.get("/magic-link/login")
+@limiter.limit(settings.RATE_LIMIT_LOGIN)
 def magic_link_login(
     token: str,
-    response: Response,
-    db: Session = Depends(deps.get_db)
+    request: Request,
+    db: Session = Depends(deps.get_db),
 ):
-    from fastapi.responses import RedirectResponse
+    """Valida el magic link sin consumirlo (para evitar que escáneres de correo
+    lo invaliden por GET) y redirige a la página de confirmación (SEC3-14 / D7)."""
     payload = decode_access_token(token)
     if not payload or not payload.get("sub") or not payload.get("magic"):
         return RedirectResponse(url=f"{settings.FRONTEND_URL}/login?error=invalid_magic_link")
-        
+
     user = db.query(User).filter(User.id == payload.get("sub")).first()
     if not user:
         return RedirectResponse(url=f"{settings.FRONTEND_URL}/login?error=user_not_found")
-        
+
     if getattr(user, "is_active", True) is False:
         return RedirectResponse(url=f"{settings.FRONTEND_URL}/login?error=invalid_magic_link")
 
     if "ver" not in payload:
         return RedirectResponse(url=f"{settings.FRONTEND_URL}/login?error=invalid_magic_link")
-    from app.core.jwt import session_version
     if session_version(payload) != (user.token_version or 0):
         return RedirectResponse(url=f"{settings.FRONTEND_URL}/login?error=invalid_magic_link")
 
-    # Abrir el enlace prueba que el email es suyo, pero NO aprueba la cuenta:
-    # is_verified es la aprobación del admin. Incrementar token_version hace que
-    # el magic link sea de un solo uso y revoca sesiones previas (p. ej. SEC2-10).
+    redirect_to = _safe_redirect_path(payload.get("redirect_to"))
+    params = urlencode({"token": token, "redirect": redirect_to})
+    return RedirectResponse(
+        url=f"{settings.FRONTEND_URL.rstrip('/')}/magic-link?{params}",
+        status_code=302,
+    )
+
+
+@router.post("/magic-link/login")
+@limiter.limit(settings.RATE_LIMIT_LOGIN)
+def magic_link_consume(
+    request: Request,
+    response: Response,
+    payload: MagicLinkConsumeRequest | None = Body(default=None),
+    token: str | None = Query(default=None),
+    db: Session = Depends(deps.get_db),
+):
+    """Canjea el magic link por POST, verifica posesión del correo, reclama la
+    propiedad si había contraseña pre-registrada (SEC6-03), rota token_version
+    y emite la cookie de sesión."""
+    raw_token = ((payload.token if payload and payload.token else token) or "").strip()
+    decoded = decode_access_token(raw_token)
+    if not decoded or not decoded.get("sub") or not decoded.get("magic") or "ver" not in decoded:
+        raise HTTPException(status_code=400, detail="El enlace de acceso es inválido o ya expiró.")
+
+    user = db.query(User).filter(User.id == decoded.get("sub")).first()
+    if not user or getattr(user, "is_active", True) is False:
+        raise HTTPException(status_code=400, detail="El enlace de acceso es inválido o ya expiró.")
+
+    db.refresh(user, with_for_update=True)
+    if session_version(decoded) != (user.token_version or 0):
+        raise HTTPException(status_code=401, detail="Este enlace ya fue utilizado o expiró.")
+
+    claim_email_ownership(db, user, proof_was_password=False)
     if user.email_verified_at is None:
-        user.email_verified_at = datetime.utcnow()
+        mark_email_verified(user)
     _revoke_sessions(user)
+    _issue_login(response, user)
     db.commit()
 
-    access_token = create_access_token(subject=str(user.id), role=user.role.value, version=user.token_version or 0)
-
-    redirect_to = _safe_redirect_path(payload.get("redirect_to"))
-    # Important: Create RedirectResponse first, then set the cookie on it
-    # Otherwise the cookie is set on the injected response but dropped by the returned redirect
-    redirect_response = RedirectResponse(url=f"{settings.FRONTEND_URL}{redirect_to}")
-    _set_auth_cookie(redirect_response, access_token)
-    return redirect_response
+    redirect_to = _safe_redirect_path(
+        (payload.redirect if payload and payload.redirect else None) or decoded.get("redirect_to")
+    )
+    return {
+        "message": "Sesión iniciada",
+        "redirect_to": redirect_to,
+    }
 
 
 

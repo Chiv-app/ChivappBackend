@@ -23,7 +23,7 @@ def normalize_email(value: str | None) -> str | None:
 def normalize_phone(value: str | None) -> str | None:
     if value is None:
         return None
-    # Conserva dígitos y + inicial; quita espacios y guiones.
+    # Conserva dígitos y + inicial; quita espacios y guiones; unifica +51XXXXXXXXX -> XXXXXXXXX.
     raw = str(value).strip()
     if not raw:
         return None
@@ -34,6 +34,10 @@ def normalize_phone(value: str | None) -> str | None:
         elif ch == "+" and i == 0:
             chars.append(ch)
     cleaned = "".join(chars)
+    if cleaned.startswith("+51") and len(cleaned) == 12 and cleaned[3:].isdigit():
+        cleaned = cleaned[3:]
+    elif cleaned.startswith("51") and len(cleaned) == 11 and cleaned[2] == "9" and cleaned.isdigit():
+        cleaned = cleaned[2:]
     return cleaned or None
 
 
@@ -240,7 +244,10 @@ def assert_phone_unique(
     norm = normalize_phone(phone)
     if not norm:
         return None
-    candidates = db.query(User).filter(User.phone.isnot(None))
+    candidates = db.query(User).filter(
+        User.phone.isnot(None),
+        ~User.email.like("%@guest.local"),
+    )
     if exclude_user_id is not None:
         candidates = candidates.filter(User.id != exclude_user_id)
     for row in candidates.all():
@@ -314,7 +321,13 @@ def assert_document_number_unique(
     )
     if exclude_profile_id is not None:
         query = query.filter(ContractorProfile.id != exclude_profile_id)
-    if query.first():
+    matches = query.all()
+    for match in matches:
+        owner = db.get(User, match.user_id)
+        if owner is not None and not owner.is_verified and owner.email_verified_at is None:
+            match.document_number = None
+            db.flush()
+            continue
         raise HTTPException(
             400, "Ya existe una cuenta con ese número de documento (DNI)"
         )

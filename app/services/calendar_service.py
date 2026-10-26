@@ -306,7 +306,7 @@ def sync_booking_calendar(db, booking_id: str, include_contractor: bool, ensembl
 
 
     if not musician_user or not getattr(musician_user, 'google_calendar_refresh_token', None):
-        logger.warning(f"Musician {musician_user.email if musician_user else 'unknown'} no tiene Google Calendar conectado via OAuth.")
+        logger.warning(f"Musician {musician_user.id if musician_user else 'unknown'} no tiene Google Calendar conectado via OAuth.")
         return None
 
     service = _get_calendar_service_oauth(musician_user.google_calendar_refresh_token)

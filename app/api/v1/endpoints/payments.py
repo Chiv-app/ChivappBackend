@@ -117,8 +117,16 @@ def list_booking_payments(
 def get_musician_earnings(
     current_user: User = Depends(deps.get_current_user),
     db: Session = Depends(deps.get_db),
-    _require_verified: bool = True,
 ):
+    return compute_musician_earnings(db=db, current_user=current_user, require_verified=True)
+
+
+def compute_musician_earnings(
+    db: Session,
+    current_user: User,
+    *,
+    require_verified: bool = True,
+) -> MusicianEarningsSummary:
     if current_user.role != UserRole.musician:
         raise HTTPException(403, "Solo los músicos pueden ver sus ingresos")
 
@@ -126,7 +134,7 @@ def get_musician_earnings(
     from app.services.platform_payment import musician_portion_of_paid
     from app.services.settlement import settlement_state_for_booking
 
-    musician = get_musician_profile_or_400(db, current_user, require_verified=_require_verified)
+    musician = get_musician_profile_or_400(db, current_user, require_verified=require_verified)
     bookings = (
         db.query(Booking)
         .filter(Booking.musician_id == musician.id)

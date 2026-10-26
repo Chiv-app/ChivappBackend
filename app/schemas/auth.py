@@ -3,16 +3,16 @@ from pydantic import BaseModel, EmailStr, Field, model_validator
 
 class LoginRequest(BaseModel):
     email: EmailStr
-    password: str
+    password: str = Field(..., min_length=1, max_length=128)
 
 
 class RegisterRequest(BaseModel):
     email: EmailStr
-    password: str
-    fullname: str | None = None
-    role: str
-    username: str | None = None
-    phone: str | None = None
+    password: str = Field(..., min_length=8, max_length=128)
+    fullname: str | None = Field(default=None, max_length=150)
+    role: str = Field(..., max_length=32)
+    username: str | None = Field(default=None, max_length=64)
+    phone: str | None = Field(default=None, max_length=30)
     accepted_terms: bool = False
 
     @model_validator(mode="after")
@@ -27,11 +27,11 @@ class RegisterRequest(BaseModel):
 
 class SetPasswordRequest(BaseModel):
     password: str = Field(min_length=8, max_length=128)
-    token: str | None = None
+    token: str | None = Field(default=None, max_length=512)
 
 
 class ChangePasswordRequest(BaseModel):
-    current_password: str = ""
+    current_password: str = Field(default="", max_length=128)
     new_password: str = Field(min_length=8, max_length=128)
 
 
@@ -49,9 +49,9 @@ class TokenOut(BaseModel):
 
 
 class OAuthCompleteRequest(BaseModel):
-    role: str
-    username: str | None = None
-    phone: str | None = None
+    role: str = Field(..., max_length=32)
+    username: str | None = Field(default=None, max_length=64)
+    phone: str | None = Field(default=None, max_length=30)
 
 
 class OAuthAccountOut(BaseModel):
@@ -73,8 +73,8 @@ class OAuthPendingOut(BaseModel):
 
 
 class GoogleCredentialRequest(BaseModel):
-    credential: str
-    intent: str = "login"
+    credential: str = Field(..., max_length=8192)
+    intent: str = Field(default="login", max_length=32)
 
 
 class GoogleAuthResponse(BaseModel):
@@ -86,18 +86,28 @@ class GoogleAuthResponse(BaseModel):
 
 class GuestRegisterRequest(BaseModel):
     email: EmailStr
-    fullname: str
-    phone: str
-
+    fullname: str = Field(..., min_length=2, max_length=150)
+    phone: str = Field(..., min_length=6, max_length=30)
 
 
 class LoginStepOneRequest(BaseModel):
     email: EmailStr
 
+
 class LoginStepOneResponse(BaseModel):
     status: str
     message: str | None = None
 
+
 class LoginOtpRequest(BaseModel):
     email: EmailStr
-    otp: str
+    otp: str = Field(..., min_length=4, max_length=12)
+
+
+class VerifyEmailRequest(BaseModel):
+    password: str | None = Field(default=None, max_length=128)
+
+
+class MagicLinkConsumeRequest(BaseModel):
+    token: str = Field(..., min_length=10, max_length=2048)
+    redirect: str | None = Field(default=None, max_length=512)

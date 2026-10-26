@@ -67,6 +67,13 @@ def upgrade() -> None:
     op.execute('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS google_calendar_refresh_token VARCHAR')
     op.execute('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS token_version INTEGER NOT NULL DEFAULT 0')
     op.execute('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS login_otp_attempts INTEGER NOT NULL DEFAULT 0')
+    op.execute('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS login_otp_last_sent_at TIMESTAMP WITHOUT TIME ZONE')
+    op.execute('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS login_otp_sent_count INTEGER NOT NULL DEFAULT 0')
+    op.execute('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS login_otp_window_started_at TIMESTAMP WITHOUT TIME ZONE')
+    op.execute('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS email_verification_sent_at TIMESTAMP WITHOUT TIME ZONE')
+    op.execute('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS email_verification_sent_count INTEGER NOT NULL DEFAULT 0')
+    op.execute('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS email_verification_window_started_at TIMESTAMP WITHOUT TIME ZONE')
+    op.execute('ALTER TABLE "user" ADD COLUMN IF NOT EXISTS created_by_musician_id UUID')
     op.execute('ALTER TABLE "user" ALTER COLUMN fullname DROP NOT NULL')
 
     # 2. Missing musician_profile columns & nullability
@@ -218,10 +225,10 @@ def upgrade() -> None:
         index_name="uq_user_phone_normalized",
         table_sql='"user"',
         key_expr="phone",
-        where_clause="phone IS NOT NULL AND btrim(phone) <> ''",
+        where_clause="phone IS NOT NULL AND btrim(phone) <> '' AND email NOT LIKE '%@guest.local'",
         create_index_sql=(
             'CREATE UNIQUE INDEX IF NOT EXISTS uq_user_phone_normalized '
-            'ON "user" (phone) WHERE phone IS NOT NULL AND btrim(phone) <> \'\''
+            'ON "user" (phone) WHERE phone IS NOT NULL AND btrim(phone) <> \'\' AND email NOT LIKE \'%@guest.local\''
         ),
     )
     _create_unique_index_checked(

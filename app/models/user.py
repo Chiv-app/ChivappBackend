@@ -39,6 +39,13 @@ class User(Base):
     login_otp_hash = Column(String, nullable=True)
     login_otp_expires_at = Column(DateTime, nullable=True)
     login_otp_attempts = Column(Integer, nullable=False, default=0, server_default="0")
+    login_otp_last_sent_at = Column(DateTime, nullable=True)
+    login_otp_sent_count = Column(Integer, nullable=False, default=0, server_default="0")
+    login_otp_window_started_at = Column(DateTime, nullable=True)
+    email_verification_sent_at = Column(DateTime, nullable=True)
+    email_verification_sent_count = Column(Integer, nullable=False, default=0, server_default="0")
+    email_verification_window_started_at = Column(DateTime, nullable=True)
+    created_by_musician_id = Column(UUID(as_uuid=True), nullable=True)
 
     terms_accepted_at = Column(DateTime, nullable=True)
     terms_accepted_ip = Column(String, nullable=True)

@@ -14,6 +14,8 @@ from app.services.email.defaults import APP_NAME
 from app.services.email.service import send_templated_email
 
 EMAIL_VERIFICATION_TTL_HOURS = 48
+EMAIL_VERIFICATION_COOLDOWN_MINUTES = 10
+EMAIL_VERIFICATION_MAX_PER_HOUR = 5
 PASSWORD_RESET_TTL_HOURS = 1
 
 
@@ -28,11 +30,13 @@ def hash_token(token: str) -> str:
 
 
 def issue_email_verification_token(user: User) -> str:
+    now = datetime.utcnow()
     token = secrets.token_urlsafe(32)
     user.email_verification_token = hash_token(token)
-    user.email_verification_expires_at = datetime.utcnow() + timedelta(
+    user.email_verification_expires_at = now + timedelta(
         hours=EMAIL_VERIFICATION_TTL_HOURS
     )
+    user.email_verification_sent_at = now
     return token
 
 
@@ -72,8 +76,27 @@ def send_welcome_email(db: Session, user: User) -> None:
     )
 
 
-def send_email_verification(db: Session, user: User) -> None:
+def send_email_verification(db: Session, user: User) -> bool:
+    now = datetime.utcnow()
+    window_start = user.email_verification_window_started_at
+    if not window_start or (now - window_start) >= timedelta(hours=1):
+        user.email_verification_window_started_at = now
+        user.email_verification_sent_count = 0
+
+    if (user.email_verification_sent_count or 0) >= EMAIL_VERIFICATION_MAX_PER_HOUR:
+        return False
+
+    if (
+        user.email_verification_token
+        and user.email_verification_expires_at
+        and user.email_verification_expires_at > now
+        and user.email_verification_sent_at
+        and (now - user.email_verification_sent_at) < timedelta(minutes=EMAIL_VERIFICATION_COOLDOWN_MINUTES)
+    ):
+        return False
+
     token = issue_email_verification_token(user)
+    user.email_verification_sent_count = (user.email_verification_sent_count or 0) + 1
     send_templated_email(
         db,
         slug="email_verification",
@@ -87,6 +110,7 @@ def send_email_verification(db: Session, user: User) -> None:
         },
         user_id=user.id,
     )
+    return True
 
 
 def send_password_reset_email(db: Session, user: User) -> None:
@@ -210,9 +234,6 @@ def verify_email_token(db: Session, token: str) -> User:
         user.email_verification_expires_at
         and user.email_verification_expires_at < datetime.utcnow()
     ):
-        user.email_verification_token = None
-        user.email_verification_expires_at = None
-        db.commit()
         raise ValueError("expired")
     mark_email_verified(user)
     return user
