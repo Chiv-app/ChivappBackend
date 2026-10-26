@@ -171,4 +171,10 @@ class AdminPayoutRequestOut(BaseModel):
 
 class AdminPayoutRequestAction(BaseModel):
     notes: str | None = Field(default=None, max_length=1000)
+    booking_ids: list[UUID] | None = None
+
+
+class AdminManualRefundAction(BaseModel):
+    manual_override: bool = False
+    manual_reason: str | None = Field(default=None, max_length=1000)
 

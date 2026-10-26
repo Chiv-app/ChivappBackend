@@ -39,7 +39,7 @@ def _resolve_musician_signature_url(
     return musician.signature_image_url
 
 
-def _ensure_booking_contract(db: Session, booking) -> Contract | None:
+def _ensure_booking_contract(db: Session, booking, *, commit: bool = True) -> Contract | None:
     contract = db.query(Contract).filter(Contract.booking_id == booking.id).first()
     if contract and (contract.contractor_signed or (contract.title and contract.body)):
         return contract
@@ -76,8 +76,11 @@ def _ensure_booking_contract(db: Session, booking) -> Contract | None:
         contract.body = body
         contract.context = context
         db.add(contract)
-        db.commit()
-        db.refresh(contract)
+        if commit:
+            db.commit()
+            db.refresh(contract)
+        else:
+            db.flush()
         return contract
     prev_status = booking.status
     contract = create_booking_contract(
@@ -89,8 +92,11 @@ def _ensure_booking_contract(db: Session, booking) -> Contract | None:
         contractor_user=contractor.user,
     )
     booking.status = prev_status
-    db.commit()
-    db.refresh(contract)
+    if commit:
+        db.commit()
+        db.refresh(contract)
+    else:
+        db.flush()
     return contract
 
 

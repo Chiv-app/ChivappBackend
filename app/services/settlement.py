@@ -5,7 +5,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from app.core.timezone import now_peru_naive
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from app.models.booking import Booking, BookingStatus
 from app.models.booking_complaint import (
@@ -128,6 +128,26 @@ def serialize_complaint(complaint: BookingComplaint | None):
     )
 
 
+def booking_has_gateway_mediation(booking: Booking, db: Session | None = None) -> bool:
+    sess = db or object_session(booking)
+    if sess is None or getattr(booking, "id", None) is None:
+        return False
+    rows = (
+        sess.query(Payment)
+        .filter(
+            Payment.booking_id == booking.id,
+            Payment.status.in_([PaymentStatus.retained, PaymentStatus.released]),
+            Payment.payment_type.is_distinct_from("refund"),
+        )
+        .all()
+    )
+    for p in rows:
+        meta = p.gateway_metadata if isinstance(p.gateway_metadata, dict) else {}
+        if meta.get("in_mediation"):
+            return True
+    return False
+
+
 def settlement_state_for_booking(
     booking: Booking,
     complaint: BookingComplaint | None,
@@ -137,6 +157,8 @@ def settlement_state_for_booking(
     effective_status: BookingStatus | None = None,
 ) -> str:
     status = effective_status or booking.status
+    if booking_has_gateway_mediation(booking):
+        return "disputed"
     if status == BookingStatus.cancelled:
         from app.services.cancellation_policy import REFUND_UNRESOLVED
 
@@ -195,6 +217,12 @@ def release_retained_payments(
         )
         .all()
     )
+    for payment in payments:
+        meta = payment.gateway_metadata if isinstance(payment.gateway_metadata, dict) else {}
+        if meta.get("in_mediation"):
+            raise ValueError(
+                "No se puede liberar el pago mientras exista una mediación activa en la pasarela."
+            )
     for payment in payments:
         payment.status = PaymentStatus.released
         payment.released_at = now

@@ -1,6 +1,6 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload
 
@@ -11,7 +11,7 @@ from app.models.booking import Booking, BookingStatus
 from app.models.contractor_profile import ContractorProfile
 from app.models.musician_profile import MusicianProfile
 from app.models.payment import Payment, PaymentStatus
-from app.models.payout_request import PayoutRequest
+from app.models.payout_request import PayoutRequest, PayoutRequestBooking
 from app.models.profile_status import ProfileStatus
 from app.models.support_ticket import SupportTicket, SupportTicketStatus
 from app.models.user import User, UserRole
@@ -21,6 +21,7 @@ from app.schemas.admin import (
     AdminBookingCancel,
     AdminBookingDetailOut,
     AdminBookingOut,
+    AdminManualRefundAction,
     AdminPaymentOut,
     AdminPayoutRequestAction,
     AdminPayoutRequestOut,
@@ -936,8 +937,10 @@ def force_complete_booking_admin(
     _: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
 ):
-    """Permite al administrador cerrar reservas con evento pasado que quedaron en payment_retained/in_progress."""
-    from app.services.booking_lifecycle import is_event_finished
+    """Permite al administrador cerrar reservas con evento pasado (>=48h) sin queja abierta (BUG5-08 / SEC5-12)."""
+    from app.core.timezone import now_peru
+    from app.models.booking_complaint import BookingComplaint, BookingComplaintStatus
+    from app.services.booking_lifecycle import booking_event_end_datetime, is_event_finished
     from app.services.booking_share import disable_booking_share as _disable_share
 
     booking = _load_booking_with_parties(db, booking_id, for_update=True)
@@ -951,6 +954,28 @@ def force_complete_booking_admin(
         raise HTTPException(400, "Solo se pueden cerrar administrativamente reservas en fase de evento o con pago retenido")
     if not is_event_finished(booking):
         raise HTTPException(400, "El horario del evento aún no ha terminado")
+
+    end_dt = booking_event_end_datetime(booking)
+    if end_dt is None or now_peru() < end_dt + timedelta(hours=48):
+        raise HTTPException(
+            400,
+            "Debes esperar al menos 48 horas desde el fin del evento antes de forzar el cierre.",
+        )
+
+    open_complaint = (
+        db.query(BookingComplaint)
+        .filter(
+            BookingComplaint.booking_id == booking.id,
+            BookingComplaint.status != BookingComplaintStatus.settled,
+        )
+        .first()
+    )
+    if open_complaint is not None:
+        raise HTTPException(
+            400,
+            "No se puede forzar el cierre mientras exista una queja abierta sobre la reserva.",
+        )
+
     booking.status = BookingStatus.completed
     _disable_share(booking)
     db.commit()
@@ -989,10 +1014,11 @@ def list_payments(
 @router.post("/payments/{payment_id}/refund", response_model=AdminPaymentOut)
 def refund_flagged_payment_admin(
     payment_id: str,
+    payload: AdminManualRefundAction | None = Body(default=None),
     current_admin: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
 ):
-    """Reembolsa en Mercado Pago un pago marcado con needs_refund (SEC4-06)."""
+    """Reembolsa en Mercado Pago un pago marcado con needs_refund (SEC4-06 / BUG5-06)."""
     from app.services import mercadopago_service
 
     payment_uuid = parse_uuid(payment_id, "payment_id")
@@ -1004,7 +1030,9 @@ def refund_flagged_payment_admin(
     meta = dict(payment.gateway_metadata or {}) if isinstance(payment.gateway_metadata, dict) else {}
     if not meta.get("needs_refund"):
         raise HTTPException(400, "Este pago no está marcado para reembolso directo")
-    if payment.gateway_payment_id and settings.MERCADO_PAGO_ACCESS_TOKEN.strip():
+
+    can_auto_refund = bool(payment.gateway_payment_id and settings.MERCADO_PAGO_ACCESS_TOKEN.strip())
+    if can_auto_refund:
         try:
             refund_resp = mercadopago_service.issue_refund(
                 payment.gateway_payment_id,
@@ -1014,6 +1042,16 @@ def refund_flagged_payment_admin(
             meta["mp_refund_id"] = str(refund_resp.get("id") or "")
         except ValueError as exc:
             raise HTTPException(502, detail=str(exc)) from exc
+    else:
+        manual_reason = (payload.manual_reason or "").strip() if payload else ""
+        if not (payload and payload.manual_override and manual_reason):
+            raise HTTPException(
+                409,
+                "No se puede reembolsar automáticamente: hazlo en el panel de Mercado Pago",
+            )
+        meta["manual_override"] = True
+        meta["manual_reason"] = manual_reason
+
     payment.status = PaymentStatus.refunded
     payment.released_at = datetime.utcnow()
     meta["needs_refund"] = False
@@ -2149,18 +2187,34 @@ def process_admin_payout_request(
         .first()
     )
 
-    # Liberar únicamente las reservas vinculadas a la solicitud de retiro (SEC4-03 / BUG4-02)
+    # Liberar únicamente las reservas vinculadas a la solicitud de retiro (SEC4-03 / BUG4-02 / BUG5-11)
     import re
     from decimal import Decimal
     from uuid import UUID as _UUID
 
     from app.services.platform_payment import musician_portion_of_paid
 
-    linked_raw_uuids = re.findall(
-        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
-        req.notes or "",
+    explicit_links = (
+        db.query(PayoutRequestBooking.booking_id)
+        .filter(PayoutRequestBooking.payout_request_id == req.id)
+        .all()
     )
-    linked_booking_ids = [_UUID(u) for u in linked_raw_uuids]
+    if explicit_links:
+        linked_booking_ids = [_UUID(str(row[0])) for row in explicit_links]
+    elif body.booking_ids:
+        linked_booking_ids = [_UUID(str(b_id)) for b_id in body.booking_ids]
+    else:
+        linked_raw_uuids = re.findall(
+            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+            req.notes or "",
+        )
+        linked_booking_ids = [_UUID(u) for u in linked_raw_uuids]
+
+    if not linked_booking_ids:
+        raise HTTPException(
+            409,
+            "Esta solicitud heredada no tiene reservas vinculadas. Indica explícitamente los booking_ids o recházala.",
+        )
 
     eligible_booking_ids: dict[_UUID, Decimal] = {}
     if musician and musician.user:
@@ -2198,33 +2252,21 @@ def process_admin_payout_request(
             eligible_booking_ids[b.id] = net_ret
 
     target_booking_ids: list[_UUID] = []
-    if linked_booking_ids:
-        for b_id in linked_booking_ids:
-            if b_id not in eligible_booking_ids:
-                raise HTTPException(
-                    409,
-                    f"La reserva vinculada {str(b_id)[:8]} ya no es elegible para retiro o ya fue liberada.",
-                )
+    for b_id in linked_booking_ids:
+        if b_id not in eligible_booking_ids:
+            raise HTTPException(
+                409,
+                f"La reserva vinculada {str(b_id)[:8]} ya no es elegible para retiro o ya fue liberada.",
+            )
+        if b_id not in target_booking_ids:
             target_booking_ids.append(b_id)
-        target_total = sum((eligible_booking_ids[b_id] for b_id in target_booking_ids), Decimal("0.00"))
-        req_amount_dec = Decimal(str(req.amount))
-        if abs(target_total - req_amount_dec) > Decimal("0.05"):
-            raise HTTPException(
-                409,
-                f"El monto elegible de las reservas vinculadas (S/ {target_total:.2f}) ya no coincide con el monto solicitado (S/ {req_amount_dec:.2f}). Rechaza esta solicitud para que el músico genere una nueva.",
-            )
-    elif eligible_booking_ids:
-        req_amount_dec = Decimal(str(req.amount))
-        running = Decimal("0.00")
-        for b_id, b_amt in eligible_booking_ids.items():
-            if running + b_amt <= req_amount_dec + Decimal("0.05"):
-                target_booking_ids.append(b_id)
-                running += b_amt
-        if abs(running - req_amount_dec) > Decimal("0.05"):
-            raise HTTPException(
-                409,
-                f"El monto elegible de las reservas (S/ {running:.2f}) no coincide con el monto solicitado (S/ {req_amount_dec:.2f}). Rechaza esta solicitud para que el músico genere una nueva.",
-            )
+    target_total = sum((eligible_booking_ids[b_id] for b_id in target_booking_ids), Decimal("0.00"))
+    req_amount_dec = Decimal(str(req.amount))
+    if abs(target_total - req_amount_dec) > Decimal("0.05"):
+        raise HTTPException(
+            409,
+            f"El monto elegible de las reservas vinculadas (S/ {target_total:.2f}) ya no coincide con el monto solicitado (S/ {req_amount_dec:.2f}). Rechaza esta solicitud para que el músico genere una nueva.",
+        )
 
     for b_id in target_booking_ids:
         b_row = db.get(Booking, b_id)

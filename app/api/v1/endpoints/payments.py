@@ -2,8 +2,9 @@ import logging
 import re
 from datetime import datetime, timezone
 from decimal import Decimal
+from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -586,6 +587,7 @@ def _server_amount(db: Session, booking: Booking, payment_type: str, client_amou
     try:
         expected = mercadopago_service.expected_payment_amount(db, booking, payment_type)
     except ValueError as exc:
+        db.rollback()
         logger.warning("Error procesando pago directo de Mercado Pago para reserva %s: %s", booking.id, exc)
         msg = str(exc)
         safe_detail = (
@@ -629,6 +631,10 @@ def create_mercadopago_preference(
     if not booking:
         raise HTTPException(404, detail="Reserva no encontrada")
     assert_booking_contractor_owner(db, booking, current_user)
+    if booking.musician_id:
+        db.query(MusicianProfile).filter(
+            MusicianProfile.id == booking.musician_id
+        ).with_for_update().first()
 
     in_flight_candidates = (
         db.query(Payment)
@@ -663,6 +669,11 @@ def create_mercadopago_preference(
         BookingStatus.contract_pending,
         BookingStatus.contract_signed,
     ):
+        if not payload.contract_body_sha256 or not payload.contract_body_sha256.strip():
+            raise HTTPException(
+                422,
+                detail="Debes incluir contract_body_sha256 para verificar el texto firmado.",
+            )
         sig_url = payload.signature_image_url
         if sig_url.startswith("data:image/"):
             from app.services.uploads import save_data_url_upload
@@ -681,14 +692,10 @@ def create_mercadopago_preference(
         from app.api.v1.endpoints.contracts import _ensure_booking_contract
         from app.services.contract_pdf import compute_contract_body_sha256
 
-        contract = _ensure_booking_contract(db, booking)
+        contract = _ensure_booking_contract(db, booking, commit=False)
         if contract:
             current_sha = compute_contract_body_sha256(contract.title, contract.body)
-            if (
-                payload.contract_body_sha256
-                and payload.contract_body_sha256.strip()
-                and payload.contract_body_sha256.strip() != current_sha
-            ):
+            if payload.contract_body_sha256.strip() != current_sha:
                 raise HTTPException(
                     409,
                     detail="El contenido del contrato cambió desde que lo abriste. Recarga la página antes de firmar.",
@@ -715,7 +722,7 @@ def create_mercadopago_preference(
             if booking.status in (BookingStatus.accepted, BookingStatus.contract_pending):
                 booking.status = BookingStatus.contract_signed
 
-            db.commit()
+            db.flush()
 
     if booking.status not in (BookingStatus.contract_signed, BookingStatus.payment_pending):
         from app.models.contract import Contract
@@ -735,6 +742,7 @@ def create_mercadopago_preference(
         )
         return MercadoPagoPreferenceResponse(**pref)
     except ValueError as exc:
+        db.rollback()
         logger.warning("Error creando preferencia de Mercado Pago para reserva %s: %s", booking.id, exc)
         raise HTTPException(
             400,
@@ -759,6 +767,10 @@ def process_mercadopago_direct_payment(
     if not booking:
         raise HTTPException(404, detail="Reserva no encontrada")
     assert_booking_contractor_owner(db, booking, current_user)
+    if booking.musician_id:
+        db.query(MusicianProfile).filter(
+            MusicianProfile.id == booking.musician_id
+        ).with_for_update().first()
 
     in_flight_candidates = (
         db.query(Payment)
@@ -793,6 +805,11 @@ def process_mercadopago_direct_payment(
         BookingStatus.contract_pending,
         BookingStatus.contract_signed,
     ):
+        if not payload.contract_body_sha256 or not payload.contract_body_sha256.strip():
+            raise HTTPException(
+                422,
+                detail="Debes incluir contract_body_sha256 para verificar el texto firmado.",
+            )
         sig_url = payload.signature_image_url
         if sig_url.startswith("data:image/"):
             from app.services.uploads import save_data_url_upload
@@ -811,14 +828,10 @@ def process_mercadopago_direct_payment(
         from app.api.v1.endpoints.contracts import _ensure_booking_contract
         from app.services.contract_pdf import compute_contract_body_sha256
 
-        contract = _ensure_booking_contract(db, booking)
+        contract = _ensure_booking_contract(db, booking, commit=False)
         if contract:
             current_sha = compute_contract_body_sha256(contract.title, contract.body)
-            if (
-                payload.contract_body_sha256
-                and payload.contract_body_sha256.strip()
-                and payload.contract_body_sha256.strip() != current_sha
-            ):
+            if payload.contract_body_sha256.strip() != current_sha:
                 raise HTTPException(
                     409,
                     detail="El contenido del contrato cambió desde que lo abriste. Recarga la página antes de firmar.",
@@ -845,7 +858,7 @@ def process_mercadopago_direct_payment(
             if booking.status in (BookingStatus.accepted, BookingStatus.contract_pending):
                 booking.status = BookingStatus.contract_signed
 
-            db.commit()
+            db.flush()
 
     if booking.status not in (BookingStatus.contract_signed, BookingStatus.payment_pending):
         from app.models.contract import Contract
@@ -872,6 +885,7 @@ def process_mercadopago_direct_payment(
             message=res.get("message", "Operación procesada"),
         )
     except ValueError as exc:
+        db.rollback()
         logger.warning("Error procesando pago directo de Mercado Pago para reserva %s: %s", booking.id, exc)
         msg = str(exc)
         safe_detail = (
@@ -886,8 +900,9 @@ def process_mercadopago_direct_payment(
 
 
 @router.post("/mercadopago/webhook")
-async def mercadopago_webhook(
+def mercadopago_webhook(
     request: Request,
+    body_payload: dict[str, Any] | None = Body(default=None),
     db: Session = Depends(deps.get_db),
 ):
     """
@@ -900,11 +915,7 @@ async def mercadopago_webhook(
     data_id = query_params.get("data.id") or query_params.get("id")
     topic = query_params.get("topic") or query_params.get("type")
 
-    body_data = {}
-    try:
-        body_data = await request.json()
-    except Exception:
-        body_data = {}
+    body_data = body_payload if isinstance(body_payload, dict) else {}
 
     if not data_id:
         data_id = (body_data.get("data") or {}).get("id") or body_data.get("id")
@@ -1047,7 +1058,7 @@ def check_mercadopago_payment_status(
     )
 
 
-from app.models.payout_request import PayoutRequest
+from app.models.payout_request import PayoutRequest, PayoutRequestBooking
 from app.schemas.payment import PayoutRequestOut
 
 
@@ -1062,13 +1073,33 @@ def request_payout(
     musician = (
         db.query(MusicianProfile)
         .filter(MusicianProfile.user_id == current_user.id)
-        .with_for_update()
         .first()
     )
     if not musician:
         raise HTTPException(400, "Completa tu perfil de músico primero")
     if not current_user.is_verified:
         raise HTTPException(403, "Tu perfil de músico debe estar verificado para solicitar retiros")
+
+    # Orden canónico de candados: Booking -> MusicianProfile (SEC4-12)
+    db.query(Booking.id).filter(
+        Booking.musician_id == musician.id,
+        Booking.status.in_(
+            [
+                BookingStatus.payment_retained,
+                BookingStatus.in_progress,
+                BookingStatus.payment_released,
+                BookingStatus.completed,
+                BookingStatus.cancelled,
+            ]
+        ),
+    ).order_by(Booking.id.asc()).with_for_update().all()
+
+    musician = (
+        db.query(MusicianProfile)
+        .filter(MusicianProfile.id == musician.id)
+        .with_for_update()
+        .first()
+    )
 
     summary = get_musician_earnings(current_user=current_user, db=db)
 
@@ -1139,6 +1170,10 @@ def request_payout(
         existing_request.amount = amount
         existing_request.notes = notes_text
         payout_request = existing_request
+        db.flush()
+        db.query(PayoutRequestBooking).filter(
+            PayoutRequestBooking.payout_request_id == payout_request.id
+        ).delete(synchronize_session=False)
     else:
         payout_request = PayoutRequest(
             musician_id=musician.id,
@@ -1147,6 +1182,15 @@ def request_payout(
             notes=notes_text,
         )
         db.add(payout_request)
+        db.flush()
+
+    for b_id in eligible_ids:
+        db.add(
+            PayoutRequestBooking(
+                payout_request_id=payout_request.id,
+                booking_id=b_id,
+            )
+        )
 
     try:
         notify_admins(

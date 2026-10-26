@@ -665,13 +665,18 @@ def accept_quote(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     expected_hash = compute_contract_body_sha256(contract.title, contract.body)
-    if payload and payload.contract_body_sha256:
-        if payload.contract_body_sha256.strip().lower() != expected_hash.lower():
-            db.rollback()
-            raise HTTPException(
-                status_code=409,
-                detail="El contenido del contrato cambió desde que lo leíste. Recarga la página antes de aceptar.",
-            )
+    if not payload or not payload.contract_body_sha256 or not payload.contract_body_sha256.strip():
+        db.rollback()
+        raise HTTPException(
+            status_code=422,
+            detail="contract_body_sha256 es obligatorio para aceptar la cotización y el contrato.",
+        )
+    if payload.contract_body_sha256.strip().lower() != expected_hash.lower():
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="El contenido del contrato cambió desde que lo leíste. Recarga la página antes de aceptar.",
+        )
     contract.context = {
         **(contract.context or {}),
         "__signed_body_sha256__": expected_hash,

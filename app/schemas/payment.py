@@ -86,6 +86,12 @@ class MercadoPagoPreferenceRequest(BaseModel):
     contract_body_sha256: str | None = None
     payer_email: str | None = None
 
+    @model_validator(mode="after")
+    def require_sha256_when_signing(self):
+        if self.signature_image_url and not (self.contract_body_sha256 and self.contract_body_sha256.strip()):
+            raise ValueError("Debes incluir contract_body_sha256 al enviar la firma del contrato.")
+        return self
+
 
 class MercadoPagoPreferenceResponse(BaseModel):
     preference_id: str
@@ -114,6 +120,12 @@ class MercadoPagoProcessPaymentRequest(BaseModel):
     installments: int = 1
     issuer_id: str | None = None
     payer_email: str | None = None
+
+    @model_validator(mode="after")
+    def require_sha256_when_signing(self):
+        if self.signature_image_url and not (self.contract_body_sha256 and self.contract_body_sha256.strip()):
+            raise ValueError("Debes incluir contract_body_sha256 al enviar la firma del contrato.")
+        return self
     device_id: str | None = None
     identification_type: str | None = None
     identification_number: str | None = None

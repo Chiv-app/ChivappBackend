@@ -142,6 +142,18 @@ def upgrade() -> None:
 
     op.execute(
         """
+        CREATE TABLE IF NOT EXISTS payout_request_booking (
+            payout_request_id UUID NOT NULL REFERENCES payout_request(id) ON DELETE CASCADE,
+            booking_id UUID NOT NULL REFERENCES booking(id) ON DELETE CASCADE,
+            created_at TIMESTAMP WITHOUT TIME ZONE,
+            PRIMARY KEY (payout_request_id, booking_id)
+        )
+        """
+    )
+    op.execute('CREATE INDEX IF NOT EXISTS ix_payout_request_booking_booking_id ON payout_request_booking (booking_id)')
+
+    op.execute(
+        """
         CREATE TABLE IF NOT EXISTS uploaded_file (
             id UUID PRIMARY KEY,
             filename VARCHAR NOT NULL,

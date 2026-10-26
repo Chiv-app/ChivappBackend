@@ -21,7 +21,8 @@ from app.models.payment import Payment, PaymentStatus
 from app.models.user import User
 from app.models.musician_profile import MusicianProfile
 from app.services.availability_match import assert_no_booking_overlap
-from app.services.booking_notifications import notify_admins, notify_booking_confirmed
+from app.services.booking_notifications import notify_admins, notify_booking_confirmed, notify_user
+from app.services.calendar_service import cancel_booking_calendar_event
 
 logger = logging.getLogger(__name__)
 
@@ -346,12 +347,14 @@ def process_approved_mercadopago_payment(db: Session, payment_data: dict[str, An
         logger.warning("Booking ID inválido en pago %s: %s", payment_id, booking_id_str)
         return None
 
-    # Bloquear la reserva: el webhook y /process pueden llegar a la vez para el
-    # mismo pago; sin el lock se registraría dos veces.
+    # Bloquear la reserva y luego el perfil del músico (orden canónico SEC4-12:
+    # Booking -> MusicianProfile -> Payment) para serializar webhooks y /process.
     booking = db.get(Booking, booking_uuid, with_for_update=True)
     if not booking:
         logger.warning("Reserva no encontrada para pago %s: %s", payment_id, booking_id_str)
         return None
+    if booking.musician_id:
+        db.query(MusicianProfile).filter(MusicianProfile.id == booking.musician_id).with_for_update().first()
 
     transaction_amount = payment_data.get("transaction_amount")
     amount = Decimal(str(transaction_amount)) if transaction_amount is not None else Decimal("0")
@@ -367,23 +370,177 @@ def process_approved_mercadopago_payment(db: Session, payment_data: dict[str, An
         .first()
     )
 
+    # SEC5-10: No permitir que un pago en estado terminal (refunded, rejected) se reactive.
+    if existing and existing.status in (PaymentStatus.refunded, PaymentStatus.rejected):
+        logger.info(
+            "Ignorando actualización '%s' para pago MP %s en estado terminal '%s'",
+            status,
+            payment_id,
+            existing.status.value,
+        )
+        return existing
+
     if existing and existing.status in (PaymentStatus.retained, PaymentStatus.released):
+        meta_dict = dict(existing.gateway_metadata or {}) if isinstance(existing.gateway_metadata, dict) else {}
+        is_own_refund = (
+            bool(meta_dict.get("refunded_by_admin"))
+            or (booking.cancellation_refund_status in {"processing", "completed"})
+            or (
+                db.query(Payment.id)
+                .filter(
+                    Payment.booking_id == booking.id,
+                    Payment.payment_type == "refund",
+                )
+                .first()
+                is not None
+            )
+        )
+
+        raw_refunded = payment_data.get("transaction_amount_refunded")
+        if raw_refunded is None and isinstance(payment_data.get("refunds"), list):
+            try:
+                raw_refunded = sum(Decimal(str(r.get("amount") or 0)) for r in payment_data["refunds"])
+            except Exception:
+                raw_refunded = 0
+        try:
+            refunded_amount = Decimal(str(raw_refunded or 0))
+        except Exception:
+            refunded_amount = Decimal("0")
+
+        # SEC4-05 / BUG5-13 (2): Reembolso parcial (0 < refunded_amount < amount) sin cancelar la reserva.
+        if Decimal("0") < refunded_amount < amount and status != "charged_back":
+            already_alerted = bool(meta_dict.get("partial_refund_alerted"))
+            meta_dict.update(payment_data)
+            meta_dict["partial_refund_amount"] = float(refunded_amount)
+            meta_dict["post_approval_event"] = "partial_refund"
+            if not is_own_refund and not already_alerted:
+                meta_dict["partial_refund_alerted"] = True
+                try:
+                    notify_admins(
+                        db,
+                        type="payment_alert",
+                        title="Reembolso parcial externo en Mercado Pago",
+                        message=(
+                            f"El pago MP {payment_id} de la reserva {str(booking.id)[:8]} registra un "
+                            f"reembolso parcial de S/ {refunded_amount:.2f} sobre S/ {amount:.2f}."
+                        ),
+                        meta={
+                            "booking_id": str(booking.id),
+                            "payment_id": str(payment_id),
+                            "post_approval_event": "partial_refund",
+                            "partial_refund_amount": str(refunded_amount),
+                        },
+                    )
+                except Exception as exc:
+                    logger.warning("No se pudo notificar reembolso parcial %s: %s", payment_id, exc)
+            existing.gateway_metadata = meta_dict
+            db.commit()
+            db.refresh(existing)
+            return existing
+
+        # SEC4-05 / BUG5-13 (3): Mediación activa (in_mediation) bloquea desembolso y alerta.
+        if status == "in_mediation":
+            already_alerted = bool(meta_dict.get("in_mediation_alerted"))
+            meta_dict.update(payment_data)
+            meta_dict["in_mediation"] = True
+            meta_dict["post_approval_event"] = "in_mediation"
+            if not already_alerted:
+                meta_dict["in_mediation_alerted"] = True
+                try:
+                    notify_admins(
+                        db,
+                        type="payment_alert",
+                        title="Disputa / mediación abierta en Mercado Pago",
+                        message=(
+                            f"El pago MP {payment_id} por S/ {amount:.2f} de la reserva "
+                            f"{str(booking.id)[:8]} entró en mediación ('in_mediation'). "
+                            f"El desembolso queda bloqueado hasta su resolución."
+                        ),
+                        meta={
+                            "booking_id": str(booking.id),
+                            "payment_id": str(payment_id),
+                            "post_approval_event": "in_mediation",
+                            "in_mediation": True,
+                        },
+                    )
+                except Exception as exc:
+                    logger.warning("No se pudo notificar mediación %s: %s", payment_id, exc)
+            existing.gateway_metadata = meta_dict
+            db.commit()
+            db.refresh(existing)
+            return existing
+
         if status in ("refunded", "charged_back", "cancelled", "rejected"):
-            meta_dict = dict(existing.gateway_metadata or {}) if isinstance(existing.gateway_metadata, dict) else {}
             prev_post_event = meta_dict.get("post_approval_event")
             meta_dict.update(payment_data)
             meta_dict["post_approval_event"] = status
             existing.gateway_metadata = meta_dict
+
             if status in ("refunded", "charged_back"):
                 existing.status = PaymentStatus.refunded
+                # SEC4-05 / BUG5-13 (4): Distinguir reembolso propio de contracargo externo.
+                if is_own_refund and status == "refunded":
+                    meta_dict["post_approval_event"] = "platform_refund"
+                    existing.gateway_metadata = meta_dict
+                    db.commit()
+                    db.refresh(existing)
+                    return existing
+
+                booking_was_cancelled_now = False
                 if booking.status in (
                     BookingStatus.payment_retained,
                     BookingStatus.in_progress,
                     BookingStatus.change_pending,
                 ):
                     booking.status = BookingStatus.cancelled
+                    booking.cancelled_at = booking.cancelled_at or datetime.utcnow()
                     booking.cancelled_by = "system"
                     booking.rejection_reason = f"Pago revertido en Mercado Pago ({status})"
+                    booking_was_cancelled_now = True
+
+                db.commit()
+
+                # BUG5-07: Eliminar evento de Google Calendar y avisar a músico y cliente tras liberar locks.
+                if booking_was_cancelled_now or booking.calendar_event_id:
+                    try:
+                        if cancel_booking_calendar_event(db, booking):
+                            db.commit()
+                    except Exception as exc:
+                        logger.warning("No se pudo eliminar evento de Calendar tras contracargo %s: %s", payment_id, exc)
+
+                if booking_was_cancelled_now or prev_post_event != status:
+                    try:
+                        musician = db.query(MusicianProfile).filter(MusicianProfile.id == booking.musician_id).first()
+                        musician_user = db.query(User).filter(User.id == musician.user_id).first() if musician else None
+                        contractor = db.query(ContractorProfile).filter(ContractorProfile.id == booking.contractor_id).first()
+                        contractor_user = db.query(User).filter(User.id == contractor.user_id).first() if contractor else None
+                        if musician_user:
+                            notify_user(
+                                db,
+                                user=musician_user,
+                                type="booking_cancelled",
+                                title="Reserva cancelada por reversión de pago",
+                                message=(
+                                    f"La reserva #{str(booking.id)[:8]} fue cancelada automáticamente "
+                                    f"porque el pago fue revertido en la pasarela ({status})."
+                                ),
+                                booking_id=str(booking.id),
+                            )
+                        if contractor_user:
+                            notify_user(
+                                db,
+                                user=contractor_user,
+                                type="booking_cancelled",
+                                title="Reserva cancelada por reversión de pago",
+                                message=(
+                                    f"La reserva #{str(booking.id)[:8]} fue cancelada porque el pago "
+                                    f"registró una reversión o contracargo ({status}) en Mercado Pago."
+                                ),
+                                booking_id=str(booking.id),
+                            )
+                    except Exception as exc:
+                        logger.warning("No se pudo notificar a las partes sobre contracargo %s: %s", payment_id, exc)
+
             if prev_post_event != status:
                 try:
                     notify_admins(
@@ -452,10 +609,6 @@ def process_approved_mercadopago_payment(db: Session, payment_data: dict[str, An
             db.flush()
 
     if is_approved:
-        # Bloquear el perfil del músico para serializar confirmaciones de horario del mismo músico (BUG3-02)
-        if booking.musician_id:
-            db.query(MusicianProfile).filter(MusicianProfile.id == booking.musician_id).with_for_update().first()
-
         other_retained_or_released = (
             db.query(Payment)
             .filter(
@@ -548,8 +701,10 @@ def process_approved_mercadopago_payment(db: Session, payment_data: dict[str, An
                 from app.models.booking_link import BookingLink, BookingLinkStatus
                 for bl in db.query(BookingLink).filter(BookingLink.booking_id == booking.id).all():
                     bl.status = BookingLinkStatus.completed
-                _confirm_booking_notifications_and_calendar(db, booking)
             db.commit()
+            if payment_type == FULL_PAYMENT_TYPE:
+                _confirm_booking_notifications_and_calendar(db, booking)
+                db.commit()
             db.refresh(existing)
         elif is_rejected and existing.status == PaymentStatus.initiated:
             existing.status = PaymentStatus.rejected
@@ -607,8 +762,6 @@ def process_approved_mercadopago_payment(db: Session, payment_data: dict[str, An
         from app.models.booking_link import BookingLink, BookingLinkStatus
         for bl in db.query(BookingLink).filter(BookingLink.booking_id == booking.id).all():
             bl.status = BookingLinkStatus.completed
-        _confirm_booking_notifications_and_calendar(db, booking)
-                            
 
     try:
         db.commit()
@@ -617,6 +770,11 @@ def process_approved_mercadopago_payment(db: Session, payment_data: dict[str, An
         db.rollback()
         logger.info("Pago MP %s ya registrado por otro proceso", payment_id)
         return db.query(Payment).filter(Payment.gateway_payment_id == payment_id).first()
+
+    if is_approved and payment_type == FULL_PAYMENT_TYPE:
+        _confirm_booking_notifications_and_calendar(db, booking)
+        db.commit()
+
     db.refresh(payment)
     return payment
 

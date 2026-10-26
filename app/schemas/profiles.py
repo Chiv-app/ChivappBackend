@@ -77,6 +77,21 @@ def _validate_safe_public_url_list(values: list[str] | None) -> list[str] | None
     return out
 
 
+def validate_private_upload_url(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("URL de archivo privado inválida")
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    if len(cleaned) > 500 or ".." in cleaned:
+        raise ValueError("URL de archivo privado inválida")
+    if not cleaned.startswith("/uploads/private/"):
+        raise ValueError("Los documentos de identidad y firmas deben subirse como archivos privados (/uploads/private/)")
+    return cleaned
+
+
 # ---------- MUSICIAN PROFILE ----------
 
 class MusicianProfileBase(BaseModel):
@@ -122,6 +137,11 @@ class MusicianProfileBase(BaseModel):
 class MusicianProfileCreate(MusicianProfileBase):
     stage_name: str
 
+    @field_validator("id_document_url", "signature_image_url", mode="before")
+    @classmethod
+    def _validate_create_private_urls(cls, value):
+        return validate_private_upload_url(value)
+
     @field_validator(
         "profile_image_url",
         "showreel_video_url",
@@ -164,6 +184,11 @@ class MusicianProfileUpdate(BaseModel):
     def _validate_update_url_lists(cls, value):
         return _validate_safe_public_url_list(value)
     is_ensemble_only: bool | None = None
+
+    @field_validator("id_document_url", "signature_image_url", mode="before")
+    @classmethod
+    def _validate_update_private_urls(cls, value):
+        return validate_private_upload_url(value)
     stage_name: str | None = None
     username: str | None = None
     fullname: str | None = None
@@ -423,10 +448,18 @@ class ContractorProfileBase(BaseModel):
 
 
 class ContractorProfileCreate(ContractorProfileBase):
+    @field_validator("id_document_url", mode="before")
+    @classmethod
+    def _validate_contractor_create_private_url(cls, value):
+        return validate_private_upload_url(value)
     pass
 
 
 class ContractorProfileUpdate(BaseModel):
+    @field_validator("id_document_url", mode="before")
+    @classmethod
+    def _validate_contractor_update_private_url(cls, value):
+        return validate_private_upload_url(value)
     username: str | None = None
     fullname: str | None = None
     phone: str | None = None

@@ -276,14 +276,21 @@ def create_public_share_review(
 
 
 @router.post("/public/share/{token}/upload")
-@limiter.limit(settings.RATE_LIMIT_PUBLIC)
+@limiter.limit("20/hour")
 async def upload_public_share_file(
     request: Request,
     token: str,
     file: UploadFile = File(...),
     db: Session = Depends(deps.get_db),
 ):
-    _get_shared_booking_or_410(db, token)
+    booking = _get_shared_booking_or_410(db, token)
+    existing_count = (
+        db.query(BookingReview)
+        .filter(BookingReview.booking_id == booking.id)
+        .count()
+    )
+    if existing_count >= MAX_PUBLIC_SHARE_REVIEWS_PER_BOOKING:
+        raise HTTPException(status_code=400, detail="Se alcanzó el límite de reacciones para este evento.")
     try:
         url = await save_upload(file)
     except ValueError as exc:

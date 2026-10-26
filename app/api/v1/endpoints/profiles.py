@@ -474,7 +474,7 @@ def create_musician_profile(
     data = prepare_musician_updates(payload.model_dump())
     for priv_field, label in (("id_document_url", "documento de identidad"), ("signature_image_url", "firma")):
         val = data.get(priv_field)
-        if val and str(val).startswith("/uploads/private/"):
+        if val:
             assert_private_upload_owned(db, val, current_user.id, label)
     if data.get("availability_type") is None:
         data["availability_type"] = AvailabilityType.both
@@ -525,7 +525,7 @@ def update_musician_profile(
     updates = prepare_musician_updates(payload.model_dump(exclude_unset=True))
     for priv_field, label in (("id_document_url", "documento de identidad"), ("signature_image_url", "firma")):
         val = updates.get(priv_field)
-        if val and str(val).startswith("/uploads/private/"):
+        if val:
             assert_private_upload_owned(db, val, current_user.id, label)
 
     new_username_val: str | None = None
@@ -848,7 +848,7 @@ def create_contractor_profile(
             detail="El perfil de contratista ya existe. Debes actualizarlo.",
         )
 
-    if payload.id_document_url and str(payload.id_document_url).startswith("/uploads/private/"):
+    if payload.id_document_url:
         from app.services.uploads import assert_private_upload_owned
         assert_private_upload_owned(db, payload.id_document_url, current_user.id, "documento de identidad")
 
@@ -932,7 +932,7 @@ def update_contractor_profile(
             exclude_profile_id=profile.id,
         )
 
-    if updates.get("id_document_url") and str(updates["id_document_url"]).startswith("/uploads/private/"):
+    if updates.get("id_document_url"):
         from app.services.uploads import assert_private_upload_owned
         assert_private_upload_owned(db, updates["id_document_url"], current_user.id, "documento de identidad")
 

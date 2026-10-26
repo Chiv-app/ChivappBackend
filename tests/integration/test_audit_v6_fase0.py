@@ -237,7 +237,7 @@ def test_sec6_06_bug6_01_three_database_migration_scenarios():
         legacy_tables = [
             t
             for name, t in Base.metadata.tables.items()
-            if name not in {"booking_link", "payout_request", "uploaded_file"}
+            if name not in {"booking_link", "payout_request", "payout_request_booking", "uploaded_file"}
         ]
         with engine.begin() as conn:
             conn.execute(sa.text(f'SET search_path TO "{schema_legacy}"'))
@@ -257,7 +257,13 @@ def test_sec6_06_bug6_01_three_database_migration_scenarios():
 
         with engine.connect() as conn:
             conn.execute(sa.text(f'SET search_path TO "{schema_legacy}"'))
-            for required_table in ("booking_link", "payout_request", "uploaded_file", "alembic_version"):
+            for required_table in (
+                "booking_link",
+                "payout_request",
+                "payout_request_booking",
+                "uploaded_file",
+                "alembic_version",
+            ):
                 reg = conn.execute(
                     sa.text("SELECT to_regclass(:t)"), {"t": required_table}
                 ).scalar()

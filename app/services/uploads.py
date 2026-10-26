@@ -32,6 +32,8 @@ PUBLIC_URL_PREFIX = "/uploads/"
 GCS_PUBLIC_PREFIX = "https://storage.googleapis.com/"
 
 MAX_FILE_SIZE = 15 * 1024 * 1024  # 15 MB
+MAX_UPLOADS_PER_USER_HOUR = 20
+MAX_UPLOAD_BYTES_PER_USER_HOUR = 100 * 1024 * 1024  # 100 MB
 _CHUNK = 1024 * 1024
 
 # Solo nombres generados por el servidor: uuid + extensión permitida.
@@ -97,7 +99,7 @@ async def save_upload(file: UploadFile, *, private: bool = False, owner_id=None,
     """Valida y guarda un archivo. Devuelve su URL.
 
     Con `private=True` se exige `owner_id` y `db`, y se registra el dueño para
-    controlar las descargas.
+    controlar las descargas. También aplica cuota por usuario (20 archivos o 100 MB por hora).
     """
     content = await _read_limited(file)
     if not content:
@@ -106,6 +108,32 @@ async def save_upload(file: UploadFile, *, private: bool = False, owner_id=None,
     content_type = sniff_content_type(content[:16])
     if content_type not in ALLOWED_TYPES:
         raise ValueError("Tipo de archivo no permitido. Formatos aceptados: JPG, PNG, WEBP, GIF o PDF.")
+
+    if owner_id is not None and db is not None:
+        from datetime import datetime, timedelta
+        from fastapi import HTTPException
+        from sqlalchemy import func
+        from app.models.uploaded_file import UploadedFile
+
+        cutoff = datetime.utcnow() - timedelta(hours=1)
+        row = (
+            db.query(
+                func.count(UploadedFile.id),
+                func.coalesce(func.sum(UploadedFile.size_bytes), 0),
+            )
+            .filter(
+                UploadedFile.owner_user_id == owner_id,
+                UploadedFile.created_at >= cutoff,
+            )
+            .first()
+        )
+        recent_count = int(row[0] or 0) if row else 0
+        recent_bytes = int(row[1] or 0) if row else 0
+        if recent_count >= MAX_UPLOADS_PER_USER_HOUR or (recent_bytes + len(content)) > MAX_UPLOAD_BYTES_PER_USER_HOUR:
+            raise HTTPException(
+                status_code=429,
+                detail="Has alcanzado el límite de subidas por hora (máximo 20 archivos o 100 MB por hora).",
+            )
 
     filename = f"{uuid.uuid4().hex}{ALLOWED_TYPES[content_type]}"
 
@@ -137,9 +165,22 @@ async def save_upload(file: UploadFile, *, private: bool = False, owner_id=None,
             (ensure_upload_dir() / filename).write_bytes(content)
         except Exception:  # noqa: BLE001
             pass
-        return f"{PUBLIC_URL_PREFIX}{filename}"
+    else:
+        (ensure_upload_dir() / filename).write_bytes(content)
 
-    (ensure_upload_dir() / filename).write_bytes(content)
+    if owner_id is not None and db is not None:
+        from app.models.uploaded_file import UploadedFile
+
+        db.add(
+            UploadedFile(
+                filename=filename,
+                owner_user_id=owner_id,
+                content_type=content_type,
+                size_bytes=len(content),
+            )
+        )
+        db.commit()
+
     return f"{PUBLIC_URL_PREFIX}{filename}"
 
 
