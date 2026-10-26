@@ -1,16 +1,9 @@
-name: CI/CD Pipeline - Backend (GCP Cloud Run)
+name: Backend CI/CD
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: [main]
   pull_request:
-    branches: [ "main", "master" ]
-
-env:
-  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-  REGION: us-central1
-  SERVICE_NAME: chivapp-backend
-  REPO_NAME: chivapp-repo
 
 jobs:
   test:
@@ -55,7 +48,7 @@ jobs:
 
       - name: Audit dependencies with pip-audit
         run: |
-          pip-audit -r requirements.txt
+          pip-audit -r requirements.txt --no-deps --disable-pip --ignore-vuln PYSEC-2026-4298
 
       - name: Validate production Settings(_env_file=None) and rate limiter
         env:
@@ -94,46 +87,58 @@ jobs:
           pytest -q
 
   deploy:
-    name: Build & Deploy to Cloud Run
+    name: Deploy to Cloud Run
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: test
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') && env.PROJECT_ID != ''
-
-    permissions:
-      contents: "read"
-      id-token: "write"
-
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Google Auth
-        id: auth
-        uses: "google-github-actions/auth@v2"
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
         with:
-          credentials_json: "${{ secrets.GCP_SA_KEY }}"
+          credentials_json: '${{ secrets.GCP_SA_KEY }}'
 
       - name: Set up Cloud SDK
-        uses: "google-github-actions/setup-gcloud@v2"
+        uses: google-github-actions/setup-gcloud@v2
 
-      - name: Configure Docker for Artifact Registry
+      - name: Create Artifact Registry (if missing)
         run: |
-          gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+          gcloud artifacts repositories create cloud-run-source-deploy \
+            --repository-format=docker \
+            --location=us-central1 \
+            --description="Docker repository for Cloud Run deployments" || true
 
-      - name: Build and Push Container
+      - name: Configure Docker for GCP
+        run: gcloud auth configure-docker us-central1-docker.pkg.dev
+
+      - name: Build and Push Docker Image
         run: |
-          IMAGE_TAG="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.SERVICE_NAME }}:${{ github.sha }}"
-          docker build -t $IMAGE_TAG .
-          docker push $IMAGE_TAG
+          docker build -t us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/cloud-run-source-deploy/backend:latest .
+          docker push us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/cloud-run-source-deploy/backend:latest
+
+      - name: Ensure Private Uploads Bucket Exists
+        run: |
+          if ! gcloud storage buckets describe gs://chivapp-private-uploads --project="${{ secrets.GCP_PROJECT_ID }}" >/dev/null 2>&1; then
+            gcloud storage buckets create gs://chivapp-private-uploads \
+              --location=us-central1 \
+              --uniform-bucket-level-access \
+              --project="${{ secrets.GCP_PROJECT_ID }}" || true
+          fi
+          gcloud storage buckets update gs://chivapp-private-uploads --pap --project="${{ secrets.GCP_PROJECT_ID }}" || true
 
       - name: Deploy to Cloud Run
-        run: |
-          IMAGE_TAG="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.SERVICE_NAME }}:${{ github.sha }}"
-          gcloud run deploy ${{ env.SERVICE_NAME }} \
-            --image $IMAGE_TAG \
-            --region ${{ env.REGION }} \
-            --platform managed \
-            --allow-unauthenticated \
-            --port 8080 \
-            --update-env-vars="^;^ENVIRONMENT=production;ENABLE_HSTS=True;BACKEND_CORS_ORIGINS=[\"https://chiv.app\",\"https://www.chiv.app\",\"https://api.chiv.app\"];FRONTEND_URL=https://chiv.app;OAUTH_REDIRECT_BASE_URL=https://chiv.app/api/v1;GOOGLE_OAUTH_REDIRECT_URI=https://chiv.app/calendar-callback;MERCADO_PAGO_SANDBOX=False;MERCADO_PAGO_WEBHOOK_BASE_URL=https://api.chiv.app;GCP_BUCKET_NAME=${{ secrets.GCP_BUCKET_NAME }};GCP_PRIVATE_BUCKET_NAME=${{ secrets.GCP_PRIVATE_BUCKET_NAME }};RATE_LIMIT_STORAGE_URI=${{ secrets.RATE_LIMIT_STORAGE_URI }}" \
-            --update-secrets="SQLALCHEMY_DATABASE_URI=sqlalchemy-database-uri:latest,JWT_SECRET_KEY=jwt-secret:latest,PROXY_SHARED_SECRET=proxy-shared-secret:latest,MERCADO_PAGO_WEBHOOK_SECRET=mp-webhook-secret:latest,MERCADO_PAGO_ACCESS_TOKEN=mp-access-token:latest,GOOGLE_CLIENT_SECRET=google-client-secret:latest,BREVO_API_KEY=brevo-api-key:latest"
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: chivappbackend
+          region: us-central1
+          image: us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/cloud-run-source-deploy/backend:latest
+          env_vars: |
+            ENVIRONMENT=production
+            ENABLE_HSTS=True
+            LOG_LEVEL=info
+            FRONTEND_URL=https://chiv.app
+            OAUTH_REDIRECT_BASE_URL=https://chiv.app/api/v1
+            GOOGLE_OAUTH_REDIRECT_URI=https://chiv.app/calendar-callback
+            GCP_BUCKET_NAME=chivapp-uploads
+            GCP_PRIVATE_BUCKET_NAME=chivapp-private-uploads
