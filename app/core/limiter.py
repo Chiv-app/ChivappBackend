@@ -7,6 +7,11 @@ from slowapi.errors import RateLimitExceeded
 
 from app.core.config import settings
 
+REDIS_STORAGE_OPTIONS = {
+    "socket_connect_timeout": 0.5,
+    "socket_timeout": 0.5,
+}
+
 
 def get_client_ip(request: Request) -> str:
     """IP real del cliente, sin confiar en cabeceras que él mismo puede enviar.
@@ -20,7 +25,12 @@ def get_client_ip(request: Request) -> str:
     if secret:
         sent = request.headers.get("x-chivapp-proxy-secret") or ""
         forwarded_ip = (request.headers.get("x-chivapp-client-ip") or "").strip()
-        if forwarded_ip and hmac.compare_digest(sent, secret):
+        if (
+            forwarded_ip
+            and sent
+            and sent.isascii()
+            and hmac.compare_digest(sent.encode("utf-8"), secret.encode("utf-8"))
+        ):
             return forwarded_ip
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
@@ -32,12 +42,22 @@ def get_client_ip(request: Request) -> str:
     return "127.0.0.1"
 
 
-limiter = Limiter(
-    key_func=get_client_ip,
-    default_limits=[settings.RATE_LIMIT_DEFAULT],
-    enabled=settings.RATE_LIMITING_ENABLED,
-    storage_uri=settings.RATE_LIMIT_STORAGE_URI, in_memory_fallback_enabled=True,
-)
+def build_limiter(
+    storage_uri: str | None = None,
+    enabled: bool | None = None,
+) -> Limiter:
+    effective_uri = storage_uri or settings.RATE_LIMIT_STORAGE_URI
+    return Limiter(
+        key_func=get_client_ip,
+        default_limits=[settings.RATE_LIMIT_DEFAULT],
+        enabled=settings.RATE_LIMITING_ENABLED if enabled is None else enabled,
+        storage_uri=effective_uri,
+        storage_options=dict(REDIS_STORAGE_OPTIONS),
+        in_memory_fallback_enabled=True,
+    )
+
+
+limiter = build_limiter()
 
 
 def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> Response:
@@ -50,4 +70,3 @@ def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> Res
         status_code=429,
         headers=headers,
     )
-

@@ -9,6 +9,7 @@ from alembic import context
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from app.core.config import settings
+from app.db.alembic_bootstrap import stamp_legacy_connection
 from app.db.session import Base
 import app.models  # noqa: F401 - Register all models with Base.metadata
 
@@ -76,14 +77,19 @@ def run_migrations_online() -> None:
     configuration = config.get_section(config.config_ini_section) or {}
     configuration["sqlalchemy.url"] = settings.SQLALCHEMY_DATABASE_URI
 
+    from app.db.alembic_bootstrap import _validate_schema_name
+
+    schema = _validate_schema_name(os.environ.get("ALEMBIC_SCHEMA"))
+    connect_args = {"options": f"-csearch_path={schema}"} if schema else {}
+
     connectable = engine_from_config(
         configuration,
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args=connect_args,
     )
 
     with connectable.connect() as connection:
-        schema = os.environ.get("ALEMBIC_SCHEMA")
         configure_kwargs = {
             "connection": connection,
             "target_metadata": target_metadata,
@@ -96,32 +102,7 @@ def run_migrations_online() -> None:
         context.configure(**configure_kwargs)
 
         with context.begin_transaction():
-            from sqlalchemy import inspect as sa_inspect, text
-
-            if schema:
-                connection.execute(text(f"SET search_path TO {schema}"))
-
-            inspector = sa_inspect(connection)
-            existing_tables = set(inspector.get_table_names(schema=schema))
-            if "user" in existing_tables:
-                has_version = False
-                if "alembic_version" in existing_tables:
-                    row = connection.execute(
-                        text("SELECT version_num FROM alembic_version LIMIT 1")
-                    ).fetchone()
-                    has_version = row is not None
-                if not has_version:
-                    connection.execute(
-                        text(
-                            "CREATE TABLE IF NOT EXISTS alembic_version ("
-                            "version_num VARCHAR(32) NOT NULL, "
-                            "CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num))"
-                        )
-                    )
-                    connection.execute(
-                        text("INSERT INTO alembic_version (version_num) VALUES ('c7a3bc7f5426')")
-                    )
-
+            stamp_legacy_connection(connection, schema=schema)
             context.run_migrations()
 
 

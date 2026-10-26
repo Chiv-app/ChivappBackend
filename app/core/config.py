@@ -1,11 +1,14 @@
+from typing import Annotated
+
 from pydantic import field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "Chivapp API"
-    # "production" desactiva /docs y los orígenes CORS de desarrollo (ngrok, localhost).
-    ENVIRONMENT: str = "development"
+    # Por defecto "production" (fail-closed si se despliega sin definir ENVIRONMENT).
+    # En desarrollo local y tests se define ENVIRONMENT=development explícitamente.
+    ENVIRONMENT: str = "production"
     API_V1_STR: str = "/api/v1"
 
     SQLALCHEMY_DATABASE_URI: str
@@ -18,7 +21,7 @@ class Settings(BaseSettings):
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
 
-    BACKEND_CORS_ORIGINS: list[str] = [
+    BACKEND_CORS_ORIGINS: Annotated[list[str], NoDecode] = [
         "https://chiv.app",
         "https://www.chiv.app",
         "http://localhost:3000",
@@ -129,10 +132,28 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "En producción JWT_SECRET_KEY debe tener al menos 32 caracteres y no ser un valor por defecto."
                 )
-            if "postgres:postgres@localhost" in self.SQLALCHEMY_DATABASE_URI:
+            db_uri_lower = (self.SQLALCHEMY_DATABASE_URI or "").lower()
+            if (
+                "postgres:postgres@localhost" in db_uri_lower
+                or "postgres:postgres@127.0.0.1" in db_uri_lower
+            ):
                 raise ValueError(
                     "En producción SQLALCHEMY_DATABASE_URI no puede usar las credenciales locales por defecto."
                 )
+            if not self.ENABLE_HSTS:
+                raise ValueError(
+                    "En producción ENABLE_HSTS debe ser True."
+                )
+            if self.GOOGLE_CLIENT_ID.strip():
+                redirect_uri = (self.GOOGLE_OAUTH_REDIRECT_URI or "").strip().lower()
+                if (
+                    not redirect_uri.startswith("https://")
+                    or "localhost" in redirect_uri
+                    or "127.0.0.1" in redirect_uri
+                ):
+                    raise ValueError(
+                        "En producción GOOGLE_OAUTH_REDIRECT_URI debe usar https:// y no apuntar a localhost cuando GOOGLE_CLIENT_ID está activo."
+                    )
             if self.MERCADO_PAGO_SANDBOX:
                 raise ValueError(
                     "En producción MERCADO_PAGO_SANDBOX debe ser False."
@@ -174,6 +195,10 @@ class Settings(BaseSettings):
                 for origin in self.BACKEND_CORS_ORIGINS
                 if "localhost" not in origin.lower() and "127.0.0.1" not in origin
             ]
+            if not self.BACKEND_CORS_ORIGINS:
+                raise ValueError(
+                    "En producción BACKEND_CORS_ORIGINS no puede quedar vacío tras descartar orígenes locales."
+                )
         return self
 
 

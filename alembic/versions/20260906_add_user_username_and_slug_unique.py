@@ -35,6 +35,4 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index("ix_musician_profile_slug", table_name="musician_profile")
-    op.drop_index("ix_user_username", table_name="user")
-    op.drop_column("user", "username")
+    raise RuntimeError('Downgrade no soportado; restaura desde copia de seguridad.')

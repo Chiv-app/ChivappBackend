@@ -20,5 +20,5 @@ def upgrade():
     op.add_column('booking', sa.Column('calendar_event_id', sa.String(), nullable=True))
 
 
-def downgrade():
-    op.drop_column('booking', 'calendar_event_id')
+def downgrade() -> None:
+    raise RuntimeError("Downgrade no soportado; restaura desde copia de seguridad.")

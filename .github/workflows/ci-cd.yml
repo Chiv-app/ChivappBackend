@@ -1,17 +1,24 @@
-name: Backend CI/CD
+name: CI/CD Pipeline - Backend (GCP Cloud Run)
 
 on:
   push:
-    branches: [main]
+    branches: [ "main", "master" ]
   pull_request:
+    branches: [ "main", "master" ]
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  REGION: us-central1
+  SERVICE_NAME: chivapp-backend
+  REPO_NAME: chivapp-repo
 
 jobs:
   test:
-    name: Run Tests
+    name: Run Tests & Security Checks
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16
+        image: postgres:16-alpine
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -19,75 +26,114 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-    env:
-      TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mariachi_test
+          --health-cmd="pg_isready -U postgres -d mariachi_test"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
       - name: Install dependencies
-        run: pip install -r requirements-dev.txt
-      - name: Check Python syntax & undefined names (ruff)
-        run: ruff check --select F821,F822,F823 app tests
-      - name: Run pytest
-        run: pytest
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Lint with Ruff
+        run: |
+          ruff check --select F821,F822,F823 app tests
+
+      - name: Audit dependencies with pip-audit
+        run: |
+          pip-audit -r requirements.txt
+
+      - name: Validate production Settings(_env_file=None)
+        env:
+          ENVIRONMENT: production
+          ENABLE_HSTS: "True"
+          SQLALCHEMY_DATABASE_URI: postgresql+psycopg2://prod_user:StrongProdPass123!@10.0.0.5:5432/chivapp_prod
+          JWT_SECRET_KEY: prod-jwt-secret-key-with-more-than-32-chars-ok
+          PROXY_SHARED_SECRET: prod-proxy-shared-secret-with-32-plus-chars-ok
+          GCP_BUCKET_NAME: chivapp-uploads
+          GCP_PRIVATE_BUCKET_NAME: chivapp-private-uploads
+          RATE_LIMIT_STORAGE_URI: redis://10.0.0.6:6379/0
+          FRONTEND_URL: https://chiv.app
+          BACKEND_CORS_ORIGINS: '["https://chiv.app","https://www.chiv.app","https://api.chiv.app"]'
+          MERCADO_PAGO_SANDBOX: "False"
+        run: |
+          python -c "from app.core.config import Settings; Settings(_env_file=None)"
+
+      - name: Verify Alembic migrations (upgrade head + check)
+        env:
+          ENVIRONMENT: development
+          SQLALCHEMY_DATABASE_URI: postgresql+psycopg2://postgres:postgres@localhost:5432/mariachi_test
+          JWT_SECRET_KEY: ci-test-secret-key-for-github-actions-minimum-32-bytes
+        run: |
+          python -m app.db.alembic_bootstrap
+          alembic upgrade head
+          alembic check
+
+      - name: Run Pytest (unit + integration)
+        env:
+          ENVIRONMENT: development
+          SQLALCHEMY_DATABASE_URI: postgresql+psycopg2://postgres:postgres@localhost:5432/mariachi_test
+          TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mariachi_test
+          JWT_SECRET_KEY: ci-test-secret-key-for-github-actions-minimum-32-bytes
+          EMAIL_ENABLED: "false"
+        run: |
+          pytest -q
 
   deploy:
-    name: Deploy to Cloud Run
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    name: Build & Deploy to Cloud Run
     needs: test
     runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') && env.PROJECT_ID != ''
+
+    permissions:
+      contents: "read"
+      id-token: "write"
+
     steps:
-      - uses: actions/checkout@v4
-      
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Google Auth
+        id: auth
+        uses: "google-github-actions/auth@v2"
         with:
-          credentials_json: '${{ secrets.GCP_SA_KEY }}'
-          
+          credentials_json: "${{ secrets.GCP_SA_KEY }}"
+
       - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
-        
-      - name: Create Artifact Registry (if missing)
-        run: |
-          gcloud artifacts repositories create cloud-run-source-deploy \
-            --repository-format=docker \
-            --location=us-central1 \
-            --description="Docker repository for Cloud Run deployments" || true
+        uses: "google-github-actions/setup-gcloud@v2"
 
-      - name: Configure Docker for GCP
-        run: gcloud auth configure-docker us-central1-docker.pkg.dev
-        
-      - name: Build and Push Docker Image
+      - name: Configure Docker for Artifact Registry
         run: |
-          docker build -t us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/cloud-run-source-deploy/backend:latest .
-          docker push us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/cloud-run-source-deploy/backend:latest
+          gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
 
-      - name: Ensure Private Uploads Bucket Exists
+      - name: Build and Push Container
         run: |
-          if ! gcloud storage buckets describe gs://chivapp-private-uploads --project="${{ secrets.GCP_PROJECT_ID }}" >/dev/null 2>&1; then
-            gcloud storage buckets create gs://chivapp-private-uploads \
-              --location=us-central1 \
-              --uniform-bucket-level-access \
-              --project="${{ secrets.GCP_PROJECT_ID }}" || true
-          fi
-          gcloud storage buckets update gs://chivapp-private-uploads --pap --project="${{ secrets.GCP_PROJECT_ID }}" || true
+          IMAGE_TAG="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.SERVICE_NAME }}:${{ github.sha }}"
+          docker build -t $IMAGE_TAG .
+          docker push $IMAGE_TAG
 
       - name: Deploy to Cloud Run
-        uses: google-github-actions/deploy-cloudrun@v2
-        with:
-          service: chivappbackend
-          region: us-central1
-          image: us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/cloud-run-source-deploy/backend:latest
-          env_vars: |
-            ENVIRONMENT=production
-            LOG_LEVEL=info
-            FRONTEND_URL=https://chiv.app
-            OAUTH_REDIRECT_BASE_URL=https://chiv.app/api/v1
-            GCP_BUCKET_NAME=chivapp-uploads
-            GCP_PRIVATE_BUCKET_NAME=chivapp-private-uploads
+        run: |
+          IMAGE_TAG="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.SERVICE_NAME }}:${{ github.sha }}"
+          gcloud run deploy ${{ env.SERVICE_NAME }} \
+            --image $IMAGE_TAG \
+            --region ${{ env.REGION }} \
+            --platform managed \
+            --allow-unauthenticated \
+            --port 8080 \
+            --update-env-vars="^;^ENVIRONMENT=production;ENABLE_HSTS=True;BACKEND_CORS_ORIGINS=[\"https://chiv.app\",\"https://www.chiv.app\",\"https://api.chiv.app\"];FRONTEND_URL=https://chiv.app;OAUTH_REDIRECT_BASE_URL=https://chiv.app/api/v1;GOOGLE_OAUTH_REDIRECT_URI=https://chiv.app/calendar-callback;MERCADO_PAGO_SANDBOX=False;MERCADO_PAGO_WEBHOOK_BASE_URL=https://api.chiv.app;GCP_BUCKET_NAME=${{ secrets.GCP_BUCKET_NAME }};GCP_PRIVATE_BUCKET_NAME=${{ secrets.GCP_PRIVATE_BUCKET_NAME }};RATE_LIMIT_STORAGE_URI=${{ secrets.RATE_LIMIT_STORAGE_URI }}" \
+            --update-secrets="SQLALCHEMY_DATABASE_URI=sqlalchemy-database-uri:latest,JWT_SECRET_KEY=jwt-secret:latest,PROXY_SHARED_SECRET=proxy-shared-secret:latest,MERCADO_PAGO_WEBHOOK_SECRET=mp-webhook-secret:latest,MERCADO_PAGO_ACCESS_TOKEN=mp-access-token:latest,GOOGLE_CLIENT_SECRET=google-client-secret:latest,BREVO_API_KEY=brevo-api-key:latest"

@@ -36,15 +36,4 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_column("payment", "payout_notes")
-    op.drop_column("payment", "payout_evidence_url")
-    op.drop_column("payment", "payout_reference")
-
-    op.drop_column("musician_profile", "payout_mp_email")
-    op.drop_column("musician_profile", "payout_beneficiary_document")
-    op.drop_column("musician_profile", "payout_beneficiary_name")
-    op.drop_column("musician_profile", "payout_phone")
-    op.drop_column("musician_profile", "payout_cci")
-    op.drop_column("musician_profile", "payout_account_number")
-    op.drop_column("musician_profile", "payout_bank_name")
-    op.drop_column("musician_profile", "payout_method")
+    raise RuntimeError('Downgrade no soportado; restaura desde copia de seguridad.')
