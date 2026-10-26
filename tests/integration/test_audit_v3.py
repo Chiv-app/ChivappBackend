@@ -19,6 +19,7 @@ from app.models.payment import Payment, PaymentStatus
 from app.models.payout_request import PayoutRequest
 from app.models.user import User, UserRole
 from app.services.mercadopago_service import process_approved_mercadopago_payment
+from app.services.platform_payment import contractor_payable_total
 
 pytestmark = pytest.mark.db
 
@@ -181,11 +182,12 @@ def test_bug3_02_overlap_blocked_on_accept_quote_and_webhook(client, db_session)
     )
     assert acc_res.status_code in (400, 409)
 
-    # 2. If b2 was already contract_pending before b1 paid, an approved MP webhook for b2 marks needs_refund
+    # 2. If b2 was already contract_pending before b1 paid, an approved MP webhook for b2 marks needs_refund due to schedule_overlap
     b2.status = BookingStatus.contract_pending
     b2.platform_fee_percent = Decimal("0.00")
     b2.platform_fee_amount = Decimal("0.00")
     db_session.commit()
+    expected_b2_total = float(contractor_payable_total(b2))
     payment = process_approved_mercadopago_payment(
         db_session,
         {
@@ -193,7 +195,7 @@ def test_bug3_02_overlap_blocked_on_accept_quote_and_webhook(client, db_session)
             "external_reference": str(b2.id),
             "status": "approved",
             "status_detail": "accredited",
-            "transaction_amount": 700.0,
+            "transaction_amount": expected_b2_total,
             "currency_id": "PEN",
             "payment_method_id": "visa",
             "payment_type_id": "credit_card",
@@ -203,6 +205,7 @@ def test_bug3_02_overlap_blocked_on_accept_quote_and_webhook(client, db_session)
     assert b2.status != BookingStatus.payment_retained
     assert payment is not None
     assert (payment.gateway_metadata or {}).get("needs_refund") is True
+    assert (payment.gateway_metadata or {}).get("needs_refund_reason") == "schedule_overlap"
     assert payment.status == PaymentStatus.initiated
 
 

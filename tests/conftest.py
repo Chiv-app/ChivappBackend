@@ -75,9 +75,14 @@ def pytest_collection_modifyitems(config, items):
 def _disable_external_calendar(monkeypatch):
     """Evita que cualquier test conecte al Google Calendar real aunque exista google_credentials.json en disco."""
     import app.services.calendar_service as cal_svc
+    from app.core.config import settings
 
+    monkeypatch.setattr(settings, "GOOGLE_CREDENTIALS_JSON", "")
+    monkeypatch.setattr(settings, "GOOGLE_CALENDAR_ID", "")
     monkeypatch.setattr(cal_svc, "_get_calendar_service", lambda: None)
     monkeypatch.setattr(cal_svc, "_get_calendar_service_oauth", lambda *_a, **_kw: None)
+    monkeypatch.setattr(cal_svc, "create_booking_event", lambda *_a, **_kw: None)
+    monkeypatch.setattr(cal_svc, "cancel_booking_calendar_event", lambda *_a, **_kw: None)
 
 
 @pytest.fixture

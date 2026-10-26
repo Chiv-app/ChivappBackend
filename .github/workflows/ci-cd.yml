@@ -57,7 +57,7 @@ jobs:
         run: |
           pip-audit -r requirements.txt
 
-      - name: Validate production Settings(_env_file=None)
+      - name: Validate production Settings(_env_file=None) and rate limiter
         env:
           ENVIRONMENT: production
           ENABLE_HSTS: "True"
@@ -71,7 +71,7 @@ jobs:
           BACKEND_CORS_ORIGINS: '["https://chiv.app","https://www.chiv.app","https://api.chiv.app"]'
           MERCADO_PAGO_SANDBOX: "False"
         run: |
-          python -c "from app.core.config import Settings; Settings(_env_file=None)"
+          python -c "from app.core.config import Settings; s = Settings(_env_file=None); from slowapi import Limiter; from slowapi.util import get_remote_address; Limiter(key_func=get_remote_address, storage_uri=s.RATE_LIMIT_STORAGE_URI)"
 
       - name: Verify Alembic migrations (upgrade head + check)
         env:

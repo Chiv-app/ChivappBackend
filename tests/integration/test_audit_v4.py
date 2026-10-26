@@ -330,28 +330,31 @@ def test_sec4_04_bug4_04_booking_closes_only_when_both_parties_review(
     db_session.add(booking)
     db_session.commit()
 
-    # 1. Reacción con emoji durante el evento NO cuenta como reseña final
+    # 1. Reacción con emoji durante el evento (con author_user_id del contratista) NO cuenta como reseña final
     emoji_rev = BookingReview(
         booking_id=booking.id,
+        author_user_id=contractor_user.id,
         rating=5,
         emoji="🔥",
         comment=None,
+        is_final=False,
     )
     db_session.add(emoji_rev)
     db_session.commit()
 
-    # 2. Músico intenta cerrar o recomienda al contratista sin reseña final del contratista
+    # 2. Músico recomienda al contratista primero; luego intenta /complete (debe fallar porque falta reseña final del contratista)
     _auth_cookie(client, musician_user)
-    res_complete_early = client.post(f"/api/v1/bookings/{booking.id}/complete")
-    assert res_complete_early.status_code == 400
-
     res_rec = client.post(
         f"/api/v1/bookings/{booking.id}/recommend-contractor",
         json={"rating": 5, "comment": "Excelente anfitrión y trato puntual."},
     )
     assert res_rec.status_code == 200
     db_session.refresh(booking)
-    # Aún falta la reseña final del contratista -> sigue in_progress
+    assert booking.status == BookingStatus.in_progress
+
+    res_complete_early = client.post(f"/api/v1/bookings/{booking.id}/complete")
+    assert res_complete_early.status_code == 400
+    db_session.refresh(booking)
     assert booking.status == BookingStatus.in_progress
 
     # 3. Contratista publica su reseña final -> ahora están ambas y se cierra la reserva
@@ -389,8 +392,10 @@ def test_bug4_06_cancellation_policy_at_15_days_is_100_percent(client):
 def test_sec4_03_bug4_02_payout_process_releases_only_linked_bookings(
     client, db_session
 ):
-    """SEC4-03 / BUG4-02: procesar un retiro solo libera las reservas cubiertas por la solicitud."""
-    admin, musician_user, musician, _, contractor = _setup_users(db_session)
+    """SEC4-03 / BUG4-02: request_payout produce la solicitud vinculada a b1 y process solo libera b1."""
+    from app.models.contractor_recommendation import ContractorRecommendation
+
+    admin, musician_user, musician, contractor_user, contractor = _setup_users(db_session)
     past_date = (now_peru() - timedelta(days=5)).date()
 
     b1 = Booking(
@@ -416,7 +421,7 @@ def test_sec4_03_bug4_02_payout_process_releases_only_linked_bookings(
         event_type="Evento 2",
         location_city="Lima",
         location_address="Calle 2",
-        status=BookingStatus.completed,
+        status=BookingStatus.in_progress,
         price_agreed=Decimal("400.00"),
         platform_fee_percent=Decimal("0.00"),
         platform_fee_amount=Decimal("0.00"),
@@ -424,11 +429,31 @@ def test_sec4_03_bug4_02_payout_process_releases_only_linked_bookings(
     db_session.add_all([b1, b2])
     db_session.flush()
 
+    # b1 tiene ambas reseñas finales -> elegible en request_payout
+    db_session.add(
+        BookingReview(
+            booking_id=b1.id,
+            author_user_id=contractor_user.id,
+            rating=5,
+            comment="Gran presentación en Evento 1",
+            is_final=True,
+        )
+    )
+    db_session.add(
+        ContractorRecommendation(
+            booking_id=b1.id,
+            musician_id=musician.id,
+            contractor_id=contractor.id,
+            rating=5,
+            comment="Excelente contratista en Evento 1",
+        )
+    )
+
     p1 = Payment(
         booking_id=b1.id,
         amount=contractor_payable_total(b1),
         currency="PEN",
-        payment_type="deposit",
+        payment_type="full",
         status=PaymentStatus.retained,
         retained_at=datetime.utcnow() - timedelta(days=4),
     )
@@ -436,42 +461,54 @@ def test_sec4_03_bug4_02_payout_process_releases_only_linked_bookings(
         booking_id=b2.id,
         amount=contractor_payable_total(b2),
         currency="PEN",
-        payment_type="deposit",
+        payment_type="full",
         status=PaymentStatus.retained,
         retained_at=datetime.utcnow() - timedelta(days=4),
     )
-    # Solicitud de retiro vinculada únicamente a b1 (S/ 300)
-    req = PayoutRequest(
-        musician_id=musician.id,
-        amount=Decimal("300.00"),
-        notes=f"[Sistema] Reservas cubiertas: {b1.id}",
-        status="pending",
-    )
-    db_session.add_all([p1, p2, req])
+    db_session.add_all([p1, p2])
     db_session.commit()
 
+    # 1. Productor real: el músico solicita retiro cuando solo b1 está culminada con ambas reseñas
+    _auth_cookie(client, musician_user)
+    req_res = client.post("/api/v1/payments/musician/request-payout")
+    assert req_res.status_code == 200, req_res.text
+    req_id = req_res.json()["id"]
+    req_row = db_session.get(PayoutRequest, req_id)
+    assert req_row is not None
+    assert str(b1.id) in (req_row.notes or "")
+
+    # 2. Antes de que el admin procese la solicitud, b2 pasa a completed pero NO estaba en la solicitud original
+    b2.status = BookingStatus.completed
+    db_session.commit()
+
+    # 3. Consumidor real: el admin procesa la solicitud y solo se libera p1 (b1), mientras p2 (b2) sigue retained
     _auth_cookie(client, admin)
     res = client.post(
-        f"/api/v1/admin/payout-requests/{req.id}/process",
+        f"/api/v1/admin/payout-requests/{req_id}/process",
         json={"notes": "Pago de Evento 1"},
     )
     assert res.status_code == 200
     db_session.refresh(p1)
     db_session.refresh(p2)
     assert p1.status == PaymentStatus.released
-    # p2 NO debe liberarse
     assert p2.status == PaymentStatus.retained
 
 
-def test_sec4_06_admin_refund_flagged_payment_and_force_complete(client, db_session):
+def test_sec4_06_admin_refund_flagged_payment_and_force_complete(
+    client, db_session, monkeypatch
+):
     """SEC4-06 y BUG4-08: reembolso admin para needs_refund y cierre admin force-complete."""
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "MERCADO_PAGO_ACCESS_TOKEN", "TEST-sec4-06-token")
     admin, _, musician, _, contractor = _setup_users(db_session)
+    future_date = (now_peru() + timedelta(days=3)).date()
     past_date = (now_peru() - timedelta(days=3)).date()
 
     booking = Booking(
         musician_id=musician.id,
         contractor_id=contractor.id,
-        event_date=past_date,
+        event_date=future_date,
         start_time=time(15, 0),
         end_time=time(17, 0),
         event_type="Graduación",
@@ -497,13 +534,23 @@ def test_sec4_06_admin_refund_flagged_payment_and_force_complete(client, db_sess
     db_session.commit()
 
     _auth_cookie(client, admin)
-    with patch("app.services.mercadopago_service.issue_refund", return_value={"id": "REF-999"}):
+    with patch(
+        "app.services.mercadopago_service.issue_refund", return_value={"id": "REF-999"}
+    ) as mock_issue_refund:
         res_ref = client.post(f"/api/v1/admin/payments/{flagged_payment.id}/refund")
     assert res_ref.status_code == 200
+    assert mock_issue_refund.call_count == 1
     db_session.refresh(flagged_payment)
     assert flagged_payment.status == PaymentStatus.refunded
     assert flagged_payment.gateway_metadata.get("needs_refund") is False
 
+    # force-complete sobre un evento futuro debe fallar (400)
+    res_fc_future = client.post(f"/api/v1/admin/bookings/{booking.id}/force-complete")
+    assert res_fc_future.status_code == 400
+
+    # Cuando el evento ya terminó, force-complete cierra la reserva (200)
+    booking.event_date = past_date
+    db_session.commit()
     res_fc = client.post(f"/api/v1/admin/bookings/{booking.id}/force-complete")
     assert res_fc.status_code == 200
     db_session.refresh(booking)
