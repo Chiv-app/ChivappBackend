@@ -96,6 +96,7 @@ class EnsembleMemberOut(BaseModel):
     invite_expires_at: datetime | None = None
     invite_expired: bool = False
     member_user_id: UUID | None
+    leader_name: str | None = None
     invited_at: datetime | None
     joined_at: datetime | None
     created_at: datetime
@@ -119,6 +120,12 @@ class BookingMemberInviteOut(BaseModel):
     respond_url: str | None = None
     invited_at: datetime | None
     responded_at: datetime | None
+    event_type: str | None = None
+    event_date: date | None = None
+    start_time: time | None = None
+    location_city: str | None = None
+    location_address: str | None = None
+    leader_name: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

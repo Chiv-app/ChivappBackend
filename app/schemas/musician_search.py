@@ -1,4 +1,4 @@
-from datetime import time
+from datetime import date
 from pydantic import BaseModel
 from typing import List
 
@@ -9,6 +9,7 @@ class MusicianSearchFilters(BaseModel):
     instruments: List[str] | None = None
     min_price_per_event: float | None = None
     max_price_per_event: float | None = None
+    available_date: date | None = None
     skip: int = 0
     limit: int = 20
 

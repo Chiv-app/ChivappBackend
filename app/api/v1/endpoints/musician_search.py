@@ -11,6 +11,7 @@ from app.schemas.musician_search import (
     MusicianSearchFilters,
     MusicianSearchResult,
 )
+from app.services.availability_match import list_musician_slots, matching_slots
 from app.services.profile_visibility import is_musician_listed_publicly
 
 router = APIRouter(prefix="/musicians", tags=["Musician Search"])
@@ -70,6 +71,11 @@ def search_musicians(
     for m in musicians:
         if not is_musician_listed_publicly(db, m):
             continue
+
+        if filters.available_date is not None:
+            slots = list_musician_slots(db, m.id)
+            if slots and not matching_slots(slots, filters.available_date):
+                continue
 
         main_image = (
             db.query(MusicianMedia)

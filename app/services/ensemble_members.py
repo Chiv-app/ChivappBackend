@@ -103,6 +103,7 @@ def serialize_member(member: EnsembleMember, *, include_invite_url: bool = False
         invite_expired = bool(
             invite_expires_at and invite_expires_at < datetime.utcnow()
         )
+    leader = member.leader
     return {
         "id": member.id,
         "email": member.email,
@@ -116,6 +117,7 @@ def serialize_member(member: EnsembleMember, *, include_invite_url: bool = False
         "invite_expires_at": invite_expires_at,
         "invite_expired": invite_expired,
         "member_user_id": member.member_user_id,
+        "leader_name": leader.fullname if leader else None,
         "invited_at": member.invited_at,
         "joined_at": member.joined_at,
         "created_at": member.created_at,
@@ -223,6 +225,8 @@ def notify_leader_member_joined(db: Session, member: EnsembleMember) -> None:
 
 def serialize_booking_invite(invite: BookingMemberInvite) -> dict:
     member = invite.ensemble_member
+    booking = invite.booking
+    leader_name = member.leader.fullname if member and member.leader else None
     return {
         "id": invite.id,
         "booking_id": invite.booking_id,
@@ -234,6 +238,12 @@ def serialize_booking_invite(invite: BookingMemberInvite) -> dict:
         "respond_url": None,
         "invited_at": invite.invited_at,
         "responded_at": invite.responded_at,
+        "event_type": booking.event_type if booking else None,
+        "event_date": booking.event_date if booking else None,
+        "start_time": booking.start_time if booking else None,
+        "location_city": booking.location_city if booking else None,
+        "location_address": booking.location_address if booking else None,
+        "leader_name": leader_name,
     }
 
 
