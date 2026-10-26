@@ -18,7 +18,9 @@ def test_normalize_email_empty_returns_none():
 
 
 def test_normalize_phone_strips_spaces_and_dashes():
-    assert normalize_phone("+51 999-888-777") == "+51999888777"
+    assert normalize_phone("+51 999-888-777") == "999888777"
+    assert normalize_phone("51 999 888 777") == "999888777"
+    assert normalize_phone("+34 600-111-222") == "+34600111222"
 
 
 def test_normalize_phone_plus_only_kept_at_start():

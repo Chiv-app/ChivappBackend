@@ -19,6 +19,7 @@ def _admin(db):
         fullname="Admin Test",
         role=UserRole.admin,
         password_hash=hash_password("AdminPass123"),
+        is_verified=True,
     )
     db.add(admin)
     db.commit()
@@ -64,6 +65,7 @@ def test_logged_in_user_ticket_and_history(client, db_session):
         fullname="Músico Soporte",
         role=UserRole.musician,
         password_hash=hash_password("MusicPass123"),
+        is_verified=True,
     )
     db_session.add(user)
     db_session.commit()
@@ -95,6 +97,7 @@ def test_admin_lists_and_responds_to_ticket(client, db_session):
         fullname="No Admin",
         role=UserRole.musician,
         password_hash=hash_password("MusicPass123"),
+        is_verified=True,
     )
     db_session.add(musician)
     db_session.commit()

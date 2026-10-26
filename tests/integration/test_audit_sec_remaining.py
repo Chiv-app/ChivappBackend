@@ -434,18 +434,49 @@ def test_sec2_02_admin_payout_request_process_and_reject_succeed_and_notify_musi
     """SEC2-02: process y reject de solicitudes de retiro aceptan body AdminPayoutRequestAction y notifican al músico."""
     from decimal import Decimal
     from app.models.notification import Notification
-    from app.models.payout_request import PayoutRequest
+    from app.models.payout_request import PayoutRequest, PayoutRequestBooking
 
     admin = User(email="admin.sec202@example.com", fullname="Admin", role=UserRole.admin, is_verified=True)
     m_user = User(email="m.sec202@example.com", fullname="Músico", role=UserRole.musician, is_verified=True)
-    db_session.add_all([admin, m_user])
+    c_user = User(email="c.sec202@example.com", fullname="Cliente", role=UserRole.contractor, is_verified=True)
+    db_session.add_all([admin, m_user, c_user])
     db_session.flush()
     musician = MusicianProfile(user_id=m_user.id, stage_name="Mariachi Retiros")
-    db_session.add(musician)
+    contractor = ContractorProfile(user_id=c_user.id)
+    db_session.add_all([musician, contractor])
     db_session.flush()
 
-    req1 = PayoutRequest(musician_id=musician.id, amount=Decimal("300.00"), status="pending")
+    from datetime import date, time
+    booking = Booking(
+        contractor_id=contractor.id,
+        musician_id=musician.id,
+        event_date=date(2026, 1, 10),
+        start_time=time(18, 0),
+        end_time=time(20, 0),
+        location_address="San Isidro",
+        event_type="Cumpleaños",
+        price_agreed=Decimal("300.00"),
+        status=BookingStatus.completed,
+    )
+    db_session.add(booking)
+    db_session.flush()
+    from app.services.platform_payment import contractor_payable_total
+    payment = Payment(
+        booking_id=booking.id,
+        amount=contractor_payable_total(booking),
+        status=PaymentStatus.retained,
+    )
+    db_session.add(payment)
+    db_session.flush()
+
+    req1 = PayoutRequest(
+        musician_id=musician.id,
+        amount=Decimal("300.00"),
+        status="pending",
+    )
     db_session.add(req1)
+    db_session.flush()
+    db_session.add(PayoutRequestBooking(payout_request_id=req1.id, booking_id=booking.id))
     db_session.commit()
 
     _login(client, admin)

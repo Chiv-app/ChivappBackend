@@ -583,16 +583,39 @@ def test_bug2_03_booking_link_enforces_preset_fields_and_blocks_hijack(client, d
 
 def test_bug2_04_and_bug2_07_admin_payout_process_and_zero_percent_fee(client, db_session):
     """BUG2-04 & BUG2-07: Admin can process payout request with JSON body; 0% commission still charges MP fee."""
-    from app.models.payout_request import PayoutRequest
+    from app.models.payout_request import PayoutRequest, PayoutRequestBooking
     from app.services.platform_payment import compute_platform_fee_amount, contractor_payable_total
 
-    admin, musician_user, musician, _, _ = _setup_users(db_session)
+    admin, musician_user, musician, _, contractor = _setup_users(db_session)
+    booking = Booking(
+        contractor_id=contractor.id,
+        musician_id=musician.id,
+        event_date=(now_peru() - timedelta(days=2)).date(),
+        start_time=time(18, 0),
+        end_time=time(20, 0),
+        location_address="Miraflores",
+        event_type="Serenata",
+        price_agreed=Decimal("300.00"),
+        status=BookingStatus.completed,
+    )
+    db_session.add(booking)
+    db_session.flush()
+    payment = Payment(
+        booking_id=booking.id,
+        amount=contractor_payable_total(booking),
+        status=PaymentStatus.retained,
+    )
+    db_session.add(payment)
+    db_session.flush()
+
     req = PayoutRequest(
         musician_id=musician.id,
         amount=Decimal("300.00"),
         status="pending",
     )
     db_session.add(req)
+    db_session.flush()
+    db_session.add(PayoutRequestBooking(payout_request_id=req.id, booking_id=booking.id))
     db_session.commit()
 
     client.cookies.set("access_token", create_access_token(subject=str(admin.id), role="admin"))
