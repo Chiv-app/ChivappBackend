@@ -100,6 +100,7 @@ class BookingLinkCheckout(BaseModel):
     event_type: str = Field(..., min_length=2, max_length=100)
     location_address: str = Field(..., min_length=5, max_length=300)
     location_city: Optional[str] = Field(default=None, max_length=100)
+    location_reference: Optional[str] = Field(default=None, max_length=255)
 
     # Customer fields
     fullname: str = Field(..., min_length=2, max_length=100)

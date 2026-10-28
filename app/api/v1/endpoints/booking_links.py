@@ -628,6 +628,7 @@ def checkout_booking_link(
         booking.event_type = payload.event_type
         booking.location_address = payload.location_address
         booking.location_city = payload.location_city
+        booking.location_reference = payload.location_reference
         booking.price_agreed = link.price
         booking.status = BookingStatus.contract_signed if saved_sig_url else BookingStatus.contract_pending
     else:
@@ -639,6 +640,7 @@ def checkout_booking_link(
             event_type=payload.event_type,
             location_address=payload.location_address,
             location_city=payload.location_city,
+            location_reference=payload.location_reference,
             price_agreed=link.price,
             status=BookingStatus.contract_signed if saved_sig_url else BookingStatus.contract_pending,
         )

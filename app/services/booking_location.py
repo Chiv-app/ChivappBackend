@@ -68,16 +68,24 @@ def get_or_create_share(db: Session, booking: Booking) -> BookingLocationShare:
         .filter(BookingLocationShare.booking_id == booking.id)
         .first()
     )
+    event_lat, event_lng = parse_event_coords(booking)
     if share:
-        if share.event_lat is None or share.event_lng is None:
-            event_lat, event_lng = parse_event_coords(booking)
-            share.event_lat = event_lat
-            share.event_lng = event_lng
+        changed = False
+        if event_lat is not None and event_lng is not None:
+            if share.event_lat != event_lat or share.event_lng != event_lng:
+                share.event_lat = event_lat
+                share.event_lng = event_lng
+                changed = True
+        if booking.location_address and share.event_address != booking.location_address:
             share.event_address = booking.location_address
+            changed = True
+        if share.event_city != booking.location_city:
             share.event_city = booking.location_city
+            changed = True
+        if changed:
+            db.flush()
         return share
 
-    event_lat, event_lng = parse_event_coords(booking)
     share = BookingLocationShare(
         booking_id=booking.id,
         event_lat=event_lat,
