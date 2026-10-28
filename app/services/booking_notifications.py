@@ -227,6 +227,14 @@ def notify_booking_quoted(db: Session, contractor_user: User, booking_id: str) -
 
             price_str = f"{booking.price_agreed:.2f}" if booking.price_agreed else "0.00"
             action_url = f"{settings.FRONTEND_URL.rstrip('/')}/contractor/bookings/{booking_id}"
+            if not contractor_user.password_hash:
+                from app.core.jwt import create_magic_token
+                magic_token = create_magic_token(
+                    subject=str(contractor_user.id),
+                    redirect_to=f"/contractor/bookings/{booking_id}",
+                    version=contractor_user.token_version or 0,
+                )
+                action_url = f"{settings.FRONTEND_URL.rstrip('/')}/api/v1/auth/magic-link/login?token={magic_token}"
             send_templated_email(
                 db,
                 slug="booking_quoted",
@@ -400,6 +408,14 @@ def notify_booking_confirmed(db: Session, musician_user: User, booking_id: str, 
         # Contractor Email
         if contractor_user and contractor_user.email and not contractor_user.email.endswith("@guest.local"):
             action_url_cont = f"{settings.FRONTEND_URL.rstrip('/')}/contractor/bookings/{booking_id}"
+            if not contractor_user.password_hash:
+                from app.core.jwt import create_magic_token
+                magic_token = create_magic_token(
+                    subject=str(contractor_user.id),
+                    redirect_to=f"/contractor/bookings/{booking_id}",
+                    version=contractor_user.token_version or 0,
+                )
+                action_url_cont = f"{settings.FRONTEND_URL.rstrip('/')}/api/v1/auth/magic-link/login?token={magic_token}"
             send_templated_email(
                 db,
                 slug="booking_confirmed_contractor",
