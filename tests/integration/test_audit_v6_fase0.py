@@ -269,8 +269,25 @@ def test_sec6_06_bug6_01_three_database_migration_scenarios():
                 ).scalar()
                 assert reg == required_table
             rev = conn.execute(sa.text("SELECT version_num FROM alembic_version")).scalar()
-            assert rev == "d8e9f0a1b2c3"
+            assert rev == "e9f0a1b2c3d4"
             assert BASELINE_REVISION == "c7a3bc7f5426"
+
+        # Escenario 4: Base ya estampada en d8e9f0a1b2c3 (versión previa a Audit v6 sin columnas nuevas ni payout_request_booking)
+        with engine.begin() as conn:
+            conn.execute(sa.text(f'SET search_path TO "{schema_legacy}"'))
+            conn.execute(sa.text("UPDATE alembic_version SET version_num = 'd8e9f0a1b2c3'"))
+            conn.execute(sa.text("DROP TABLE IF EXISTS payout_request_booking CASCADE"))
+            conn.execute(sa.text('ALTER TABLE "user" DROP COLUMN IF EXISTS login_otp_last_sent_at'))
+            conn.execute(sa.text('ALTER TABLE "user" DROP COLUMN IF EXISTS created_by_musician_id'))
+
+        res_prod_up = _run_alembic_in_schema(db_url, schema_legacy, "upgrade", "head")
+        assert res_prod_up.returncode == 0, (
+            f"Fallo upgrade head desde d8e9f0a1b2c3 hacia e9f0a1b2c3d4:\n{res_prod_up.stderr}"
+        )
+        res_prod_chk = _run_alembic_in_schema(db_url, schema_legacy, "check")
+        assert res_prod_chk.returncode == 0, (
+            f"Fallo alembic check tras migrar a e9f0a1b2c3d4:\n{res_prod_chk.stderr}"
+        )
     finally:
         with engine.begin() as conn:
             conn.execute(sa.text(f'DROP SCHEMA IF EXISTS "{schema_empty}" CASCADE'))

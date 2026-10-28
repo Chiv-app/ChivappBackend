@@ -591,6 +591,12 @@ def run_startup_seeds() -> None:
         ensure_email_templates(db)
         backfill_musician_slugs(db)
         backfill_user_usernames(db)
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        raise
     finally:
         if locked:
             try:
