@@ -142,3 +142,19 @@ jobs:
             GOOGLE_OAUTH_REDIRECT_URI=https://chiv.app/calendar-callback
             GCP_BUCKET_NAME=chivapp-uploads
             GCP_PRIVATE_BUCKET_NAME=chivapp-private-uploads
+
+      - name: Prune old Docker images in Artifact Registry (keep latest 3)
+        run: |
+          for REPO in cloud-run-source-deploy chivapp-repo; do
+            IMAGE_PATH="us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${REPO}/backend"
+            if gcloud artifacts docker images list "$IMAGE_PATH" --limit=1 >/dev/null 2>&1; then
+              gcloud artifacts docker images list "$IMAGE_PATH" \
+                --sort-by=~UPDATE_TIME \
+                --format="value(version)" | tail -n +4 | while read -r digest; do
+                if [ -n "$digest" ]; then
+                  echo "Deleting old backend image digest: ${IMAGE_PATH}@${digest}"
+                  gcloud artifacts docker images delete "${IMAGE_PATH}@${digest}" --delete-tags --quiet || true
+                fi
+              done
+            fi
+          done
