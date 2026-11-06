@@ -60,7 +60,8 @@ def _booking(db, *, days_before: int, status=BookingStatus.payment_retained, pay
     return booking
 
 
-APP_TOTAL = PRICE * (1 + FEE_PERCENT / 100)  # lo pagado sin el costo de pasarela
+# El reembolso solo sale de la tarifa del músico: la comisión de la plataforma y el
+# costo de la pasarela (total pagado − tarifa) nunca se devuelven.
 
 
 @pytest.mark.parametrize(
@@ -71,14 +72,63 @@ def test_contractor_refund_tiers(db_session, days, percent):
     booking = _booking(db_session, days_before=days)
     quote = quote_cancellation(db_session, booking, "contractor")
     assert quote.refund_percent == percent
-    assert quote.refund_amount == (APP_TOTAL * percent / 100).quantize(Decimal("0.01"))
+    assert quote.refundable_base == PRICE
+    assert quote.refund_amount == (PRICE * percent / 100).quantize(Decimal("0.01"))
 
 
-def test_musician_cancellation_refunds_everything_paid(db_session):
+def test_musician_cancellation_refunds_full_fee_but_not_commission(db_session):
     booking = _booking(db_session, days_before=2)
     quote = quote_cancellation(db_session, booking, "musician")
     assert quote.refund_percent == 100
-    assert quote.refund_amount == contractor_payable_total(booking)
+    assert quote.refund_amount == PRICE
+    assert quote.refund_amount < contractor_payable_total(booking)
+
+
+def test_admin_cancellation_defaults_to_full_fee_and_never_commission(db_session):
+    booking = _booking(db_session, days_before=2)
+    default = quote_cancellation(db_session, booking, "admin")
+    assert default.refund_amount == PRICE
+    half = quote_cancellation(db_session, booking, "admin", admin_refund_percent=50)
+    assert half.refund_amount == PRICE / 2
+
+
+@pytest.mark.parametrize(
+    ("cancelled_by", "days", "expected_refund"),
+    [
+        ("contractor", 30, Decimal("1000.00")),
+        ("contractor", 10, Decimal("500.00")),
+        ("contractor", 3, Decimal("0.00")),
+        ("musician", 3, Decimal("1000.00")),
+        ("admin", 3, Decimal("1000.00")),
+    ],
+)
+def test_cancellation_settlement_conserves_money(db_session, cancelled_by, days, expected_refund):
+    """Lo cobrado = reembolso + lo que se liquida al músico + lo que queda en la plataforma."""
+    from app.services.platform_payment import musician_portion_of_paid, platform_service_amount
+
+    booking = _booking(db_session, days_before=days)
+    paid = contractor_payable_total(booking)
+    record_cancellation(booking, quote_cancellation(db_session, booking, cancelled_by), approved=True)
+    db_session.commit()
+
+    with patch("app.services.mercadopago_service.issue_refund", return_value={"id": 1}):
+        execute_cancellation_refund(db_session, booking)
+
+    refunded = sum(
+        (p.amount for p in db_session.query(Payment).filter(Payment.payment_type == "refund")),
+        Decimal("0"),
+    )
+    retained = sum(
+        (p.amount for p in db_session.query(Payment).filter(Payment.status == PaymentStatus.retained)),
+        Decimal("0"),
+    )
+    assert refunded == expected_refund
+
+    musician_due = musician_portion_of_paid(booking, retained)
+    assert musician_due == PRICE - expected_refund
+    # La plataforma conserva exactamente comisión + pasarela, nunca pone dinero de su bolsillo.
+    assert retained - musician_due == platform_service_amount(booking)
+    assert refunded + musician_due + platform_service_amount(booking) == paid
 
 
 def test_no_payment_no_refund(db_session):
@@ -105,6 +155,28 @@ def test_partial_refund_splits_payment_and_keeps_rest_for_musician(db_session):
     refund_row = db_session.query(Payment).filter(Payment.payment_type == "refund").one()
     assert refund_row.amount == quote.refund_amount
     assert retained.amount + refund_row.amount == paid
+
+
+def test_refund_calculated_with_old_rule_is_capped_to_the_fee(db_session):
+    """Una cancelación pendiente de antes del cambio guardó monto con comisión incluida."""
+    from app.services.cancellation_policy import approve_cancellation_refund
+
+    booking = _booking(db_session, days_before=30)
+    paid = contractor_payable_total(booking)
+    old_rule_amount = (PRICE * (1 + FEE_PERCENT / 100)).quantize(Decimal("0.01"))  # 1020.00
+    booking.status = BookingStatus.cancelled
+    booking.cancellation_refund_status = "pending_approval"
+    booking.cancellation_refund_amount = old_rule_amount
+    db_session.commit()
+    assert old_rule_amount > PRICE and old_rule_amount < paid
+
+    with patch("app.services.mercadopago_service.issue_refund", return_value={"id": 5}) as refund:
+        approve_cancellation_refund(db_session, booking, None)
+
+    assert refund.call_args.args[1] == float(PRICE)
+    refund_row = db_session.query(Payment).filter(Payment.payment_type == "refund").one()
+    assert refund_row.amount == PRICE
+    assert booking.cancellation_refund_amount == PRICE
 
 
 def test_failed_refund_is_retryable_without_double_refund(db_session):
@@ -179,6 +251,9 @@ def test_admin_can_adjust_or_reject_refund(client, db_session):
     _login_admin(client, db_session)
     paid = contractor_payable_total(booking)
     res = client.post(f"/api/v1/admin/bookings/{booking.id}/approve-refund", json={"amount": str(paid + 1)})
+    assert res.status_code == 400
+    # Tampoco puede devolver la comisión ni la pasarela: el tope es la tarifa del músico.
+    res = client.post(f"/api/v1/admin/bookings/{booking.id}/approve-refund", json={"amount": str(PRICE + 1)})
     assert res.status_code == 400
 
     with patch("app.services.mercadopago_service.issue_refund") as refund:

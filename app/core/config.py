@@ -71,9 +71,10 @@ class Settings(BaseSettings):
     MERCADO_PAGO_WEBHOOK_BASE_URL: str = ""
 
     # Política de cancelación (cuando cancela el contratista con el pago retenido).
-    # Días de anticipación al evento -> % de reembolso sobre lo pagado sin el costo de pasarela.
-    CANCEL_FULL_REFUND_MIN_DAYS: int = 15  # más de 15 días: 100 %
-    CANCEL_PARTIAL_REFUND_MIN_DAYS: int = 7  # entre 7 y 15 días: % parcial
+    # Días de anticipación al evento -> % de reembolso sobre la TARIFA del músico
+    # (la comisión de la plataforma y el costo de la pasarela nunca se reembolsan).
+    CANCEL_FULL_REFUND_MIN_DAYS: int = 15  # 15 días o más: 100 %
+    CANCEL_PARTIAL_REFUND_MIN_DAYS: int = 7  # entre 7 y 14 días: % parcial
     CANCEL_PARTIAL_REFUND_PERCENT: int = 50  # menos de 7 días: 0 %
 
     # Google Cloud Storage

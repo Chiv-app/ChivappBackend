@@ -4,7 +4,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy.orm import Session
 
-from app.models.booking import Booking
+from app.models.booking import Booking, BookingStatus
 from app.models.platform_payment import PlatformPaymentSettings
 
 
@@ -89,14 +89,38 @@ def contractor_payable_total(booking: Booking) -> Decimal | None:
     )
 
 
+def platform_service_amount(booking: Booking) -> Decimal | None:
+    """Parte de lo que paga el contratista que NO es tarifa del músico.
+
+    Es la comisión de la plataforma más el costo de la pasarela (total a pagar
+    menos la tarifa). Nunca se reembolsa, ni siquiera al cancelar.
+    """
+    total_payable = contractor_payable_total(booking)
+    if total_payable is None or booking.price_agreed is None:
+        return None
+    price = Decimal(str(booking.price_agreed))
+    return max(total_payable - price, Decimal("0.00"))
+
+
 def musician_portion_of_paid(booking: Booking, paid_total: Decimal) -> Decimal:
-    """Share of contractor payments that belongs to the musician."""
+    """Share of contractor payments that belongs to the musician.
+
+    Reserva vigente o completada: proporción de la tarifa sobre el total pagado.
+    Reserva cancelada: el reembolso solo sale de la tarifa del músico, así que de lo
+    que sigue retenido primero se aparta la comisión + pasarela (que se queda la
+    plataforma) y el resto es del músico, con tope en su tarifa.
+    """
     price = Decimal(str(booking.price_agreed or 0))
     total_payable = contractor_payable_total(booking)
-    
+
     if not total_payable or total_payable <= 0:
         return paid_total
-        
+
+    if getattr(booking, "status", None) == BookingStatus.cancelled:
+        service = max(total_payable - price, Decimal("0"))
+        portion = min(max(paid_total - service, Decimal("0")), price)
+        return portion.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
     return (paid_total * price / total_payable).quantize(
         Decimal("0.01"), rounding=ROUND_HALF_UP
     )

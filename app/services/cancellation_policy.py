@@ -1,16 +1,20 @@
 """Política de cancelación con reembolso automático por Mercado Pago.
 
-Reglas (configurables en settings):
-- Cancela el contratista con el pago retenido: según días de anticipación al evento,
-  se reembolsa un % de lo pagado SIN el costo de la pasarela.
+Lo que paga el contratista = tarifa del músico + comisión de la plataforma + costo de
+la pasarela. El reembolso SOLO sale de la tarifa del músico; la comisión y la pasarela
+nunca se devuelven, cancele quien cancele.
+
+Reglas (configurables en settings), sobre la tarifa del músico:
+- Cancela el contratista con el pago retenido, según días de anticipación al evento:
     >= CANCEL_FULL_REFUND_MIN_DAYS días            -> 100 %
     >= CANCEL_PARTIAL_REFUND_MIN_DAYS días         -> CANCEL_PARTIAL_REFUND_PERCENT %
     menos                                          -> 0 %
-- Cancela el músico: 100 % de lo pagado (incluido el costo de pasarela).
-- Cancela el admin: el % que indique (por defecto 100 %) sobre lo pagado.
+- Cancela el músico: 100 % de la tarifa.
+- Cancela el admin: el % que indique (por defecto 100 %) de la tarifa.
 
 Ningún reembolso se ejecuta sin aprobación del admin (pending_approval -> processing).
-Lo que no se reembolsa queda retenido y el admin lo liquida al músico.
+La parte de la tarifa que no se reembolsa se liquida al músico; la comisión y la
+pasarela quedan en la plataforma (ver `musician_portion_of_paid`).
 """
 
 from __future__ import annotations
@@ -88,17 +92,15 @@ def _retained_payments(db: Session, booking: Booking) -> list[Payment]:
     return [p for p in rows if (p.payment_type or "").lower() != "refund"]
 
 
-def _without_gateway_cost(booking: Booking, gross: Decimal) -> Decimal:
-    """Parte de `gross` que corresponde a precio + comisión de plataforma."""
-    from app.services.platform_payment import contractor_payable_total
+def _refundable_base(booking: Booking, paid: Decimal) -> Decimal:
+    """Base reembolsable: solo la tarifa del músico.
 
-    total = contractor_payable_total(booking)
-    if not total or total <= 0 or booking.price_agreed is None:
-        return gross
-    price = Decimal(str(booking.price_agreed))
-    percent = Decimal(str(booking.platform_fee_percent or 0))
-    app_total = price * (Decimal("1") + percent / Decimal("100"))
-    return min(gross, gross * app_total / total)
+    La comisión de la plataforma y el costo de la pasarela forman parte de lo que
+    pagó el contratista pero nunca se reembolsan.
+    """
+    if booking.price_agreed is None:
+        return paid
+    return min(paid, Decimal(str(booking.price_agreed)))
 
 
 def parse_frozen_cancellation_policy(raw: str | None) -> tuple[int, int, int] | None:
@@ -171,13 +173,13 @@ def quote_cancellation(
     if paid <= 0:
         return CancellationQuote(cancelled_by, days, Decimal("0"), Decimal("0"), 0, Decimal("0"), "Sin pagos retenidos")
 
+    base = _refundable_base(booking, paid)
     if cancelled_by == "musician":
-        percent, base = 100, paid
-        rule = "Cancelación del músico: reembolso del 100 % al contratista"
+        percent = 100
+        rule = "Cancelación del músico: reembolso del 100 % de la tarifa del artista"
     elif cancelled_by == "admin":
         percent = 100 if admin_refund_percent is None else admin_refund_percent
-        base = paid
-        rule = f"Cancelación de la plataforma: reembolso del {percent} %"
+        rule = f"Cancelación de la plataforma: reembolso del {percent} % de la tarifa del artista"
     else:
         full_d, partial_d, partial_pct = _resolve_booking_cancellation_policy(db, booking)
         percent, rule = contractor_refund_percent(
@@ -186,7 +188,6 @@ def quote_cancellation(
             partial_days=partial_d,
             partial_percent=partial_pct,
         )
-        base = _without_gateway_cost(booking, paid)
 
     amount = (base * Decimal(percent) / Decimal("100")).quantize(CENT, rounding=ROUND_HALF_UP)
     return CancellationQuote(
@@ -234,12 +235,16 @@ def approve_cancellation_refund(db: Session, booking: Booking, amount: Decimal |
     `amount=0` rechaza el reembolso: todo lo retenido queda para liquidar al músico.
     """
     paid = sum((Decimal(str(p.amount)) for p in _retained_payments(db, booking)), Decimal("0"))
+    max_refund = _refundable_base(booking, paid)
     if amount is not None:
-        if amount < 0 or amount > paid:
-            raise ValueError(f"El monto debe estar entre 0 y lo retenido (S/ {paid:.2f}).")
+        if amount < 0 or amount > max_refund:
+            raise ValueError(
+                f"El monto debe estar entre 0 y la tarifa reembolsable (S/ {max_refund:.2f}). "
+                "La comisión y el costo de la pasarela no se reembolsan."
+            )
         booking.cancellation_refund_amount = amount.quantize(CENT, rounding=ROUND_HALF_UP)
         booking.cancellation_refund_percent = (
-            (amount / paid * 100).quantize(CENT, rounding=ROUND_HALF_UP) if paid > 0 else Decimal("0")
+            (amount / max_refund * 100).quantize(CENT, rounding=ROUND_HALF_UP) if max_refund > 0 else Decimal("0")
         )
 
     if Decimal(str(booking.cancellation_refund_amount or 0)) <= 0:
@@ -262,6 +267,13 @@ def execute_cancellation_refund(db: Session, booking: Booking) -> None:
     from app.services.mercadopago_service import issue_refund
 
     target = Decimal(str(booking.cancellation_refund_amount or 0))
+    if booking.price_agreed is not None:
+        # Reservas canceladas antes de la regla actual guardaron un monto que incluía la
+        # comisión: nunca se reembolsa más que la tarifa del músico.
+        cap = Decimal(str(booking.price_agreed))
+        if target > cap:
+            target = cap.quantize(CENT, rounding=ROUND_HALF_UP)
+            booking.cancellation_refund_amount = target
     pending = target - _already_refunded(db, booking)
     if pending <= 0:
         booking.cancellation_refund_status = REFUND_COMPLETED if target > 0 else REFUND_NONE

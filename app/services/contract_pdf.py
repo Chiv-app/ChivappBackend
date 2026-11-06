@@ -65,7 +65,7 @@ DEFAULT_CONTRACT_TEMPLATE_BODY = """<h1>Contrato de prestación de servicios mus
 <h3>Obligaciones del cliente</h3>
 <p>EL CLIENTE se compromete a confirmar la dirección exacta y datos de contacto del lugar del evento con al menos 48 horas de anticipación, informar oportunamente cualquier cambio de horario o lugar, y realizar los pagos en las fechas acordadas.</p>
 <h3>Cancelaciones y reprogramación</h3>
-<p>Las cancelaciones y reembolsos se rigen por la política de Chivapp: si EL CLIENTE cancela con 15 días calendario o más de anticipación se le reembolsa el 100 % de lo pagado (sin el costo de la pasarela de pagos); entre 7 y 14 días calendario, el 50 %; y con menos de 7 días calendario no hay reembolso. Los reembolsos son revisados y aprobados por Chivapp.</p>
+<p>Las cancelaciones y reembolsos se rigen por la política de Chivapp: si EL CLIENTE cancela con 15 días calendario o más de anticipación se le reembolsa el 100 % de la tarifa del artista (la comisión de servicio y el costo de la pasarela de pagos no son reembolsables); entre 7 y 14 días calendario, el 50 % de la tarifa; y con menos de 7 días calendario no hay reembolso. Los reembolsos son revisados y aprobados por Chivapp.</p>
 <p>Si EL ARTISTA no pudiera asistir por causas propias, EL CLIENTE recibirá el reembolso del 100 % de lo pagado o, de común acuerdo, se podrá proponer una fecha alternativa o un reemplazo de igual o mejor calidad artística. Toda reprogramación deberá constar por escrito.</p>
 <h3>Fuerza mayor y derechos de imagen</h3>
 <p>Ninguna de las partes será responsable por el incumplimiento de sus obligaciones cuando este se deba a caso fortuito o fuerza mayor debidamente acreditado.</p>
@@ -388,6 +388,13 @@ def compute_contract_body_sha256(title: str | None, body: str | None) -> str:
 
 
 _CURRENT_DEFAULT_POLICY_PHRASE = (
+    "con 15 días calendario o más de anticipación se le reembolsa el 100 % de la tarifa del artista "
+    "(la comisión de servicio y el costo de la pasarela de pagos no son reembolsables); "
+    "entre 7 y 14 días calendario, el 50 % de la tarifa; "
+    "y con menos de 7 días calendario no hay reembolso."
+)
+# Redacción anterior: el reembolso se calculaba sobre "lo pagado" sin el costo de pasarela.
+_PREVIOUS_DEFAULT_POLICY_PHRASE = (
     "con 15 días calendario o más de anticipación se le reembolsa el 100 % de lo pagado "
     "(sin el costo de la pasarela de pagos); entre 7 y 14 días calendario, el 50 %; "
     "y con menos de 7 días calendario no hay reembolso."
@@ -406,12 +413,14 @@ def apply_cancellation_policy_to_contract_html(html: str | None) -> str:
     partial_days = int(settings.CANCEL_PARTIAL_REFUND_MIN_DAYS)
     partial_pct = int(settings.CANCEL_PARTIAL_REFUND_PERCENT)
     replacement = (
-        f"con {full_days} días calendario o más de anticipación se le reembolsa el 100 % de lo pagado "
-        f"(sin el costo de la pasarela de pagos); entre {partial_days} y {max(partial_days, full_days - 1)} días calendario, "
-        f"el {partial_pct} %; y con menos de {partial_days} días calendario no hay reembolso."
+        f"con {full_days} días calendario o más de anticipación se le reembolsa el 100 % de la tarifa del artista "
+        f"(la comisión de servicio y el costo de la pasarela de pagos no son reembolsables); "
+        f"entre {partial_days} y {max(partial_days, full_days - 1)} días calendario, "
+        f"el {partial_pct} % de la tarifa; y con menos de {partial_days} días calendario no hay reembolso."
     )
     return (
         html.replace(_CURRENT_DEFAULT_POLICY_PHRASE, replacement)
+        .replace(_PREVIOUS_DEFAULT_POLICY_PHRASE, replacement)
         .replace(_LEGACY_DEFAULT_POLICY_PHRASE, replacement)
     )
 

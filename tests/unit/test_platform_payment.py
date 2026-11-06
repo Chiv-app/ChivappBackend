@@ -55,6 +55,28 @@ def test_musician_portion_of_paid_all_to_musician_when_no_fee():
     assert musician_portion_of_paid(booking, Decimal("522.72")) == Decimal("500.00")
 
 
+def test_platform_service_amount_is_total_minus_price():
+    from app.services.platform_payment import platform_service_amount
+
+    booking = _booking(price_agreed=Decimal("500"), platform_fee_percent=Decimal("2"))
+    assert platform_service_amount(booking) == Decimal("33.15")
+    assert platform_service_amount(_booking(price_agreed=None)) is None
+
+
+def test_musician_portion_of_cancelled_booking_deducts_service_first():
+    from app.models.booking import BookingStatus
+
+    booking = _booking(price_agreed=Decimal("500"), platform_fee_percent=Decimal("2"))
+    booking.status = BookingStatus.cancelled
+    # Nada reembolsado: retenido = 533.15 -> el músico recibe su tarifa completa.
+    assert musician_portion_of_paid(booking, Decimal("533.15")) == Decimal("500.00")
+    # Se reembolsaron 250 de la tarifa: quedan 283.15 -> músico 250, plataforma 33.15.
+    assert musician_portion_of_paid(booking, Decimal("283.15")) == Decimal("250.00")
+    # Se reembolsó toda la tarifa: queda solo comisión + pasarela, el músico no recibe nada.
+    assert musician_portion_of_paid(booking, Decimal("33.15")) == Decimal("0.00")
+    assert musician_portion_of_paid(booking, Decimal("0")) == Decimal("0.00")
+
+
 def test_expected_payment_amount_is_server_side_single_payment():
     from app.services.mercadopago_service import expected_payment_amount
 
