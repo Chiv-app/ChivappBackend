@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
-from sqlalchemy import and_
+from sqlalchemy.orm import Session, joinedload
 
 from app.api import deps
+from app.models.musician_availability import MusicianAvailability
 from app.models.musician_profile import MusicianProfile
 from app.models.musician_media import MusicianMedia, MediaType
 from app.models.profile_status import ProfileStatus
@@ -11,7 +11,7 @@ from app.schemas.musician_search import (
     MusicianSearchFilters,
     MusicianSearchResult,
 )
-from app.services.availability_match import list_musician_slots, matching_slots
+from app.services.availability_match import matching_slots
 from app.services.profile_visibility import is_musician_listed_publicly
 
 router = APIRouter(prefix="/musicians", tags=["Musician Search"])
@@ -29,13 +29,17 @@ def search_musicians(
     query = (
         db.query(MusicianProfile)
         .join(User)
+        .options(joinedload(MusicianProfile.user))
         .filter(
             MusicianProfile.status == ProfileStatus.published,
+            MusicianProfile.is_ensemble_only.is_(False),
             User.is_verified.is_(True),
+            User.is_active.is_(True),
         )
         .order_by(
             MusicianProfile.rating_avg.desc().nulls_last(),
             MusicianProfile.created_at.desc(),
+            MusicianProfile.id.asc(),
         )
     )
 
@@ -65,27 +69,45 @@ def search_musicians(
     if filters.max_price_per_event is not None:
         query = query.filter(MusicianProfile.price_per_event <= filters.max_price_per_event)
 
-    musicians = query.all()
+    musicians = [m for m in query.all() if is_musician_listed_publicly(db, m)]
+    if not musicians:
+        return []
+
+    musician_ids = [m.id for m in musicians]
+
+    # WP-12: Batch load slots when filtering by available_date (evita N+1).
+    slots_by_musician: dict = {}
+    if filters.available_date is not None:
+        slot_rows = (
+            db.query(MusicianAvailability)
+            .filter(MusicianAvailability.musician_id.in_(musician_ids))
+            .order_by(MusicianAvailability.day_of_week.asc(), MusicianAvailability.start_time.asc())
+            .all()
+        )
+        for s_row in slot_rows:
+            slots_by_musician.setdefault(s_row.musician_id, []).append(s_row)
+
+    # WP-12: Batch load main image per musician in a single query (evita N+1).
+    main_image_by_musician: dict = {}
+    media_rows = (
+        db.query(MusicianMedia)
+        .filter(
+            MusicianMedia.musician_id.in_(musician_ids),
+            MusicianMedia.type == MediaType.image,
+        )
+        .order_by(MusicianMedia.musician_id, MusicianMedia.order_index.asc())
+        .all()
+    )
+    for media in media_rows:
+        if media.musician_id not in main_image_by_musician:
+            main_image_by_musician[media.musician_id] = media.url
+
     results: list[MusicianSearchResult] = []
-
     for m in musicians:
-        if not is_musician_listed_publicly(db, m):
-            continue
-
         if filters.available_date is not None:
-            slots = list_musician_slots(db, m.id)
+            slots = slots_by_musician.get(m.id, [])
             if slots and not matching_slots(slots, filters.available_date):
                 continue
-
-        main_image = (
-            db.query(MusicianMedia)
-            .filter(
-                MusicianMedia.musician_id == m.id,
-                MusicianMedia.type == MediaType.image
-            )
-            .order_by(MusicianMedia.order_index.asc())
-            .first()
-        )
 
         results.append(
             MusicianSearchResult(
@@ -99,14 +121,11 @@ def search_musicians(
                 price_per_event=float(m.price_per_event) if m.price_per_event is not None else None,
                 rating_avg=float(m.rating_avg) if m.rating_avg is not None else None,
                 rating_count=int(m.rating_count) if m.rating_count is not None else None,
-                main_image_url=main_image.url if main_image else None,
+                main_image_url=main_image_by_musician.get(m.id),
                 is_verified=m.user.is_verified,
             )
         )
 
-    # skip/limit se aplican después del filtro de visibilidad (igual que
-    # /profiles/musicians): no todos los candidatos de la query SQL terminan
-    # siendo listables públicamente.
     skip = max(filters.skip, 0)
     limit = max(min(filters.limit, 50), 1)
     return results[skip : skip + limit]

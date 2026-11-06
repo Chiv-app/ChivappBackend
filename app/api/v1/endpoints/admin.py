@@ -1263,7 +1263,10 @@ def update_admin_payment_instructions(
     current_admin: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
 ):
-    from app.services.platform_payment import get_or_create_platform_payment_settings
+    from app.services.platform_payment import (
+        get_or_create_platform_payment_settings,
+        invalidate_platform_payment_cache,
+    )
 
     row = get_or_create_platform_payment_settings(db)
     prev_fee = float(row.platform_fee_percent or 0)
@@ -1283,6 +1286,7 @@ def update_admin_payment_instructions(
         after_state={"platform_fee_percent": float(row.platform_fee_percent or 0)},
     )
     db.commit()
+    invalidate_platform_payment_cache()
     db.refresh(row)
     return PlatformPaymentInstructionsOut.model_validate(row)
 

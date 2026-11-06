@@ -1,11 +1,31 @@
 from __future__ import annotations
 
+import time
 from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy.orm import Session
 
 from app.models.booking import Booking, BookingStatus
 from app.models.platform_payment import PlatformPaymentSettings
+
+# WP-12 (BE-23): Caché en memoria de corta duración para el porcentaje de comisión de plataforma.
+_PLATFORM_FEE_CACHE: dict[str, tuple[Decimal, float]] = {}
+_PLATFORM_FEE_TTL_SECONDS = 60.0
+
+
+def invalidate_platform_payment_cache() -> None:
+    _PLATFORM_FEE_CACHE.clear()
+
+
+def get_cached_platform_fee_percent(db: Session) -> Decimal:
+    now = time.monotonic()
+    cached = _PLATFORM_FEE_CACHE.get("percent")
+    if cached and cached[1] > now:
+        return cached[0]
+    settings_row = get_or_create_platform_payment_settings(db)
+    pct = Decimal(str(settings_row.platform_fee_percent or 0))
+    _PLATFORM_FEE_CACHE["percent"] = (pct, now + _PLATFORM_FEE_TTL_SECONDS)
+    return pct
 
 
 def get_or_create_platform_payment_settings(db: Session) -> PlatformPaymentSettings:
@@ -17,6 +37,10 @@ def get_or_create_platform_payment_settings(db: Session) -> PlatformPaymentSetti
             row.phone_label = "Yape / Plin"
         if row.platform_fee_percent is None:
             row.platform_fee_percent = Decimal("2")
+        _PLATFORM_FEE_CACHE["percent"] = (
+            Decimal(str(row.platform_fee_percent)),
+            time.monotonic() + _PLATFORM_FEE_TTL_SECONDS,
+        )
         return row
     row = PlatformPaymentSettings(
         phone_number="",
@@ -27,6 +51,10 @@ def get_or_create_platform_payment_settings(db: Session) -> PlatformPaymentSetti
     )
     db.add(row)
     db.flush()
+    _PLATFORM_FEE_CACHE["percent"] = (
+        Decimal("2"),
+        time.monotonic() + _PLATFORM_FEE_TTL_SECONDS,
+    )
     return row
 
 

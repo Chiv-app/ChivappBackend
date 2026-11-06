@@ -301,17 +301,29 @@ def execute_cancellation_refund(db: Session, booking: Booking) -> None:
                 payment.status = PaymentStatus.refunded
             else:
                 payment.amount = remaining
-            db.add(
-                Payment(
-                    booking_id=booking.id,
-                    amount=portion,
-                    currency=payment.currency or "PEN",
-                    payment_type="refund",
-                    status=PaymentStatus.refunded,
-                    gateway_provider="mercadopago",
-                    gateway_payment_id=payment.gateway_payment_id,
-                    gateway_metadata={"refund": response, "original_payment_id": str(payment.id)},
-                )
+            refund_row = Payment(
+                booking_id=booking.id,
+                amount=portion,
+                currency=payment.currency or "PEN",
+                payment_type="refund",
+                status=PaymentStatus.refunded,
+                gateway_provider="mercadopago",
+                gateway_payment_id=payment.gateway_payment_id,
+                gateway_metadata={"refund": response, "original_payment_id": str(payment.id)},
+            )
+            db.add(refund_row)
+            db.flush()
+            from app.services.ledger import record_ledger_entry
+
+            record_ledger_entry(
+                db,
+                entry_type="refund",
+                amount=portion,
+                booking_id=booking.id,
+                payment_id=refund_row.id,
+                currency=payment.currency or "PEN",
+                description="Reembolso por cancelación de reserva",
+                meta={"original_payment_id": str(payment.id)},
             )
             # Commit por pago: si el siguiente falla, este ya quedó registrado.
             db.commit()

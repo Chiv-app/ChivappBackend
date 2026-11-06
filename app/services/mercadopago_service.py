@@ -973,9 +973,23 @@ def process_approved_mercadopago_payment(db: Session, payment_data: dict[str, An
 
     if existing:
         if is_approved:
+            was_retained = existing.status == PaymentStatus.retained
             existing.status = PaymentStatus.retained
             existing.retained_at = existing.retained_at or datetime.utcnow()
             existing.gateway_metadata = payment_data
+            if not was_retained:
+                from app.services.ledger import record_ledger_entry
+
+                record_ledger_entry(
+                    db,
+                    entry_type="charge",
+                    amount=existing.amount,
+                    booking_id=booking.id,
+                    payment_id=existing.id,
+                    currency=existing.currency or "PEN",
+                    description="Cobro aprobado y retenido en pasarela",
+                    meta={"gateway_payment_id": payment_id},
+                )
             if payment_type == FULL_PAYMENT_TYPE:
                 booking.status = BookingStatus.payment_retained
                 from app.models.booking_link import BookingLink, BookingLinkStatus
@@ -1044,6 +1058,20 @@ def process_approved_mercadopago_payment(db: Session, payment_data: dict[str, An
             bl.status = BookingLinkStatus.completed
 
     try:
+        db.flush()
+        if is_approved:
+            from app.services.ledger import record_ledger_entry
+
+            record_ledger_entry(
+                db,
+                entry_type="charge",
+                amount=payment.amount,
+                booking_id=booking.id,
+                payment_id=payment.id,
+                currency=payment.currency or "PEN",
+                description="Cobro aprobado y retenido en pasarela",
+                meta={"gateway_payment_id": payment_id},
+            )
         db.commit()
     except IntegrityError:
         # Otro proceso registró el mismo gateway_payment_id (índice único).

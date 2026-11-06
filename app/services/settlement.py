@@ -329,6 +329,45 @@ def release_retained_payments(
     if payments:
         db.flush()
         try:
+            from app.services.ledger import record_ledger_entry
+
+            gross_released = sum(
+                (Decimal(str(p.amount or 0)) for p in payments if (p.payment_type or "").lower() != "refund"),
+                Decimal("0.00"),
+            )
+            musician_net = (
+                musician_portion_of_paid(booking, gross_released)
+                if booking
+                else gross_released
+            )
+            effective_payout = max(musician_net - deducted_total, Decimal("0.00"))
+            record_ledger_entry(
+                db,
+                entry_type="musician_payout",
+                amount=effective_payout,
+                booking_id=booking_id,
+                payment_id=payments[0].id,
+                description=f"Liberación de pago al músico ({payout_reference or 'manual'})",
+                meta={
+                    "gross_released": float(gross_released),
+                    "musician_portion": float(musician_net),
+                    "chargeback_deducted": float(deducted_total),
+                    "payout_reference": payout_reference,
+                },
+            )
+            platform_portion = max(gross_released - musician_net, Decimal("0.00"))
+            if platform_portion > Decimal("0.00"):
+                record_ledger_entry(
+                    db,
+                    entry_type="platform_fee",
+                    amount=platform_portion,
+                    booking_id=booking_id,
+                    payment_id=payments[0].id,
+                    description="Comisión de plataforma y pasarela retenida en liquidación",
+                )
+        except Exception:
+            pass
+        try:
             from app.models.payout_request import PayoutRequest
 
             booking = db.get(Booking, booking_id)

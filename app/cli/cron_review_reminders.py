@@ -56,49 +56,54 @@ def expire_stale_bookings(db: Session, now: datetime | None = None) -> dict[str,
         .all()
     )
     for b in requested_bookings:
-        ref_dt = (b.created_at or now_utc).replace(tzinfo=None)
-        age = now_utc - ref_dt
-        b_id = str(b.id)
-        contractor_user = b.contractor.user if b.contractor else None
-        musician_user = b.musician.user if b.musician else None
+        try:
+            with db.begin_nested():
+                ref_dt = (b.created_at or now_utc).replace(tzinfo=None)
+                age = now_utc - ref_dt
+                b_id = str(b.id)
+                contractor_user = b.contractor.user if b.contractor else None
+                musician_user = b.musician.user if b.musician else None
 
-        if age >= timedelta(hours=REQUESTED_EXPIRY_HOURS):
-            b.status = BookingStatus.cancelled
-            b.cancelled_by = "system"
-            b.cancelled_at = now_utc
-            b.rejection_reason = "Expirada por falta de respuesta del músico en 72 horas"
-            if contractor_user:
-                notify_user(
-                    db,
-                    user=contractor_user,
-                    type="booking_expired",
-                    title="Solicitud de reserva expirada",
-                    message="La solicitud expiró tras 72 horas sin respuesta del músico.",
-                    booking_id=b_id,
-                )
-            if musician_user:
-                notify_user(
-                    db,
-                    user=musician_user,
-                    type="booking_expired",
-                    title="Solicitud de reserva expirada",
-                    message="Una solicitud pendiente expiró por falta de cotización en 72 horas.",
-                    booking_id=b_id,
-                )
-            stats["expired_requested"] += 1
-        elif age >= timedelta(hours=REQUESTED_WARNING_HOURS):
-            if musician_user and not _has_notification(
-                db, musician_user.id, "booking_expiration_warning", b_id
-            ):
-                notify_user(
-                    db,
-                    user=musician_user,
-                    type="booking_expiration_warning",
-                    title="Solicitud por expirar en 24 horas",
-                    message="Tienes una solicitud pendiente que expirará en menos de 24 horas si no envías cotización.",
-                    booking_id=b_id,
-                )
-                stats["warned_requested"] += 1
+                if age >= timedelta(hours=REQUESTED_EXPIRY_HOURS):
+                    b.status = BookingStatus.cancelled
+                    b.cancelled_by = "system"
+                    b.cancelled_at = now_utc
+                    b.rejection_reason = "Expirada por falta de respuesta del músico en 72 horas"
+                    if contractor_user:
+                        notify_user(
+                            db,
+                            user=contractor_user,
+                            type="booking_expired",
+                            title="Solicitud de reserva expirada",
+                            message="La solicitud expiró tras 72 horas sin respuesta del músico.",
+                            booking_id=b_id,
+                        )
+                    if musician_user:
+                        notify_user(
+                            db,
+                            user=musician_user,
+                            type="booking_expired",
+                            title="Solicitud de reserva expirada",
+                            message="Una solicitud pendiente expiró por falta de cotización en 72 horas.",
+                            booking_id=b_id,
+                        )
+                    stats["expired_requested"] += 1
+                elif age >= timedelta(hours=REQUESTED_WARNING_HOURS):
+                    if musician_user and not _has_notification(
+                        db, musician_user.id, "booking_expiration_warning", b_id
+                    ):
+                        notify_user(
+                            db,
+                            user=musician_user,
+                            type="booking_expiration_warning",
+                            title="Solicitud por expirar en 24 horas",
+                            message="Tienes una solicitud pendiente que expirará en menos de 24 horas si no envías cotización.",
+                            booking_id=b_id,
+                        )
+                        stats["warned_requested"] += 1
+        except Exception as exc:
+            logger.error("Error procesando expiración requested de reserva %s: %s", b.id, exc)
+            stats["errors"] = stats.get("errors", 0) + 1
 
     # 2. Reservas sin pago en `accepted`, `contract_pending`, `contract_signed`, `payment_pending` (7 días; aviso a los 6 días)
     unpaid_statuses = [
@@ -381,9 +386,44 @@ def send_reminder(db, user, booking, other_party_name: str, role: str) -> None:
     db.commit()
 
 
+CRON_ADVISORY_LOCK_KEY = 84920174
+
+
+def try_acquire_cron_lock(db: Session) -> bool:
+    """WP-16: Obtiene un advisory lock de PostgreSQL para evitar ejecuciones de cron superpuestas."""
+    from sqlalchemy import text
+
+    try:
+        acquired = db.execute(
+            text("SELECT pg_try_advisory_lock(:key)"),
+            {"key": CRON_ADVISORY_LOCK_KEY},
+        ).scalar()
+        return bool(acquired)
+    except Exception:
+        # En motores sin pg_try_advisory_lock (p. ej. SQLite de pruebas), permitir continuar.
+        return True
+
+
+def release_cron_lock(db: Session) -> None:
+    from sqlalchemy import text
+
+    try:
+        db.execute(
+            text("SELECT pg_advisory_unlock(:key)"),
+            {"key": CRON_ADVISORY_LOCK_KEY},
+        )
+    except Exception:
+        pass
+
+
 def main() -> None:
     db = SessionLocal()
+    locked = False
     try:
+        locked = try_acquire_cron_lock(db)
+        if not locked:
+            logger.info("Otra instancia del cron ya está en ejecución; omitiendo esta corrida.")
+            return
         expire_stale_bookings(db)
 
         lima_tz = ZoneInfo("America/Lima")
@@ -404,64 +444,70 @@ def main() -> None:
         )
 
         for b in bookings:
-            if not b.event_date or not b.start_time:
-                continue
+            try:
+                if not b.event_date or not b.start_time:
+                    continue
 
-            event_dt_unaware = datetime.combine(b.event_date, b.start_time)
-            event_dt_lima = event_dt_unaware.replace(tzinfo=lima_tz)
+                event_dt_unaware = datetime.combine(b.event_date, b.start_time)
+                event_dt_lima = event_dt_unaware.replace(tzinfo=lima_tz)
 
-            time_since_start = now_lima - event_dt_lima
-            if time_since_start < timedelta(hours=5):
-                continue
+                time_since_start = now_lima - event_dt_lima
+                if time_since_start < timedelta(hours=5):
+                    continue
 
-            contractor_prof = b.contractor
-            musician_prof = b.musician
+                contractor_prof = b.contractor
+                musician_prof = b.musician
 
-            contractor_user = contractor_prof.user if contractor_prof else None
-            musician_user = musician_prof.user if musician_prof else None
+                contractor_user = contractor_prof.user if contractor_prof else None
+                musician_user = musician_prof.user if musician_prof else None
 
-            reviews = (
-                db.query(BookingReview)
-                .filter(BookingReview.booking_id == b.id, BookingReview.is_final.is_(True))
-                .all()
-            )
-            authors = {r.author_user_id for r in reviews}
-            if musician_user and (
-                db.query(ContractorRecommendation.id)
-                .filter(ContractorRecommendation.booking_id == b.id)
-                .first()
-                is not None
-            ):
-                authors.add(musician_user.id)
-
-            if (
-                contractor_user
-                and musician_user
-                and (contractor_user.id in authors)
-                and (musician_user.id in authors)
-            ):
-                continue
-
-            if contractor_user and contractor_user.id not in authors:
-                send_reminder(
-                    db,
-                    contractor_user,
-                    b,
-                    (musician_user.fullname or "el músico") if musician_user else "el músico",
-                    "contractor",
+                reviews = (
+                    db.query(BookingReview)
+                    .filter(BookingReview.booking_id == b.id, BookingReview.is_final.is_(True))
+                    .all()
                 )
+                authors = {r.author_user_id for r in reviews}
+                if musician_user and (
+                    db.query(ContractorRecommendation.id)
+                    .filter(ContractorRecommendation.booking_id == b.id)
+                    .first()
+                    is not None
+                ):
+                    authors.add(musician_user.id)
 
-            if musician_user and musician_user.id not in authors:
-                send_reminder(
-                    db,
-                    musician_user,
-                    b,
-                    (contractor_user.fullname or "el contratista")
-                    if contractor_user
-                    else "el contratista",
-                    "musician",
-                )
+                if (
+                    contractor_user
+                    and musician_user
+                    and (contractor_user.id in authors)
+                    and (musician_user.id in authors)
+                ):
+                    continue
+
+                if contractor_user and contractor_user.id not in authors:
+                    send_reminder(
+                        db,
+                        contractor_user,
+                        b,
+                        (musician_user.fullname or "el músico") if musician_user else "el músico",
+                        "contractor",
+                    )
+
+                if musician_user and musician_user.id not in authors:
+                    send_reminder(
+                        db,
+                        musician_user,
+                        b,
+                        (contractor_user.fullname or "el contratista")
+                        if contractor_user
+                        else "el contratista",
+                        "musician",
+                    )
+            except Exception as exc:
+                logger.error("Error enviando recordatorio de reseña para reserva %s: %s", b.id, exc)
+                db.rollback()
     finally:
+        if locked:
+            release_cron_lock(db)
         db.close()
 
 

@@ -208,3 +208,64 @@ def assert_can_execute_action(booking, action: BookingAction, current_user=None)
             status_code=403,
             detail="No tienes permiso para realizar esta accion en este estado"
         )
+
+
+def compute_visible_stage(status: BookingStatus | str | None) -> str:
+    """Devuelve una de las 5 etapas visibles unificadas (más `cancelada` si aplica) (WP-15 / WP-20)."""
+    st = status if isinstance(status, BookingStatus) else None
+    if st is None and status:
+        try:
+            st = BookingStatus(str(status))
+        except ValueError:
+            return "solicitud"
+    if st == BookingStatus.requested:
+        return "solicitud"
+    if st in (BookingStatus.accepted, BookingStatus.contract_pending):
+        return "cotizacion"
+    if st in (BookingStatus.contract_signed, BookingStatus.payment_pending):
+        return "pago"
+    if st in (
+        BookingStatus.payment_retained,
+        BookingStatus.change_pending,
+        BookingStatus.balance_pending,
+        BookingStatus.balance_review,
+    ):
+        return "confirmada"
+    if st in (
+        BookingStatus.in_progress,
+        BookingStatus.payment_released,
+        BookingStatus.completed,
+    ):
+        return "evento_y_cierre"
+    if st in (BookingStatus.cancelled, BookingStatus.rejected):
+        return "cancelada"
+    return "solicitud"
+
+
+def compute_allowed_actions(
+    booking: Any,
+    *,
+    user_role: UserRole | None = None,
+    viewer_role: str | None = None,
+) -> List[str]:
+    """Devuelve las acciones permitidas por la máquina de estados para la reserva (WP-15)."""
+    st = getattr(booking, "status", None)
+    if not isinstance(st, BookingStatus) and st is not None:
+        try:
+            st = BookingStatus(str(st))
+        except ValueError:
+            st = None
+    if st is None:
+        return []
+    if viewer_role == "member":
+        chat_rule = ACTION_RULES.get(BookingAction.CHAT_MESSAGE)
+        return [BookingAction.CHAT_MESSAGE.value] if chat_rule and st in chat_rule.from_statuses else []
+
+    allowed: List[str] = []
+    for action, rule in ACTION_RULES.items():
+        if st not in rule.from_statuses:
+            continue
+        if user_role is not None and user_role not in rule.allowed_roles:
+            continue
+        allowed.append(action.value)
+    return allowed

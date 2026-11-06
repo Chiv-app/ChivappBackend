@@ -224,6 +224,8 @@ def create_musician_booking(
     ):
         raise HTTPException(400, "La hora del evento ya pasó")
 
+    # WP-13 (BE-05): Serializar creación de contrata bloqueando fila de MusicianProfile.
+    db.get(MusicianProfile, musician.id, with_for_update=True)
     assert_musician_available(
         db,
         musician.id,

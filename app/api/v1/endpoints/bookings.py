@@ -167,6 +167,8 @@ def create_booking(
     ):
         raise HTTPException(400, "La hora del evento ya pasó")
 
+    # WP-13 (BE-05): Serializar solicitudes concurrentes sobre la agenda del mismo músico.
+    db.get(MusicianProfile, musician.id, with_for_update=True)
     assert_musician_available(
         db,
         musician.id,
@@ -266,12 +268,9 @@ def create_booking_as_musician(
 
 
 def _preview_requested_fee_percent(db: Session) -> Decimal:
-    from app.models.platform_payment import PlatformPaymentSettings
+    from app.services.platform_payment import get_cached_platform_fee_percent
 
-    row = db.query(PlatformPaymentSettings.platform_fee_percent).first()
-    if row and row[0] is not None:
-        return Decimal(str(row[0]))
-    return Decimal("2")
+    return get_cached_platform_fee_percent(db)
 
 
 def _serialize_booking_clean(
@@ -516,6 +515,8 @@ def quote_booking(
 
     assert_can_execute_action(booking, BookingAction.QUOTE, current_user)
 
+    # WP-13 (BE-05): Bloquear fila del perfil del músico antes de verificar disponibilidad.
+    db.get(MusicianProfile, booking.musician_id, with_for_update=True)
     assert_musician_available(
         db,
         booking.musician_id,
@@ -653,6 +654,8 @@ def accept_quote(
             detail="No puedes aceptar la cotización porque la fecha u hora del evento ya pasó.",
         )
 
+    # WP-13 (BE-05): Bloquear fila del perfil del músico antes de verificar disponibilidad.
+    db.get(MusicianProfile, booking.musician_id, with_for_update=True)
     assert_musician_available(
         db,
         booking.musician_id,

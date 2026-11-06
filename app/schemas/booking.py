@@ -445,6 +445,9 @@ class BookingOut(BaseModel):
     # Complaint summary for list cards / action filters
     complaint_status: str | None = None
     complaint_reason: str | None = None
+    # WP-15: Etapa visible unificada y lista de acciones permitidas desde el estado actual
+    visible_stage: str | None = None
+    allowed_actions: list[str] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -463,6 +466,23 @@ class BookingOut(BaseModel):
         if isinstance(value, UUID):
             return value
         return UUID(str(value))
+
+    @model_validator(mode="after")
+    def populate_stage_and_actions(self):
+        if not self.visible_stage or not self.allowed_actions:
+            from app.services.booking_state_machine import (
+                compute_allowed_actions,
+                compute_visible_stage,
+            )
+
+            if not self.visible_stage:
+                self.visible_stage = compute_visible_stage(self.status)
+            if not self.allowed_actions:
+                self.allowed_actions = compute_allowed_actions(
+                    self,
+                    viewer_role=self.viewer_role,
+                )
+        return self
 
 
 class BookingCalendarSyncRequest(BaseModel):
