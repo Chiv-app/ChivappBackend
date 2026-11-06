@@ -19,14 +19,30 @@ SCOPES = ['https://www.googleapis.com/auth/calendar.events']
 _ENC_PREFIX = "enc:v1:"
 
 
-def _calendar_fernet() -> Fernet:
-    secret = (getattr(settings, "JWT_SECRET_KEY", None) or "dev-calendar-token-secret").encode("utf-8")
-    key = base64.urlsafe_b64encode(hashlib.sha256(secret).digest())
+def _calendar_fernet(*, legacy: bool = False) -> Fernet:
+    explicit = (getattr(settings, "GOOGLE_CALENDAR_TOKEN_KEY", None) or "").strip()
+    if explicit and not legacy:
+        key = base64.urlsafe_b64encode(hashlib.sha256(explicit.encode("utf-8")).digest())
+        return Fernet(key)
+    base_secret = (getattr(settings, "JWT_SECRET_KEY", None) or "").strip()
+    if not base_secret:
+        raise RuntimeError("Falta JWT_SECRET_KEY o GOOGLE_CALENDAR_TOKEN_KEY para cifrar tokens de calendario.")
+    if legacy:
+        key = base64.urlsafe_b64encode(hashlib.sha256(base_secret.encode("utf-8")).digest())
+    else:
+        import hmac
+
+        derived = hmac.new(
+            base_secret.encode("utf-8"),
+            b"chivapp:google-calendar-fernet:v1",
+            hashlib.sha256,
+        ).digest()
+        key = base64.urlsafe_b64encode(derived)
     return Fernet(key)
 
 
 def encrypt_refresh_token(token: str) -> str:
-    """Cifra un refresh token de Google OAuth en reposo (SEC3-13)."""
+    """Cifra un refresh token de Google OAuth en reposo (SEC3-13 / WP-11)."""
     if not token:
         return token
     if token.startswith(_ENC_PREFIX):
@@ -42,11 +58,13 @@ def decrypt_refresh_token(value: str | None) -> str | None:
     if not value.startswith(_ENC_PREFIX):
         return value
     raw = value[len(_ENC_PREFIX):]
-    try:
-        return _calendar_fernet().decrypt(raw.encode("ascii")).decode("utf-8")
-    except (InvalidToken, ValueError):
-        logger.warning("No se pudo descifrar google_calendar_refresh_token.")
-        return None
+    for legacy_mode in (False, True):
+        try:
+            return _calendar_fernet(legacy=legacy_mode).decrypt(raw.encode("ascii")).decode("utf-8")
+        except (InvalidToken, ValueError):
+            continue
+    logger.warning("No se pudo descifrar google_calendar_refresh_token.")
+    return None
 
 
 def _get_calendar_service_oauth(refresh_token: str):

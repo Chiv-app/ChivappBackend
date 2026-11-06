@@ -22,6 +22,7 @@ from app.core.jwt import (
     decode_access_token,
     decode_session_token,
     decode_signed_state,
+    revoke_token_jti,
     session_version,
 )
 from app.models.contractor_profile import ContractorProfile
@@ -418,14 +419,81 @@ from app.schemas.auth import LoginStepOneRequest, LoginStepOneResponse, LoginOtp
 from datetime import timedelta
 import hashlib
 import hmac
+import time
 
 OTP_MAX_ATTEMPTS = 5
+OTP_IP_MAX_ATTEMPTS = 5
 OTP_COOLDOWN_SECONDS = 60
 OTP_MAX_SENDS_PER_HOUR = 5
 
+LOGIN_LOCKOUT_THRESHOLD = 5
+LOGIN_LOCKOUT_BASE_SECONDS = 60
+LOGIN_LOCKOUT_MAX_SECONDS = 900
 
-def _compute_otp_hmac(user_id: object, otp: str) -> str:
-    secret = (settings.JWT_SECRET_KEY or "dev-otp-secret").encode("utf-8")
+# Hash precomputado para igualar tiempos de verificación cuando la cuenta no existe (WP-09).
+_DUMMY_PASSWORD_HASH = hash_password("DummyTimingEqualizer!2026#Chivapp")
+# Estado en memoria para bloqueo por cuenta en /auth/login y por (cuenta, IP) en OTP (WP-07 / WP-09).
+_LOGIN_FAILURE_STATE: dict[str, tuple[int, float]] = {}
+_OTP_IP_ATTEMPTS: dict[tuple[str, str], tuple[int, float]] = {}
+
+
+def reset_login_failure_state() -> None:
+    _LOGIN_FAILURE_STATE.clear()
+    _OTP_IP_ATTEMPTS.clear()
+
+
+def _check_account_login_lockout(email: str) -> None:
+    entry = _LOGIN_FAILURE_STATE.get(email)
+    if not entry:
+        return
+    failures, locked_until = entry
+    now = time.monotonic()
+    if locked_until > now:
+        retry_after = max(1, int(locked_until - now))
+        raise HTTPException(
+            status_code=429,
+            detail="Demasiados intentos fallidos para esta cuenta. Intenta nuevamente en unos minutos.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+
+def _record_account_login_failure(email: str) -> None:
+    if not email:
+        return
+    now = time.monotonic()
+    failures, locked_until = _LOGIN_FAILURE_STATE.get(email, (0, 0.0))
+    if locked_until and locked_until <= now and failures >= LOGIN_LOCKOUT_THRESHOLD:
+        # Mantener la cuenta de fallos previos para escalar el backoff si persiste.
+        pass
+    failures += 1
+    new_locked_until = 0.0
+    if failures >= LOGIN_LOCKOUT_THRESHOLD:
+        exponent = min(failures - LOGIN_LOCKOUT_THRESHOLD, 4)
+        backoff = min(LOGIN_LOCKOUT_BASE_SECONDS * (2 ** exponent), LOGIN_LOCKOUT_MAX_SECONDS)
+        new_locked_until = now + backoff
+    if len(_LOGIN_FAILURE_STATE) > 4096:
+        _LOGIN_FAILURE_STATE.pop(next(iter(_LOGIN_FAILURE_STATE)), None)
+    _LOGIN_FAILURE_STATE[email] = (failures, new_locked_until)
+
+
+def _clear_account_login_failures(email: str) -> None:
+    _LOGIN_FAILURE_STATE.pop(email, None)
+
+
+def _otp_hmac_key(*, legacy: bool = False) -> bytes:
+    explicit = (getattr(settings, "OTP_SECRET_KEY", None) or "").strip()
+    if explicit and not legacy:
+        return explicit.encode("utf-8")
+    base = (settings.JWT_SECRET_KEY or "").strip()
+    if not base:
+        raise RuntimeError("Falta JWT_SECRET_KEY o OTP_SECRET_KEY para calcular HMAC de OTP.")
+    if legacy:
+        return base.encode("utf-8")
+    return hmac.new(base.encode("utf-8"), b"chivapp:login-otp-hmac:v1", hashlib.sha256).digest()
+
+
+def _compute_otp_hmac(user_id: object, otp: str, *, legacy: bool = False) -> str:
+    secret = _otp_hmac_key(legacy=legacy)
     return hmac.new(secret, f"otp:{user_id}:{otp.strip()}".encode("utf-8"), hashlib.sha256).hexdigest()
 
 
@@ -480,6 +548,8 @@ def generate_and_send_login_otp(db: Session, user: User) -> str:
     user.login_otp_sent_count = (getattr(user, "login_otp_sent_count", 0) or 0) + 1
     if not previous_expires or previous_expires <= now:
         user.login_otp_attempts = 0
+    for key in [k for k in _OTP_IP_ATTEMPTS if k[0] == str(user.id)]:
+        _OTP_IP_ATTEMPTS.pop(key, None)
     db.commit()
 
     try:
@@ -501,13 +571,29 @@ def generate_and_send_login_otp(db: Session, user: User) -> str:
     return otp
 
 
-def verify_login_otp_or_raise(db: Session, user: User, otp: str) -> None:
+def verify_login_otp_or_raise(
+    db: Session,
+    user: User,
+    otp: str,
+    *,
+    client_ip: str | None = None,
+) -> None:
     """Verifica el OTP con límite de intentos atómico e invalidación automática."""
     from sqlalchemy import text
 
     db.refresh(user, with_for_update=True)
 
     now = datetime.utcnow()
+    mono_now = time.monotonic()
+    ip_key = (str(user.id), client_ip) if client_ip else None
+    if ip_key is not None:
+        ip_attempts, ip_expires = _OTP_IP_ATTEMPTS.get(ip_key, (0, 0.0))
+        if ip_expires > mono_now and ip_attempts >= OTP_IP_MAX_ATTEMPTS:
+            raise HTTPException(
+                status_code=429,
+                detail="Demasiados intentos desde esta dirección. Intenta más tarde o solicita un código nuevo.",
+            )
+
     expires_at = getattr(user, "login_otp_expires_at", None)
     if (getattr(user, "login_otp_attempts", 0) or 0) >= OTP_MAX_ATTEMPTS:
         user.login_otp_hash = None
@@ -531,10 +617,23 @@ def verify_login_otp_or_raise(db: Session, user: User, otp: str) -> None:
         raise HTTPException(status_code=401, detail="El código ha expirado")
 
     clean_otp = (otp or "").strip()
-    expected_hmac = _compute_otp_hmac(user.id, clean_otp)
-    is_valid = hmac.compare_digest(stored_hash, expected_hmac)
+    expected_hmac = _compute_otp_hmac(user.id, clean_otp, legacy=False)
+    legacy_hmac = _compute_otp_hmac(user.id, clean_otp, legacy=True)
+    is_valid = hmac.compare_digest(stored_hash, expected_hmac) or hmac.compare_digest(
+        stored_hash, legacy_hmac
+    )
 
     if not is_valid:
+        if ip_key is not None:
+            prev_cnt, prev_exp = _OTP_IP_ATTEMPTS.get(ip_key, (0, 0.0))
+            if prev_exp <= mono_now:
+                prev_cnt = 0
+            _OTP_IP_ATTEMPTS[ip_key] = (prev_cnt + 1, mono_now + 600.0)
+            if prev_cnt + 1 >= OTP_IP_MAX_ATTEMPTS:
+                raise HTTPException(
+                    status_code=429,
+                    detail="Demasiados intentos desde esta dirección. Intenta más tarde o solicita un código nuevo.",
+                )
         attempts = db.execute(
             text(
                 'UPDATE "user" SET login_otp_attempts = COALESCE(login_otp_attempts, 0) + 1 '
@@ -554,6 +653,8 @@ def verify_login_otp_or_raise(db: Session, user: User, otp: str) -> None:
         db.commit()
         raise HTTPException(status_code=401, detail="Código incorrecto")
 
+    if ip_key is not None:
+        _OTP_IP_ATTEMPTS.pop(ip_key, None)
     user.login_otp_hash = None
     user.login_otp_expires_at = None
     user.login_otp_attempts = 0
@@ -603,7 +704,7 @@ def login_otp(payload: LoginOtpRequest, request: Request, response: Response, db
     if user.role == UserRole.admin:
         raise HTTPException(status_code=403, detail="El acceso de administrador requiere contraseña")
 
-    verify_login_otp_or_raise(db, user, payload.otp)
+    verify_login_otp_or_raise(db, user, payload.otp, client_ip=_client_ip(request))
 
     _issue_login(response, user)
     db.commit()
@@ -617,13 +718,19 @@ def login(payload: LoginRequest, request: Request, response: Response, db: Sessi
     from sqlalchemy import func
 
     email = (payload.email or "").strip().lower()
+    _check_account_login_lockout(email)
     user = db.query(User).filter(func.lower(User.email) == email).first()
 
     if not user or not user.password_hash:
+        verify_password(payload.password or "", _DUMMY_PASSWORD_HASH)
+        _record_account_login_failure(email)
         raise HTTPException(status_code=401, detail="Credenciales inválidas")
 
     if not verify_password(payload.password, user.password_hash):
+        _record_account_login_failure(email)
         raise HTTPException(status_code=401, detail="Credenciales inválidas")
+
+    _clear_account_login_failures(email)
 
     if getattr(user, "is_active", True) is False:
         raise HTTPException(status_code=403, detail="Tu cuenta está desactivada")
@@ -650,6 +757,11 @@ def logout(
     response: Response,
     db: Session = Depends(deps.get_db),
 ):
+    token = request.cookies.get("access_token")
+    if token:
+        decoded = decode_access_token(token)
+        if decoded and decoded.get("jti"):
+            revoke_token_jti(str(decoded["jti"]))
     user = _optional_user(request, db)
     if user is not None:
         _revoke_sessions(user)

@@ -2,7 +2,7 @@ from datetime import date, datetime, time
 from decimal import Decimal
 from uuid import UUID
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from app.schemas.booking import BookingMessageOut, BookingReviewOut
 from app.schemas.contract import ContractOut
@@ -139,6 +139,12 @@ class AdminReleaseSettlement(BaseModel):
     payout_evidence_url: str | None = Field(default=None, max_length=500)
     payout_notes: str | None = Field(default=None, max_length=2000)
 
+    @field_validator("payout_evidence_url", mode="before")
+    @classmethod
+    def _validate_payout_evidence_url(cls, value):
+        from app.schemas.settlement import _validate_private_evidence_url
+        return _validate_private_evidence_url(value)
+
 
 class AdminSettleBooking(BaseModel):
     musician_amount: float = Field(ge=0)
@@ -146,6 +152,12 @@ class AdminSettleBooking(BaseModel):
     notes: str | None = Field(default=None, max_length=2000)
     payout_reference: str | None = Field(default=None, max_length=100)
     payout_evidence_url: str | None = Field(default=None, max_length=500)
+
+    @field_validator("payout_evidence_url", mode="before")
+    @classmethod
+    def _validate_payout_evidence_url(cls, value):
+        from app.schemas.settlement import _validate_private_evidence_url
+        return _validate_private_evidence_url(value)
 
 
 
@@ -177,4 +189,20 @@ class AdminPayoutRequestAction(BaseModel):
 class AdminManualRefundAction(BaseModel):
     manual_override: bool = False
     manual_reason: str | None = Field(default=None, max_length=1000)
+
+
+class AdminAuditLogOut(BaseModel):
+    id: UUID
+    admin_user_id: UUID | None = None
+    admin_email: str | None = None
+    action: str
+    target_type: str | None = None
+    target_id: str | None = None
+    before_state: dict | None = None
+    after_state: dict | None = None
+    ip_address: str | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
 

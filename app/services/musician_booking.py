@@ -102,7 +102,7 @@ def resolve_or_create_contractor_client(
         if user.role != UserRole.contractor:
             raise HTTPException(
                 status_code=400,
-                detail="Ese correo ya pertenece a una cuenta que no es de contratista",
+                detail="No se pudo crear la propuesta con los datos proporcionados",
             )
         profile = (
             db.query(ContractorProfile)
@@ -117,30 +117,24 @@ def resolve_or_create_contractor_client(
             db.add(profile)
             db.flush()
 
-        # Completa solo datos faltantes: la cuenta es del cliente, el músico no
-        # puede sobrescribir su información.
-        if fullname and fullname.strip() and not (user.fullname or "").strip():
-            user.fullname = fullname.strip()
-        if phone and not user.phone:
-            user.phone = (
-                normalize_phone(phone)
-                if not has_real_email
-                else assert_phone_unique(db, phone, exclude_user_id=user.id)
-            )
-        if document_type and not profile.document_type:
-            profile.document_type = document_type
-        if document_number and not profile.document_number:
-            if has_real_email and (user.is_verified or user.email_verified_at is not None):
-                profile.document_number = assert_document_number_unique(
-                    db,
-                    document_number,
-                    exclude_profile_id=profile.id,
-                )
-        if address and not profile.address:
-            profile.address = address
-        if city and not profile.city:
-            profile.city = city
-        db.flush()
+        if not has_real_email:
+            # Cuenta walk-in (@guest.local) creada por este mismo músico:
+            # completar solo datos faltantes.
+            if fullname and fullname.strip() and not (user.fullname or "").strip():
+                user.fullname = fullname.strip()
+            if phone and not user.phone:
+                user.phone = normalize_phone(phone)
+            if document_type and not profile.document_type:
+                profile.document_type = document_type
+            if address and not profile.address:
+                profile.address = address
+            if city and not profile.city:
+                profile.city = city
+            db.flush()
+        else:
+            # S-01 (WP-08): Para cuentas reales ya registradas, no mutar ni exponer
+            # los datos privados del perfil del contratista hasta que él acepte.
+            profile._reused_existing_account = True
         return profile, user
 
     phone_norm = (
@@ -269,31 +263,64 @@ def create_musician_booking(
     db.add(booking)
     db.flush()
 
+    from types import SimpleNamespace
     from app.services.platform_payment import sync_booking_platform_fee
 
     sync_booking_platform_fee(db, booking, use_current_settings=True)
 
     transient_doc = normalize_document_number(payload.document_number)
+    reused_existing = bool(getattr(contractor, "_reused_existing_account", False))
     keep_doc_in_profile = bool(
-        contractor.document_number
+        not reused_existing
+        and contractor.document_number
         and (contractor_user.is_verified or contractor_user.email_verified_at is not None)
     )
     try:
         with db.no_autoflush:
-            if not keep_doc_in_profile and transient_doc:
-                contractor.document_number = transient_doc
-            create_booking_contract(
-                db,
-                booking,
-                musician,
-                musician_user,
-                contractor,
-                contractor_user,
-            )
-            if not keep_doc_in_profile:
-                contractor.document_number = None
+            if reused_existing:
+                # S-01 (WP-08): No volcar datos guardados del perfil de una cuenta existente
+                # al contrato hasta que el propio contratista acepte la cotización.
+                contract_contractor = SimpleNamespace(
+                    id=contractor.id,
+                    user_id=contractor.user_id,
+                    document_type=payload.document_type,
+                    document_number=transient_doc,
+                    address=payload.contractor_address,
+                    city=payload.contractor_city,
+                )
+                contract_user = SimpleNamespace(
+                    id=contractor_user.id,
+                    fullname=(payload.contractor_fullname or "").strip() or "Cliente",
+                    email=str(payload.contractor_email) if payload.contractor_email else contractor_user.email,
+                    phone=normalize_phone(payload.contractor_phone) if payload.contractor_phone else None,
+                )
+                contract = create_booking_contract(
+                    db,
+                    booking,
+                    musician,
+                    musician_user,
+                    contract_contractor,
+                    contract_user,
+                )
+                contract.context = {
+                    **(contract.context or {}),
+                    "__musician_created_unaccepted__": True,
+                }
+            else:
+                if not keep_doc_in_profile and transient_doc:
+                    contractor.document_number = transient_doc
+                create_booking_contract(
+                    db,
+                    booking,
+                    musician,
+                    musician_user,
+                    contractor,
+                    contractor_user,
+                )
+                if not keep_doc_in_profile:
+                    contractor.document_number = None
     except ValueError as exc:
-        if not keep_doc_in_profile:
+        if not reused_existing and not keep_doc_in_profile:
             contractor.document_number = None
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

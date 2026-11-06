@@ -16,7 +16,6 @@ class MusicianSearchFilters(BaseModel):
 
 class MusicianSearchResult(BaseModel):
     musician_id: str           # musician_profile.id
-    user_id: str
     slug: str | None = None
     stage_name: str
     city: str | None

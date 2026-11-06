@@ -91,8 +91,43 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["X-Unread-Count", "X-Total-Count"],
+    expose_headers=["X-Unread-Count", "X-Total-Count", "X-Request-ID"],
 )
+
+MAX_JSON_BODY_BYTES = 2 * 1024 * 1024  # 2 MB
+MAX_MULTIPART_BODY_BYTES = 16 * 1024 * 1024  # 16 MB
+
+
+@app.middleware("http")
+async def request_id_and_body_size_limit(request, call_next):
+    import uuid
+
+    req_id = (request.headers.get("x-request-id") or "").strip()[:64] or uuid.uuid4().hex
+    request.state.request_id = req_id
+
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            length_val = int(content_length)
+            content_type = (request.headers.get("content-type") or "").lower()
+            max_allowed = (
+                MAX_MULTIPART_BODY_BYTES
+                if "multipart/form-data" in content_type
+                else MAX_JSON_BODY_BYTES
+            )
+            if length_val > max_allowed:
+                return JSONResponse(
+                    status_code=413,
+                    content={"detail": "El tamaño de la petición supera el máximo permitido."},
+                    headers={"X-Request-ID": req_id},
+                )
+        except ValueError:
+            pass
+
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = req_id
+    return response
+
 
 @app.middleware("http")
 async def harden_upload_responses(request, call_next):

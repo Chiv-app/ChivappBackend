@@ -329,6 +329,18 @@ def expire_stale_bookings(db: Session, now: datetime | None = None) -> dict[str,
                 )
                 stats["complaint_response_reminders"] = stats.get("complaint_response_reminders", 0) + 1
 
+    # 5. WP-08 (S-05): Purgar pings de ubicación antiguos según retención configurada
+    from app.models.booking_location import BookingLocationPing
+
+    retention_days = max(int(getattr(settings, "LOCATION_PING_RETENTION_DAYS", 7) or 7), 1)
+    ping_cutoff = now_utc - timedelta(days=retention_days)
+    purged_pings = (
+        db.query(BookingLocationPing)
+        .filter(BookingLocationPing.created_at < ping_cutoff)
+        .delete(synchronize_session=False)
+    )
+    stats["purged_location_pings"] = int(purged_pings or 0)
+
     db.commit()
     return stats
 

@@ -614,6 +614,14 @@ def create_final_booking_review(
             .first()
         )
         if not complaint:
+            if payload.complaint_evidence_url:
+                from app.services.uploads import assert_private_upload_owned
+                assert_private_upload_owned(
+                    db,
+                    payload.complaint_evidence_url,
+                    current_user.id,
+                    label="comprobante de evidencia",
+                )
             complaint = BookingComplaint(
                 booking_id=booking.id,
                 opened_by_user_id=current_user.id,
@@ -776,6 +784,19 @@ def report_musician_no_show(
         .first()
     )
     if not complaint:
+        if evidence_url:
+            from app.schemas.settlement import _validate_private_evidence_url
+            from app.services.uploads import assert_private_upload_owned
+            try:
+                evidence_url = _validate_private_evidence_url(str(evidence_url))
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            assert_private_upload_owned(
+                db,
+                evidence_url,
+                current_user.id,
+                label="comprobante de evidencia",
+            )
         complaint = BookingComplaint(
             booking_id=booking.id,
             opened_by_user_id=current_user.id,
@@ -896,6 +917,14 @@ def respond_booking_complaint(
     if complaint.status != BookingComplaintStatus.open:
         raise HTTPException(400, "La queja ya fue respondida o liquidada")
 
+    if payload.evidence_url:
+        from app.services.uploads import assert_private_upload_owned
+        assert_private_upload_owned(
+            db,
+            payload.evidence_url,
+            current_user.id,
+            label="comprobante de descargo",
+        )
     complaint.status = BookingComplaintStatus.musician_responded
     complaint.musician_response = payload.response.strip()
     complaint.musician_response_evidence_url = payload.evidence_url

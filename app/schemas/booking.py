@@ -289,6 +289,20 @@ class BookingFinalReviewCreate(BaseModel):
     complaint_reason: str | None = Field(default=None, max_length=2000)
     complaint_evidence_url: str | None = Field(default=None, max_length=500)
 
+    @field_validator("complaint_evidence_url", mode="before")
+    @classmethod
+    def _validate_complaint_evidence_url(cls, value):
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("URL de evidencia inválida")
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        if len(cleaned) > 500 or ".." in cleaned or not cleaned.startswith("/uploads/private/"):
+            raise ValueError("Las evidencias de queja deben subirse como archivos privados (/uploads/private/)")
+        return cleaned
+
     @model_validator(mode="after")
     def validate_review_or_complaint(self):
         reason = (self.complaint_reason or "").strip()

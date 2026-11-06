@@ -592,6 +592,15 @@ def update_musician_profile(
                     detail="El nombre de artista es obligatorio",
                 )
 
+    from app.api.profile_helpers import NON_DEMOTING_FIELDS, _profile_values_equal
+    from app.services.booking_notifications import notify_user
+
+    changed_payout_fields = [
+        f
+        for f in NON_DEMOTING_FIELDS
+        if f in updates and not _profile_values_equal(getattr(profile, f, None), updates[f])
+    ]
+
     demoted = demote_published_profile_if_changed(profile, updates)
     if demoted:
         notify_profile_needs_resubmit(
@@ -599,6 +608,18 @@ def update_musician_profile(
             user=current_user,
             profile_role="musician",
             profile_id=str(profile.id),
+        )
+    if changed_payout_fields:
+        notify_user(
+            db,
+            user=current_user,
+            type="payout_info_updated",
+            title="Datos de cobro actualizados",
+            message=(
+                "Se actualizaron tus datos de cobro y cuenta de desembolso. "
+                "Si no realizaste este cambio, cambia tu contraseña de inmediato y contacta a soporte."
+            ),
+            meta={"changed_fields": sorted(changed_payout_fields)},
         )
 
     videos = profile.videos or []

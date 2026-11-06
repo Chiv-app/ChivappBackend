@@ -129,11 +129,19 @@ def _download_gcs_blob_cached(bucket_name: str, blob_name: str) -> bytes | None:
     return blob.download_as_bytes()
 
 
-async def save_upload(file: UploadFile, *, private: bool = False, owner_id=None, db=None) -> str:
+async def save_upload(
+    file: UploadFile,
+    *,
+    private: bool = False,
+    owner_id=None,
+    db=None,
+    allow_pdf: bool = True,
+) -> str:
     """Valida y guarda un archivo. Devuelve su URL.
 
     Con `private=True` se exige `owner_id` y `db`, y se registra el dueño para
     controlar las descargas. También aplica cuota por usuario (20 archivos o 100 MB por hora).
+    Los archivos PDF se almacenan siempre como privados cuando tienen dueño asociado (WP-10).
     """
     content = await _read_limited(file)
     if not content:
@@ -142,6 +150,10 @@ async def save_upload(file: UploadFile, *, private: bool = False, owner_id=None,
     content_type = sniff_content_type(content[:16])
     if content_type not in ALLOWED_TYPES:
         raise ValueError("Tipo de archivo no permitido. Formatos aceptados: JPG, PNG, WEBP, GIF o PDF.")
+    if content_type == "application/pdf" and not allow_pdf:
+        raise ValueError("Solo se permiten imágenes (JPG, PNG, WEBP o GIF) en este formulario.")
+    if content_type == "application/pdf" and owner_id is not None and db is not None:
+        private = True
 
     if owner_id is not None and db is not None:
         from datetime import datetime, timedelta

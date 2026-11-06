@@ -159,8 +159,46 @@ class MusicianProfileBase(BaseModel):
     payout_mp_email: str | None = None
 
 
+def _validate_bounded_str_list(
+    values: list[str] | None,
+    *,
+    max_items: int = 100,
+    max_item_length: int = 200,
+) -> list[str] | None:
+    if values is None:
+        return None
+    if len(values) > max_items:
+        raise ValueError(f"La lista no puede superar los {max_items} elementos.")
+    out: list[str] = []
+    for item in values:
+        if not isinstance(item, str):
+            raise ValueError("Elemento de lista inválido.")
+        if len(item) > max_item_length:
+            raise ValueError(
+                f"Cada elemento no puede superar los {max_item_length} caracteres."
+            )
+        out.append(item)
+    return out
+
+
 class MusicianProfileCreate(MusicianProfileBase):
-    stage_name: str
+    stage_name: str = Field(max_length=150)
+    bio: str | None = Field(default=None, max_length=5000)
+    portfolio_description: str | None = Field(default=None, max_length=5000)
+    contract_template_title: str | None = Field(default=None, max_length=255)
+    contract_template_body: str | None = Field(default=None, max_length=100_000)
+
+    @field_validator("genres", "instruments", "songs", mode="after")
+    @classmethod
+    def _validate_create_bounded_lists(cls, value):
+        return _validate_bounded_str_list(value) or []
+
+    @field_validator("repertoire", mode="after")
+    @classmethod
+    def _validate_create_repertoire_len(cls, value):
+        if value and len(value) > 200:
+            raise ValueError("El repertorio no puede superar las 200 canciones.")
+        return value
 
     @field_validator("id_document_url", "signature_image_url", mode="before")
     @classmethod
@@ -214,19 +252,19 @@ class MusicianProfileUpdate(BaseModel):
     @classmethod
     def _validate_update_private_urls(cls, value):
         return validate_private_upload_url(value)
-    stage_name: str | None = None
-    username: str | None = None
-    fullname: str | None = None
-    bio: str | None = None
+    stage_name: str | None = Field(default=None, max_length=150)
+    username: str | None = Field(default=None, max_length=80)
+    fullname: str | None = Field(default=None, max_length=150)
+    bio: str | None = Field(default=None, max_length=5000)
     genres: list[str] | None = None
     instruments: list[str] | None = None
     songs: list[str] | None = None
     repertoire: list[RepertoireItem] | None = None
     price_per_hour: float | None = None
     price_per_event: float | None = None
-    portfolio_description: str | None = None
-    location_city: str | None = None
-    location_zone: str | None = None
+    portfolio_description: str | None = Field(default=None, max_length=5000)
+    location_city: str | None = Field(default=None, max_length=120)
+    location_zone: str | None = Field(default=None, max_length=120)
     availability_type: AvailabilityType | None = None
     profile_image_url: str | None = None
     gallery_images: list[str] | None = None
@@ -239,8 +277,8 @@ class MusicianProfileUpdate(BaseModel):
     spotify_url: str | None = None
     website_url: str | None = None
     id_document_url: str | None = None
-    contract_template_title: str | None = None
-    contract_template_body: str | None = None
+    contract_template_title: str | None = Field(default=None, max_length=255)
+    contract_template_body: str | None = Field(default=None, max_length=100_000)
     signature_image_url: str | None = None
     payout_method: str | None = None
     payout_bank_name: str | None = None
@@ -250,6 +288,18 @@ class MusicianProfileUpdate(BaseModel):
     payout_beneficiary_name: str | None = None
     payout_beneficiary_document: str | None = None
     payout_mp_email: str | None = None
+
+    @field_validator("genres", "instruments", "songs", mode="after")
+    @classmethod
+    def _validate_update_bounded_lists(cls, value):
+        return _validate_bounded_str_list(value)
+
+    @field_validator("repertoire", mode="after")
+    @classmethod
+    def _validate_update_repertoire_len(cls, value):
+        if value is not None and len(value) > 200:
+            raise ValueError("El repertorio no puede superar las 200 canciones.")
+        return value
 
     @field_validator("contract_template_body", mode="after")
     @classmethod

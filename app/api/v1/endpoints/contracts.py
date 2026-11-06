@@ -1,3 +1,5 @@
+from html import escape as html_escape
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
@@ -8,14 +10,107 @@ from app.api.booking_helpers import (
     get_booking_or_404,
     parse_uuid,
 )
+from app.models.booking import BookingStatus
 from app.models.contract import Contract
 from app.models.musician_profile import MusicianProfile
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.schemas.contract import ContractOut
-from app.services.contract_pdf import render_contract_pdf_bytes
+from app.services.contract_pdf import (
+    compute_contract_body_sha256,
+    render_contract_pdf_bytes,
+)
 from app.services.uploads import read_upload_bytes
 
 router = APIRouter(prefix="/contracts", tags=["Contracts"])
+
+_PAID_OR_LATER_STATUSES = {
+    BookingStatus.payment_retained,
+    BookingStatus.change_pending,
+    BookingStatus.balance_pending,
+    BookingStatus.balance_review,
+    BookingStatus.in_progress,
+    BookingStatus.payment_released,
+    BookingStatus.completed,
+}
+
+
+def _redact_text_values(text: str | None, values_to_mask: dict[str, str]) -> str | None:
+    if not text:
+        return text
+    redacted = text
+    for raw_val, replacement in values_to_mask.items():
+        cleaned = (raw_val or "").strip()
+        if not cleaned or cleaned in {"—", "-", "Cliente"}:
+            continue
+        for candidate in {cleaned, html_escape(cleaned)}:
+            if candidate:
+                redacted = redacted.replace(candidate, replacement)
+    return redacted
+
+
+def _redact_contract_for_viewer(
+    contract: Contract,
+    booking,
+    viewer: User,
+) -> ContractOut:
+    out = ContractOut.model_validate(contract)
+    canonical_sha = compute_contract_body_sha256(contract.title, contract.body)
+    if not out.body_sha256 and (contract.title or contract.body):
+        out.body_sha256 = canonical_sha
+
+    if viewer.role == UserRole.admin:
+        return out
+
+    ctx = dict(out.context or {})
+    body = out.body
+    is_paid = getattr(booking, "status", None) in _PAID_OR_LATER_STATUSES
+    values_to_mask: dict[str, str] = {}
+
+    if not is_paid:
+        # L-07 (WP-08): Ocultar teléfono y correo de la contraparte hasta confirmar el pago.
+        if viewer.role == UserRole.musician:
+            for key in ("{{telefono_cliente}}", "{{correo_cliente}}", "contractor_phone", "contractor_email"):
+                if key in ctx or key.startswith("{{"):
+                    orig = str(ctx.get(key) or "")
+                    if orig and orig != "—":
+                        values_to_mask[orig] = "[Visible tras confirmar el pago]"
+                    if key in ctx or key.startswith("{{"):
+                        ctx[key] = "[Visible tras confirmar el pago]"
+        elif viewer.role == UserRole.contractor:
+            for key in ("{{telefono_artista}}", "{{correo_artista}}", "musician_phone", "musician_email"):
+                if key in ctx or key.startswith("{{"):
+                    orig = str(ctx.get(key) or "")
+                    if orig and orig != "—":
+                        values_to_mask[orig] = "[Visible tras confirmar el pago]"
+                    if key in ctx or key.startswith("{{"):
+                        ctx[key] = "[Visible tras confirmar el pago]"
+
+    if viewer.role == UserRole.musician and not contract.contractor_signed:
+        # S-01 (WP-08): Redactar datos sensibles del cliente hasta que acepte/firme.
+        for key in (
+            "{{documento_cliente}}",
+            "{{direccion_cliente}}",
+            "contractor_document_number",
+            "contractor_address",
+        ):
+            if key in ctx or key.startswith("{{"):
+                orig = str(ctx.get(key) or "")
+                if orig and orig != "—":
+                    values_to_mask[orig] = "[Pendiente de aceptación del cliente]"
+                if key in ctx or key.startswith("{{"):
+                    ctx[key] = "[Pendiente de aceptación del cliente]"
+
+    if viewer.role == UserRole.contractor and not contract.contractor_signed:
+        # S-03 (WP-08): No exponer la URL cruda de la firma del músico antes de que ambos firmen.
+        out.musician_signature_url = None
+
+    if values_to_mask:
+        body = _redact_text_values(body, values_to_mask)
+
+    out.context = ctx
+    out.body = body
+    out.body_sha256 = canonical_sha
+    return out
 
 
 def _legacy_pdf_bytes(upload_url: str | None) -> bytes | None:
@@ -113,13 +208,15 @@ def get_booking_contract(
     if not contract:
         raise HTTPException(404, "Contrato no encontrado para esta reserva")
 
-    return contract
+    return _redact_contract_for_viewer(contract, booking, current_user)
 
 
 def render_booking_contract_pdf_response(
     db: Session,
     booking,
     booking_id: str,
+    *,
+    viewer: User | None = None,
 ) -> Response:
     """Genera el PDF desde el snapshot de la solicitud (o sirve legacy si aplica).
 
@@ -130,14 +227,20 @@ def render_booking_contract_pdf_response(
         raise HTTPException(404, "Contrato no encontrado para esta reserva")
 
     musician_signature_url = _resolve_musician_signature_url(db, booking, contract)
+    effective_body = contract.body
+    effective_context = dict(contract.context or {})
+    if viewer is not None and viewer.role != UserRole.admin:
+        redacted = _redact_contract_for_viewer(contract, booking, viewer)
+        effective_body = redacted.body
+        effective_context = dict(redacted.context or {})
 
     filename_base = f"contrato-{booking_id}"
-    if contract.title and contract.body:
+    if contract.title and effective_body:
         try:
             pdf_bytes = render_contract_pdf_bytes(
                 title=contract.title,
-                body=contract.body,
-                context=contract.context or {},
+                body=effective_body,
+                context=effective_context,
                 signature_image_url=contract.contractor_signature_url,
                 musician_signature_url=musician_signature_url,
                 signed_at=contract.contractor_sign_timestamp,
@@ -178,7 +281,12 @@ def get_booking_contract_pdf(
 ):
     booking = get_booking_or_404(db, booking_id)
     assert_booking_participant(db, booking, current_user)
-    return render_booking_contract_pdf_response(db, booking, booking_id)
+    return render_booking_contract_pdf_response(
+        db,
+        booking,
+        booking_id,
+        viewer=current_user,
+    )
 
 
 @router.get("/{contract_id}", response_model=ContractOut)
@@ -193,4 +301,4 @@ def get_contract(
 
     booking = get_booking_or_404(db, str(contract.booking_id))
     assert_booking_participant(db, booking, current_user)
-    return contract
+    return _redact_contract_for_viewer(contract, booking, current_user)

@@ -90,7 +90,6 @@ def search_musicians(
         results.append(
             MusicianSearchResult(
                 musician_id=str(m.id),
-                user_id=str(m.user_id),
                 slug=getattr(m, "slug", None),
                 stage_name=m.stage_name,
                 city=m.location_city,

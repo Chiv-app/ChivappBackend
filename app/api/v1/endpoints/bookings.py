@@ -702,10 +702,21 @@ def accept_quote(
             status_code=409,
             detail="El contenido del contrato cambió desde que lo leíste. Recarga la página antes de aceptar.",
         )
-    contract.context = {
-        **(contract.context or {}),
-        "__signed_body_sha256__": expected_hash,
-    }
+    new_ctx = dict(contract.context or {})
+    if new_ctx.get("__musician_created_unaccepted__"):
+        from app.services.contract_pdf import build_booking_contract_snapshot
+
+        _, _, real_ctx = build_booking_contract_snapshot(
+            booking,
+            musician,
+            musician_user,
+            contractor,
+            contractor_user,
+        )
+        new_ctx.update(real_ctx)
+        new_ctx.pop("__musician_created_unaccepted__", None)
+    new_ctx["__signed_body_sha256__"] = expected_hash
+    contract.context = new_ctx
 
     notify_booking_quote_accepted(db, musician_user, str(booking.id))
 

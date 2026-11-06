@@ -83,14 +83,39 @@ class PlatformPaymentInstructionsUpdate(BaseModel):
 
 
 
+def _validate_private_evidence_url(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("URL de evidencia inválida")
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    if len(cleaned) > 500 or ".." in cleaned:
+        raise ValueError("URL de evidencia inválida")
+    if not cleaned.startswith("/uploads/private/"):
+        raise ValueError("Las evidencias y comprobantes deben subirse como archivos privados (/uploads/private/)")
+    return cleaned
+
+
 class BookingComplaintCreate(BaseModel):
     reason: str = Field(min_length=10, max_length=2000)
     evidence_url: str | None = Field(default=None, max_length=500)
+
+    @field_validator("evidence_url", mode="before")
+    @classmethod
+    def _validate_evidence_url(cls, value):
+        return _validate_private_evidence_url(value)
 
 
 class BookingComplaintRespond(BaseModel):
     response: str = Field(min_length=10, max_length=2000)
     evidence_url: str | None = Field(default=None, max_length=500)
+
+    @field_validator("evidence_url", mode="before")
+    @classmethod
+    def _validate_evidence_url(cls, value):
+        return _validate_private_evidence_url(value)
 
 
 class BookingComplaintOut(BaseModel):
@@ -159,6 +184,11 @@ class AdminReleaseSettlement(BaseModel):
     payout_evidence_url: str | None = Field(default=None, max_length=500)
     payout_notes: str | None = Field(default=None, max_length=2000)
 
+    @field_validator("payout_evidence_url", mode="before")
+    @classmethod
+    def _validate_payout_evidence_url(cls, value):
+        return _validate_private_evidence_url(value)
+
 
 class AdminSettleBooking(BaseModel):
     musician_amount: float = Field(ge=0)
@@ -167,11 +197,24 @@ class AdminSettleBooking(BaseModel):
     payout_reference: str | None = Field(default=None, max_length=100)
     payout_evidence_url: str | None = Field(default=None, max_length=500)
 
+    @field_validator("payout_evidence_url", mode="before")
+    @classmethod
+    def _validate_payout_evidence_url(cls, value):
+        return _validate_private_evidence_url(value)
+
 
 
 class AdminRefundTransfer(BaseModel):
     evidence_url: str = Field(min_length=1, max_length=500)
     notes: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("evidence_url", mode="before")
+    @classmethod
+    def _validate_evidence_url(cls, value):
+        checked = _validate_private_evidence_url(value)
+        if not checked:
+            raise ValueError("URL de evidencia requerida")
+        return checked
 
 
 class BookingRefundReject(BaseModel):

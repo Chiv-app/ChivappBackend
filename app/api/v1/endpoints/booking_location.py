@@ -153,16 +153,41 @@ def live_location_history(
     current_user: User = Depends(deps.get_current_user),
     db: Session = Depends(deps.get_db),
 ):
-    """Historial de pings/acciones para análisis (participantes o admin)."""
+    """Historial de pings/acciones (S-05 / WP-08: participante solo ve su propio historial en ventana del evento; admin ve todos)."""
+    from datetime import datetime, time as dt_time, timedelta
+    from app.models.booking import BookingStatus
+
     booking = get_booking_or_404(db, booking_id)
     if current_user.role != UserRole.admin:
         assert_booking_collaborator(db, booking, current_user)
+        if booking.status not in {
+            BookingStatus.payment_retained,
+            BookingStatus.change_pending,
+            BookingStatus.in_progress,
+            BookingStatus.payment_released,
+            BookingStatus.completed,
+        }:
+            return []
+
+    query = db.query(BookingLocationPing).filter(
+        BookingLocationPing.booking_id == booking.id
+    )
+    if current_user.role != UserRole.admin:
+        query = query.filter(BookingLocationPing.user_id == current_user.id)
+        if booking.event_date:
+            window_start = datetime.combine(booking.event_date - timedelta(days=1), dt_time(0, 0))
+            window_end = datetime.combine(booking.event_date + timedelta(days=2), dt_time(23, 59, 59))
+            query = query.filter(
+                BookingLocationPing.created_at >= window_start,
+                BookingLocationPing.created_at <= window_end,
+            )
+        max_rows = 500
+    else:
+        max_rows = 2000
 
     rows = (
-        db.query(BookingLocationPing)
-        .filter(BookingLocationPing.booking_id == booking.id)
-        .order_by(BookingLocationPing.created_at.desc())
-        .limit(2000)
+        query.order_by(BookingLocationPing.created_at.desc())
+        .limit(max_rows)
         .all()
     )
     return list(reversed(rows))

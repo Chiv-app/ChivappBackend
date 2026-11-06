@@ -68,15 +68,23 @@ def can_access_private_file(db: Session, user: User, record: UploadedFile) -> bo
     if not shared_booking_ids:
         return False
 
-    # 1. Referenciado en el contrato de una reserva compartida
+    # 1. Referenciado en el contrato de una reserva compartida:
+    #    - PDF del contrato: accesible en reserva compartida
+    #    - Firmas manuscritas (S-03, WP-08): solo cuando el contrato está firmado por ambas partes
     if (
         db.query(Contract.id)
         .filter(
             Contract.booking_id.in_(shared_booking_ids),
             or_(
-                Contract.musician_signature_url == file_url,
-                Contract.contractor_signature_url == file_url,
                 Contract.contract_pdf_url == file_url,
+                and_(
+                    Contract.contractor_signed.is_(True),
+                    Contract.musician_signed.is_(True),
+                    or_(
+                        Contract.musician_signature_url == file_url,
+                        Contract.contractor_signature_url == file_url,
+                    ),
+                ),
             ),
         )
         .first()
@@ -112,15 +120,13 @@ def can_access_private_file(db: Session, user: User, record: UploadedFile) -> bo
     ):
         return True
 
-    # 4. Firma o plantilla PDF activa del perfil con quien comparte reserva
+    # 4. Plantilla PDF activa del perfil con quien comparte reserva
+    #    (S-03, WP-08: signature_image_url del perfil ya no se expone sin contrato firmado por ambos)
     if owner_musician and (
         db.query(MusicianProfile.id)
         .filter(
             MusicianProfile.id.in_(owner_musician),
-            or_(
-                MusicianProfile.signature_image_url == file_url,
-                MusicianProfile.contract_pdf_url == file_url,
-            ),
+            MusicianProfile.contract_pdf_url == file_url,
         )
         .first()
         is not None

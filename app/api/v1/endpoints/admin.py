@@ -19,6 +19,7 @@ from app.models.user import User, UserRole
 from app.schemas.admin import (
     AdminActivityItem,
     AdminApproveRefund,
+    AdminAuditLogOut,
     AdminBookingCancel,
     AdminBookingDetailOut,
     AdminBookingOut,
@@ -32,6 +33,7 @@ from app.schemas.admin import (
     AdminUserOut,
     AdminUserUpdate,
 )
+from app.services.admin_audit import record_admin_audit
 from app.schemas.contract import ContractOut
 from app.schemas.payment import PaymentOut
 from app.schemas.support import AdminSupportTicketOut, SupportTicketRespond
@@ -274,6 +276,11 @@ def get_admin_stats(
 # ── Users ───────────────────────────────────────────────────────────────────
 
 
+def _escape_like_term(raw: str) -> str:
+    cleaned = raw.strip().lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{cleaned}%"
+
+
 @router.get("/users", response_model=list[AdminUserOut])
 def list_users(
     _: User = Depends(deps.get_current_admin),
@@ -292,18 +299,18 @@ def list_users(
         except ValueError as exc:
             raise HTTPException(400, "Rol inválido") from exc
     if q and q.strip():
-        term = f"%{q.strip().lower()}%"
+        term = _escape_like_term(q)
         query = query.filter(
             or_(
-                func.lower(User.email).like(term),
-                func.lower(User.fullname).like(term),
+                func.lower(User.email).like(term, escape="\\"),
+                func.lower(User.fullname).like(term, escape="\\"),
             )
         )
     if is_verified is not None:
         query = query.filter(User.is_verified.is_(is_verified))
     if is_active is not None:
         query = query.filter(User.is_active.is_(is_active))
-    return query.order_by(User.created_at.desc()).offset(skip).limit(limit).all()
+    return query.order_by(User.created_at.desc(), User.id.asc()).offset(skip).limit(limit).all()
 
 
 @router.patch("/users/{user_id}", response_model=AdminUserOut)
@@ -322,11 +329,21 @@ def update_user(
     if user.role == UserRole.admin and payload.is_active is False:
         raise HTTPException(400, "No se pueden desactivar cuentas admin desde aquí")
 
+    before = {"is_verified": bool(user.is_verified), "is_active": bool(user.is_active)}
     if payload.is_verified is not None:
         user.is_verified = payload.is_verified
     if payload.is_active is not None:
         user.is_active = payload.is_active
 
+    record_admin_audit(
+        db,
+        admin_user=current_admin,
+        action="user.update",
+        target_type="user",
+        target_id=str(user.id),
+        before_state=before,
+        after_state={"is_verified": bool(user.is_verified), "is_active": bool(user.is_active)},
+    )
     db.commit()
     db.refresh(user)
     return user
@@ -349,18 +366,18 @@ def list_musicians(
     if status_filter:
         query = query.filter(MusicianProfile.status == status_filter)
     if q and q.strip():
-        term = f"%{q.strip().lower()}%"
+        term = _escape_like_term(q)
         query = query.filter(
             or_(
-                func.lower(MusicianProfile.stage_name).like(term),
-                func.lower(User.email).like(term),
-                func.lower(User.fullname).like(term),
+                func.lower(MusicianProfile.stage_name).like(term, escape="\\"),
+                func.lower(User.email).like(term, escape="\\"),
+                func.lower(User.fullname).like(term, escape="\\"),
             )
         )
     if status_filter == ProfileStatus.pending_review.value:
-        query = query.order_by(MusicianProfile.submitted_at.asc())
+        query = query.order_by(MusicianProfile.submitted_at.asc(), MusicianProfile.id.asc())
     else:
-        query = query.order_by(MusicianProfile.updated_at.desc())
+        query = query.order_by(MusicianProfile.updated_at.desc(), MusicianProfile.id.asc())
     profiles = query.offset(skip).limit(limit).all()
     return [_musician_admin_out(profile) for profile in profiles]
 
@@ -382,17 +399,17 @@ def list_contractors(
     if status_filter:
         query = query.filter(ContractorProfile.status == status_filter)
     if q and q.strip():
-        term = f"%{q.strip().lower()}%"
+        term = _escape_like_term(q)
         query = query.filter(
             or_(
-                func.lower(User.email).like(term),
-                func.lower(User.fullname).like(term),
+                func.lower(User.email).like(term, escape="\\"),
+                func.lower(User.fullname).like(term, escape="\\"),
             )
         )
     if status_filter == ProfileStatus.pending_review.value:
-        query = query.order_by(ContractorProfile.submitted_at.asc())
+        query = query.order_by(ContractorProfile.submitted_at.asc(), ContractorProfile.id.asc())
     else:
-        query = query.order_by(ContractorProfile.updated_at.desc())
+        query = query.order_by(ContractorProfile.updated_at.desc(), ContractorProfile.id.asc())
     profiles = query.offset(skip).limit(limit).all()
     return [_contractor_admin_out(profile) for profile in profiles]
 
@@ -469,7 +486,7 @@ def get_contractor_admin_detail(
 @router.post("/musicians/{musician_id}/approve", response_model=MusicianProfileAdminOut)
 def approve_musician_profile(
     musician_id: str,
-    _: User = Depends(deps.get_current_admin),
+    current_admin: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
 ):
     musician_uuid = parse_uuid(musician_id, "musician_id")
@@ -488,6 +505,7 @@ def approve_musician_profile(
             detail=f"El perfil está incompleto y no puede publicarse. Faltan: {', '.join(validation.missing_fields)}",
         )
 
+    prev_status = profile.status.value
     profile.status = ProfileStatus.published
     profile.published_at = datetime.utcnow()
     profile.rejection_reason = None
@@ -498,6 +516,15 @@ def approve_musician_profile(
         profile_role="musician",
         profile_id=str(profile.id),
     )
+    record_admin_audit(
+        db,
+        admin_user=current_admin,
+        action="musician_profile.approve",
+        target_type="musician_profile",
+        target_id=str(profile.id),
+        before_state={"status": prev_status},
+        after_state={"status": profile.status.value},
+    )
     db.commit()
     db.refresh(profile)
     return _musician_admin_out(profile)
@@ -507,7 +534,7 @@ def approve_musician_profile(
 def reject_musician_profile(
     musician_id: str,
     payload: ProfileReviewAction,
-    _: User = Depends(deps.get_current_admin),
+    current_admin: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
 ):
     musician_uuid = parse_uuid(musician_id, "musician_id")
@@ -520,6 +547,7 @@ def reject_musician_profile(
     }:
         raise HTTPException(status_code=400, detail="El perfil no puede rechazarse en este estado")
 
+    prev_status = profile.status.value
     profile.status = ProfileStatus.rejected
     profile.rejection_reason = payload.rejection_reason or "Perfil rechazado por el administrador."
     notify_profile_rejected(
@@ -528,6 +556,15 @@ def reject_musician_profile(
         profile_role="musician",
         profile_id=str(profile.id),
         reason=profile.rejection_reason,
+    )
+    record_admin_audit(
+        db,
+        admin_user=current_admin,
+        action="musician_profile.reject",
+        target_type="musician_profile",
+        target_id=str(profile.id),
+        before_state={"status": prev_status},
+        after_state={"status": profile.status.value, "rejection_reason": profile.rejection_reason},
     )
     db.commit()
     db.refresh(profile)
@@ -538,7 +575,7 @@ def reject_musician_profile(
 def moderate_musician_profile(
     musician_id: str,
     payload: AdminProfileStatusUpdate,
-    _: User = Depends(deps.get_current_admin),
+    current_admin: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
 ):
     musician_uuid = parse_uuid(musician_id, "musician_id")
@@ -546,6 +583,7 @@ def moderate_musician_profile(
     if not profile:
         raise HTTPException(404, "Perfil de músico no encontrado")
 
+    prev_status = profile.status.value
     if payload.action == "unpublish":
         if profile.status != ProfileStatus.published:
             raise HTTPException(400, "Solo se pueden despublicar perfiles publicados")
@@ -564,6 +602,15 @@ def moderate_musician_profile(
             profile_id=str(profile.id),
         )
 
+    record_admin_audit(
+        db,
+        admin_user=current_admin,
+        action=f"musician_profile.{payload.action}",
+        target_type="musician_profile",
+        target_id=str(profile.id),
+        before_state={"status": prev_status},
+        after_state={"status": profile.status.value, "reason": payload.reason},
+    )
     db.commit()
     db.refresh(profile)
     return _musician_admin_out(profile)
@@ -572,7 +619,7 @@ def moderate_musician_profile(
 @router.post("/contractors/{contractor_id}/approve", response_model=ContractorProfileAdminOut)
 def approve_contractor_profile(
     contractor_id: str,
-    _: User = Depends(deps.get_current_admin),
+    current_admin: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
 ):
     contractor_uuid = parse_uuid(contractor_id, "contractor_id")
@@ -591,6 +638,7 @@ def approve_contractor_profile(
             detail=f"El perfil está incompleto y no puede publicarse. Faltan: {', '.join(validation.missing_fields)}",
         )
 
+    prev_status = profile.status.value
     profile.status = ProfileStatus.published
     profile.published_at = datetime.utcnow()
     profile.rejection_reason = None
@@ -601,6 +649,15 @@ def approve_contractor_profile(
         profile_role="contractor",
         profile_id=str(profile.id),
     )
+    record_admin_audit(
+        db,
+        admin_user=current_admin,
+        action="contractor_profile.approve",
+        target_type="contractor_profile",
+        target_id=str(profile.id),
+        before_state={"status": prev_status},
+        after_state={"status": profile.status.value},
+    )
     db.commit()
     db.refresh(profile)
     return _contractor_admin_out(profile)
@@ -610,7 +667,7 @@ def approve_contractor_profile(
 def reject_contractor_profile(
     contractor_id: str,
     payload: ProfileReviewAction,
-    _: User = Depends(deps.get_current_admin),
+    current_admin: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
 ):
     contractor_uuid = parse_uuid(contractor_id, "contractor_id")
@@ -623,6 +680,7 @@ def reject_contractor_profile(
     }:
         raise HTTPException(status_code=400, detail="El perfil no puede rechazarse en este estado")
 
+    prev_status = profile.status.value
     profile.status = ProfileStatus.rejected
     profile.rejection_reason = payload.rejection_reason or "Perfil rechazado por el administrador."
     notify_profile_rejected(
@@ -631,6 +689,15 @@ def reject_contractor_profile(
         profile_role="contractor",
         profile_id=str(profile.id),
         reason=profile.rejection_reason,
+    )
+    record_admin_audit(
+        db,
+        admin_user=current_admin,
+        action="contractor_profile.reject",
+        target_type="contractor_profile",
+        target_id=str(profile.id),
+        before_state={"status": prev_status},
+        after_state={"status": profile.status.value, "rejection_reason": profile.rejection_reason},
     )
     db.commit()
     db.refresh(profile)
@@ -644,7 +711,7 @@ def reject_contractor_profile(
 def moderate_contractor_profile(
     contractor_id: str,
     payload: AdminProfileStatusUpdate,
-    _: User = Depends(deps.get_current_admin),
+    current_admin: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
 ):
     contractor_uuid = parse_uuid(contractor_id, "contractor_id")
@@ -652,6 +719,7 @@ def moderate_contractor_profile(
     if not profile:
         raise HTTPException(404, "Perfil de contratista no encontrado")
 
+    prev_status = profile.status.value
     if payload.action == "unpublish":
         if profile.status != ProfileStatus.published:
             raise HTTPException(400, "Solo se pueden despublicar perfiles publicados")
@@ -670,6 +738,15 @@ def moderate_contractor_profile(
             profile_id=str(profile.id),
         )
 
+    record_admin_audit(
+        db,
+        admin_user=current_admin,
+        action=f"contractor_profile.{payload.action}",
+        target_type="contractor_profile",
+        target_id=str(profile.id),
+        before_state={"status": prev_status},
+        after_state={"status": profile.status.value, "reason": payload.reason},
+    )
     db.commit()
     db.refresh(profile)
     return _contractor_admin_out(profile)
@@ -701,21 +778,21 @@ def list_bookings(
         # p. ej. "pending_approval": cancelaciones con reembolso por aprobar.
         query = query.filter(Booking.cancellation_refund_status == refund_status)
     if q and q.strip():
-        term = f"%{q.strip().lower()}%"
+        term = _escape_like_term(q)
         query = (
             query.join(MusicianProfile, Booking.musician_id == MusicianProfile.id)
             .join(User, MusicianProfile.user_id == User.id)
             .filter(
                 or_(
-                    func.lower(Booking.event_type).like(term),
-                    func.lower(Booking.location_city).like(term),
-                    func.lower(Booking.location_address).like(term),
-                    func.lower(MusicianProfile.stage_name).like(term),
-                    func.lower(User.email).like(term),
+                    func.lower(Booking.event_type).like(term, escape="\\"),
+                    func.lower(Booking.location_city).like(term, escape="\\"),
+                    func.lower(Booking.location_address).like(term, escape="\\"),
+                    func.lower(MusicianProfile.stage_name).like(term, escape="\\"),
+                    func.lower(User.email).like(term, escape="\\"),
                 )
             )
         )
-    bookings = query.order_by(Booking.updated_at.desc()).offset(skip).limit(limit).all()
+    bookings = query.order_by(Booking.updated_at.desc(), Booking.id.asc()).offset(skip).limit(limit).all()
     return [_booking_admin_out(booking) for booking in bookings]
 
 
@@ -833,13 +910,14 @@ def get_booking_admin_contract_pdf(
 def cancel_booking_admin(
     booking_id: str,
     payload: AdminBookingCancel,
-    _: User = Depends(deps.get_current_admin),
+    current_admin: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
 ):
     booking = _load_booking_with_parties(db, booking_id, for_update=True)
     if booking.status in {BookingStatus.completed, BookingStatus.cancelled}:
         raise HTTPException(400, "Esta reserva ya está cerrada")
 
+    prev_status = booking.status.value
     quote = quote_cancellation(db, booking, "admin", admin_refund_percent=payload.refund_percent)
     record_cancellation(booking, quote, approved=True)
     if payload.reason:
@@ -884,6 +962,19 @@ def cancel_booking_admin(
             by_role="admin",
         )
 
+    record_admin_audit(
+        db,
+        admin_user=current_admin,
+        action="booking.cancel",
+        target_type="booking",
+        target_id=str(booking.id),
+        before_state={"status": prev_status},
+        after_state={
+            "status": booking.status.value,
+            "refund_percent": payload.refund_percent,
+            "reason": payload.reason,
+        },
+    )
     db.commit()
     if booking.cancellation_refund_status == "processing":
         execute_cancellation_refund(db, booking)
@@ -895,7 +986,7 @@ def cancel_booking_admin(
 def approve_refund(
     booking_id: str,
     payload: AdminApproveRefund,
-    _: User = Depends(deps.get_current_admin),
+    current_admin: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
 ):
     """Aprueba (y ejecuta en Mercado Pago) el reembolso de una cancelación.
@@ -903,10 +994,24 @@ def approve_refund(
     booking = _load_booking_with_parties(db, booking_id, for_update=True)
     if booking.status != BookingStatus.cancelled or booking.cancellation_refund_status != "pending_approval":
         raise HTTPException(400, "Esta reserva no tiene un reembolso pendiente de aprobación")
+    prev_refund_status = booking.cancellation_refund_status
     try:
         approve_cancellation_refund(db, booking, payload.amount)
     except ValueError as exc:
         raise HTTPException(400, detail=str(exc)) from exc
+    record_admin_audit(
+        db,
+        admin_user=current_admin,
+        action="booking.approve_refund",
+        target_type="booking",
+        target_id=str(booking.id),
+        before_state={"cancellation_refund_status": prev_refund_status},
+        after_state={
+            "cancellation_refund_status": booking.cancellation_refund_status,
+            "cancellation_refund_amount": float(booking.cancellation_refund_amount or 0),
+        },
+    )
+    db.commit()
     db.refresh(booking)
     return _booking_admin_out(booking)
 
@@ -914,14 +1019,25 @@ def approve_refund(
 @router.post("/bookings/{booking_id}/retry-refund", response_model=AdminBookingOut)
 def retry_cancellation_refund(
     booking_id: str,
-    _: User = Depends(deps.get_current_admin),
+    current_admin: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
 ):
     """Reintenta un reembolso de cancelación que falló en Mercado Pago."""
     booking = _load_booking_with_parties(db, booking_id, for_update=True)
     if booking.status != BookingStatus.cancelled or booking.cancellation_refund_status not in {"failed", "processing"}:
         raise HTTPException(400, "Esta reserva no tiene un reembolso pendiente")
+    prev_refund_status = booking.cancellation_refund_status
     execute_cancellation_refund(db, booking)
+    record_admin_audit(
+        db,
+        admin_user=current_admin,
+        action="booking.retry_refund",
+        target_type="booking",
+        target_id=str(booking.id),
+        before_state={"cancellation_refund_status": prev_refund_status},
+        after_state={"cancellation_refund_status": booking.cancellation_refund_status},
+    )
+    db.commit()
     db.refresh(booking)
     return _booking_admin_out(booking)
 
@@ -929,12 +1045,20 @@ def retry_cancellation_refund(
 @router.post("/bookings/{booking_id}/disable-share", response_model=AdminBookingOut)
 def disable_booking_share(
     booking_id: str,
-    _: User = Depends(deps.get_current_admin),
+    current_admin: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
 ):
     booking = _load_booking_with_parties(db, booking_id)
     booking.share_enabled = False
     booking.share_enabled_at = None
+    record_admin_audit(
+        db,
+        admin_user=current_admin,
+        action="booking.disable_share",
+        target_type="booking",
+        target_id=str(booking.id),
+        after_state={"share_enabled": False},
+    )
     db.commit()
     db.refresh(booking)
     return _booking_admin_out(booking)
@@ -943,7 +1067,7 @@ def disable_booking_share(
 @router.post("/bookings/{booking_id}/force-complete", response_model=AdminBookingOut)
 def force_complete_booking_admin(
     booking_id: str,
-    _: User = Depends(deps.get_current_admin),
+    current_admin: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
 ):
     """Permite al administrador cerrar reservas con evento pasado (>=48h) sin queja abierta (BUG5-08 / SEC5-12)."""
@@ -985,8 +1109,18 @@ def force_complete_booking_admin(
             "No se puede forzar el cierre mientras exista una queja abierta sobre la reserva.",
         )
 
+    prev_status = booking.status.value
     booking.status = BookingStatus.completed
     _disable_share(booking)
+    record_admin_audit(
+        db,
+        admin_user=current_admin,
+        action="booking.force_complete",
+        target_type="booking",
+        target_id=str(booking.id),
+        before_state={"status": prev_status},
+        after_state={"status": booking.status.value},
+    )
     db.commit()
     db.refresh(booking)
     return _booking_admin_out(booking)
@@ -1016,7 +1150,7 @@ def list_payments(
             query = query.filter(Payment.status == PaymentStatus(status_filter))
         except ValueError as exc:
             raise HTTPException(400, "Estado de pago inválido") from exc
-    payments = query.order_by(Payment.created_at.desc()).offset(skip).limit(limit).all()
+    payments = query.order_by(Payment.created_at.desc(), Payment.id.asc()).offset(skip).limit(limit).all()
     return [_payment_admin_out(payment) for payment in payments]
 
 
@@ -1040,6 +1174,7 @@ def refund_flagged_payment_admin(
     if not meta.get("needs_refund"):
         raise HTTPException(400, "Este pago no está marcado para reembolso directo")
 
+    prev_status = payment.status.value
     can_auto_refund = bool(payment.gateway_payment_id and settings.MERCADO_PAGO_ACCESS_TOKEN.strip())
     if can_auto_refund:
         try:
@@ -1067,6 +1202,15 @@ def refund_flagged_payment_admin(
     meta["refunded_by_admin"] = current_admin.email
     meta["refunded_at"] = datetime.utcnow().isoformat()
     payment.gateway_metadata = meta
+    record_admin_audit(
+        db,
+        admin_user=current_admin,
+        action="payment.refund_flagged",
+        target_type="payment",
+        target_id=str(payment.id),
+        before_state={"status": prev_status},
+        after_state={"status": payment.status.value, "amount": float(payment.amount)},
+    )
     db.commit()
     db.refresh(payment)
     return _payment_admin_out(payment)
@@ -1116,18 +1260,28 @@ def get_admin_payment_instructions(
 @router.put("/payment-instructions", response_model=PlatformPaymentInstructionsOut)
 def update_admin_payment_instructions(
     payload: PlatformPaymentInstructionsUpdate,
-    _: User = Depends(deps.get_current_admin),
+    current_admin: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
 ):
     from app.services.platform_payment import get_or_create_platform_payment_settings
 
     row = get_or_create_platform_payment_settings(db)
+    prev_fee = float(row.platform_fee_percent or 0)
     row.phone_number = payload.phone_number.strip()
     row.phone_label = (payload.phone_label or "Yape / Plin").strip()
     row.account_name = (payload.account_name or "").strip() or None
     row.qr_image_url = payload.qr_image_url
     row.instructions = payload.instructions
     row.platform_fee_percent = payload.platform_fee_percent
+    record_admin_audit(
+        db,
+        admin_user=current_admin,
+        action="payment_instructions.update",
+        target_type="platform_payment_settings",
+        target_id=str(row.id),
+        before_state={"platform_fee_percent": prev_fee},
+        after_state={"platform_fee_percent": float(row.platform_fee_percent or 0)},
+    )
     db.commit()
     db.refresh(row)
     return PlatformPaymentInstructionsOut.model_validate(row)
@@ -1436,6 +1590,14 @@ def settle_admin_booking(
     )
 
     body = payload
+    if body.payout_evidence_url:
+        from app.services.uploads import assert_private_upload_owned
+        assert_private_upload_owned(
+            db,
+            body.payout_evidence_url,
+            current_user.id,
+            label="comprobante de desembolso",
+        )
     booking = db.get(Booking, parse_uuid(booking_id, "booking_id"), with_for_update=True)
     if not booking:
         raise HTTPException(404, "Reserva no encontrada")
@@ -1688,6 +1850,18 @@ def settle_admin_booking(
             contractor_refund=body.contractor_refund,
         )
 
+    record_admin_audit(
+        db,
+        admin_user=current_user,
+        action="settlement.settle",
+        target_type="booking",
+        target_id=str(booking.id),
+        after_state={
+            "musician_amount": float(body.musician_amount),
+            "contractor_refund": float(body.contractor_refund),
+            "payout_reference": body.payout_reference,
+        },
+    )
     db.commit()
 
     released_gross = released_total_for_booking(db, booking.id)
@@ -1766,6 +1940,14 @@ def release_admin_settlement(
     )
 
     body = payload or AdminReleaseSettlement()
+    if body.payout_evidence_url:
+        from app.services.uploads import assert_private_upload_owned
+        assert_private_upload_owned(
+            db,
+            body.payout_evidence_url,
+            current_user.id,
+            label="comprobante de desembolso",
+        )
     booking = db.get(Booking, parse_uuid(booking_id, "booking_id"), with_for_update=True)
     if not booking:
         raise HTTPException(404, "Reserva no encontrada")
@@ -1849,6 +2031,17 @@ def release_admin_settlement(
             contractor_refund=0.0,
         )
 
+    record_admin_audit(
+        db,
+        admin_user=current_user,
+        action="settlement.release",
+        target_type="booking",
+        target_id=str(booking.id),
+        after_state={
+            "musician_amount": float(musician_amount),
+            "payout_reference": body.payout_reference,
+        },
+    )
     db.commit()
 
     released_gross = released_total_for_booking(db, booking.id)
@@ -1933,6 +2126,14 @@ def send_admin_refund_transfer(
     )
 
     body = payload
+    if body.evidence_url:
+        from app.services.uploads import assert_private_upload_owned
+        assert_private_upload_owned(
+            db,
+            body.evidence_url,
+            current_user.id,
+            label="comprobante de devolución",
+        )
     booking = db.get(Booking, parse_uuid(booking_id, "booking_id"))
     if not booking:
         raise HTTPException(404, "Reserva no encontrada")
@@ -2009,6 +2210,17 @@ def send_admin_refund_transfer(
             amount=refund_amount,
         )
 
+    record_admin_audit(
+        db,
+        admin_user=current_user,
+        action="settlement.refund_transfer",
+        target_type="booking",
+        target_id=str(booking.id),
+        after_state={
+            "refund_amount": float(refund_amount),
+            "evidence_url": evidence,
+        },
+    )
     db.commit()
     db.refresh(complaint)
 
@@ -2226,6 +2438,14 @@ def respond_support_ticket(
     ticket.status = new_status
     ticket.responded_by_admin_id = current_admin.id
     ticket.responded_at = datetime.utcnow()
+    record_admin_audit(
+        db,
+        admin_user=current_admin,
+        action="support_ticket.respond",
+        target_type="support_ticket",
+        target_id=str(ticket.id),
+        after_state={"status": new_status.value},
+    )
     db.commit()
     db.refresh(ticket)
     return _support_ticket_admin_out(ticket)
@@ -2451,6 +2671,15 @@ def process_admin_payout_request(
             meta={"payout_request_id": str(req.id), "status": "processed"},
         )
 
+    record_admin_audit(
+        db,
+        admin_user=current_admin,
+        action="payout_request.process",
+        target_type="payout_request",
+        target_id=str(req.id),
+        before_state={"status": "pending"},
+        after_state={"status": "processed", "amount": float(req.amount or 0)},
+    )
     db.commit()
     db.refresh(req)
     return _serialize_admin_payout_request(req, musician)
@@ -2460,7 +2689,7 @@ def process_admin_payout_request(
 def reject_admin_payout_request(
     request_id: str,
     payload: AdminPayoutRequestAction | None = None,
-    _: User = Depends(deps.get_current_admin),
+    current_admin: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
 ):
     from app.models.booking_complaint import BookingComplaint
@@ -2507,7 +2736,45 @@ def reject_admin_payout_request(
             meta={"payout_request_id": str(req.id), "status": "rejected"},
         )
 
+    record_admin_audit(
+        db,
+        admin_user=current_admin,
+        action="payout_request.reject",
+        target_type="payout_request",
+        target_id=str(req.id),
+        before_state={"status": "pending"},
+        after_state={"status": "rejected", "notes": body.notes},
+    )
     db.commit()
     db.refresh(req)
     return _serialize_admin_payout_request(req, musician)
+
+
+@router.get("/audit-logs", response_model=list[AdminAuditLogOut])
+def list_admin_audit_logs(
+    action: str | None = Query(default=None),
+    target_type: str | None = Query(default=None),
+    target_id: str | None = Query(default=None),
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+    _: User = Depends(deps.get_current_admin),
+    db: Session = Depends(deps.get_db),
+):
+    from app.models.admin_audit_log import AdminAuditLog
+
+    query = db.query(AdminAuditLog)
+    if action:
+        query = query.filter(AdminAuditLog.action == action)
+    if target_type:
+        query = query.filter(AdminAuditLog.target_type == target_type)
+    if target_id:
+        query = query.filter(AdminAuditLog.target_id == target_id)
+    rows = (
+        query.order_by(AdminAuditLog.created_at.desc(), AdminAuditLog.id.asc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+    return [AdminAuditLogOut.model_validate(row, from_attributes=True) for row in rows]
+
 

@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from pydantic import field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     JWT_SECRET_KEY: str
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+    # Claves separadas de dominio para HMAC de OTP y cifrado Fernet de Google Calendar (WP-11).
+    # Si están vacías, se derivan criptográficamente con separación de dominio desde JWT_SECRET_KEY.
+    OTP_SECRET_KEY: str = ""
+    GOOGLE_CALENDAR_TOKEN_KEY: str = ""
 
     BACKEND_CORS_ORIGINS: Annotated[list[str], NoDecode] = [
         "https://chiv.app",
@@ -78,13 +82,15 @@ class Settings(BaseSettings):
     # Parámetros de costo de pasarela Mercado Pago Perú (WP-06: centralizados en configuración).
     GATEWAY_FEE_RATE: float = 0.0412
     GATEWAY_FIXED_FEE_PEN: float = 1.18
+    # Retención de historial de ubicación en vivo en días (S-05 / WP-08).
+    LOCATION_PING_RETENTION_DAYS: int = 7
 
     # Política de cancelación (cuando cancela el contratista con el pago retenido).
     # Días de anticipación al evento -> % de reembolso sobre la TARIFA del músico
     # (la comisión de la plataforma y el costo de la pasarela nunca se reembolsan).
-    CANCEL_FULL_REFUND_MIN_DAYS: int = 15  # 15 días o más: 100 %
-    CANCEL_PARTIAL_REFUND_MIN_DAYS: int = 7  # entre 7 y 14 días: % parcial
-    CANCEL_PARTIAL_REFUND_PERCENT: int = 50  # menos de 7 días: 0 %
+    CANCEL_FULL_REFUND_MIN_DAYS: int = Field(default=15, ge=0, le=365)  # 15 días o más: 100 %
+    CANCEL_PARTIAL_REFUND_MIN_DAYS: int = Field(default=7, ge=0, le=365)  # entre 7 y 14 días: % parcial
+    CANCEL_PARTIAL_REFUND_PERCENT: int = Field(default=50, ge=0, le=100)  # menos de 7 días: 0 %
 
     # Google Cloud Storage
     GCP_BUCKET_NAME: str = ""
@@ -120,6 +126,10 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_production_security(self):
+        if self.CANCEL_FULL_REFUND_MIN_DAYS < self.CANCEL_PARTIAL_REFUND_MIN_DAYS:
+            raise ValueError(
+                "CANCEL_FULL_REFUND_MIN_DAYS debe ser mayor o igual que CANCEL_PARTIAL_REFUND_MIN_DAYS."
+            )
         if self.is_production:
             secret = (self.JWT_SECRET_KEY or "").strip()
             lower_secret = secret.lower()

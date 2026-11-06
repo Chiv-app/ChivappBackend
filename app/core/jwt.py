@@ -1,3 +1,5 @@
+import time
+import uuid
 from datetime import datetime, timedelta
 
 from jose import JWTError, jwt
@@ -5,6 +7,33 @@ from jose import JWTError, jwt
 from app.core.config import settings
 
 SESSION_TYP = "access"
+_REVOKED_JTIS: dict[str, float] = {}
+_MAX_REVOKED_JTIS = 4096
+
+
+def revoke_token_jti(jti: str | None, *, ttl_seconds: int = 7200) -> None:
+    if not jti:
+        return
+    now = time.monotonic()
+    if len(_REVOKED_JTIS) >= _MAX_REVOKED_JTIS:
+        expired = [k for k, exp in _REVOKED_JTIS.items() if exp <= now]
+        for k in expired:
+            _REVOKED_JTIS.pop(k, None)
+        while len(_REVOKED_JTIS) >= _MAX_REVOKED_JTIS:
+            _REVOKED_JTIS.pop(next(iter(_REVOKED_JTIS)), None)
+    _REVOKED_JTIS[jti] = now + max(ttl_seconds, 60)
+
+
+def is_jti_revoked(jti: str | None) -> bool:
+    if not jti:
+        return False
+    exp = _REVOKED_JTIS.get(jti)
+    if exp is None:
+        return False
+    if time.monotonic() > exp:
+        _REVOKED_JTIS.pop(jti, None)
+        return False
+    return True
 
 
 def _encode(payload: dict) -> str:
@@ -17,7 +46,16 @@ def create_access_token(subject: str, role: str, version: int = 0) -> str:
     expire = datetime.utcnow() + timedelta(
         minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
     )
-    return _encode({"sub": subject, "role": role, "ver": version, "typ": SESSION_TYP, "exp": expire})
+    return _encode(
+        {
+            "sub": subject,
+            "role": role,
+            "ver": version,
+            "typ": SESSION_TYP,
+            "jti": uuid.uuid4().hex,
+            "exp": expire,
+        }
+    )
 
 
 def create_magic_token(subject: str, redirect_to: str, version: int = 0) -> str:
@@ -56,11 +94,13 @@ def decode_access_token(token: str) -> dict | None:
 
 def decode_session_token(token: str) -> dict | None:
     """Decodifica un token de sesión. Exige explícitamente `typ == 'access'` y
-    rechaza magic links, estados OAuth y tokens pendientes."""
+    rechaza magic links, estados OAuth, tokens pendientes y JTIs revocados."""
     payload = decode_access_token(token)
     if not payload or payload.get("magic"):
         return None
     if payload.get("typ") != SESSION_TYP:
+        return None
+    if is_jti_revoked(payload.get("jti")):
         return None
     return payload
 

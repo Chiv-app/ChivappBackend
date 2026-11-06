@@ -38,6 +38,12 @@ _MANAGED_CUSTOM_INDEXES = {
     "ix_support_ticket_status",
     "ix_payout_request_musician_id",
     "uq_musician_profile_slug",
+    "ix_booking_contractor_created_at",
+    "ix_booking_musician_event_date_status",
+    "ix_booking_status_updated_at",
+    "ix_notification_user_read_created_at",
+    "ix_payment_booking_id",
+    "ix_musician_availability_musician_id",
 }
 
 _PRESERVED_LEGACY_COLUMNS = {

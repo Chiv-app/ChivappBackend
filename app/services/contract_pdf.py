@@ -320,14 +320,38 @@ def _render_html_document(
 </html>"""
 
 
+from collections import OrderedDict
+import threading
+
+_PDF_RENDER_CACHE: OrderedDict[str, bytes] = OrderedDict()
+_PDF_RENDER_CACHE_MAX_ITEMS = 64
+_PDF_RENDER_CACHE_LOCK = threading.Lock()
+_PDF_RENDER_SEMAPHORE = threading.BoundedSemaphore(4)
+
+
 def _pdf_bytes_from_html(html: str) -> bytes:
-    buffer = BytesIO()
-    result = pisa.CreatePDF(
-        html, dest=buffer, encoding="utf-8", link_callback=_deny_external_resources
-    )
-    if result.err:
-        raise RuntimeError("No se pudo generar el PDF del contrato")
-    return buffer.getvalue()
+    cache_key = hashlib.sha256(html.encode("utf-8")).hexdigest()
+    with _PDF_RENDER_CACHE_LOCK:
+        cached = _PDF_RENDER_CACHE.get(cache_key)
+        if cached is not None:
+            _PDF_RENDER_CACHE.move_to_end(cache_key)
+            return cached
+
+    with _PDF_RENDER_SEMAPHORE:
+        buffer = BytesIO()
+        result = pisa.CreatePDF(
+            html, dest=buffer, encoding="utf-8", link_callback=_deny_external_resources
+        )
+        if result.err:
+            raise RuntimeError("No se pudo generar el PDF del contrato")
+        pdf_bytes = buffer.getvalue()
+
+    with _PDF_RENDER_CACHE_LOCK:
+        _PDF_RENDER_CACHE[cache_key] = pdf_bytes
+        _PDF_RENDER_CACHE.move_to_end(cache_key)
+        while len(_PDF_RENDER_CACHE) > _PDF_RENDER_CACHE_MAX_ITEMS:
+            _PDF_RENDER_CACHE.popitem(last=False)
+    return pdf_bytes
 
 
 def _write_pdf_bytes(filename_prefix: str, pdf_bytes: bytes) -> str:
@@ -535,11 +559,12 @@ def render_contract_pdf_bytes(
                 if peru_signed_at
                 else signed_at.strftime("%d/%m/%Y %H:%M")
             )
+            safe_sign_ip = html_escape(str(sign_ip)) if sign_ip else ""
             acceptance_lines = [
                 "<b>Aceptación de términos y condiciones</b>",
                 (
-                    f"El cliente aceptó digitalmente este contrato el {signed_at_label}"
-                    + (f" (IP: {sign_ip})." if sign_ip else ".")
+                    f"El cliente aceptó digitalmente este contrato el {html_escape(signed_at_label)}"
+                    + (f" (IP: {safe_sign_ip})." if safe_sign_ip else ".")
                 ),
             ]
         pdf_title = f"{title} (firmado)"

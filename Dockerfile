@@ -45,4 +45,7 @@ USER appuser
 
 EXPOSE 8080
 
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:${PORT:-8080}/health || exit 1
+
 CMD ["sh", "-c", "python -m app.db.alembic_bootstrap && alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080} --workers 1"]

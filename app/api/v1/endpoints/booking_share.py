@@ -291,8 +291,20 @@ async def upload_public_share_file(
     )
     if existing_count >= MAX_PUBLIC_SHARE_REVIEWS_PER_BOOKING:
         raise HTTPException(status_code=400, detail="Se alcanzó el límite de reacciones para este evento.")
+    contractor = (
+        db.query(ContractorProfile)
+        .filter(ContractorProfile.id == booking.contractor_id)
+        .first()
+    )
+    owner_user_id = contractor.user_id if contractor else None
     try:
-        url = await save_upload(file)
+        url = await save_upload(
+            file,
+            private=False,
+            owner_id=owner_user_id,
+            db=db,
+            allow_pdf=False,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"url": url}
