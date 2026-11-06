@@ -68,17 +68,63 @@ def sync_booking_platform_fee(
     booking.platform_fee_amount = compute_platform_fee_amount(price, percent)
 
 
-def compute_contractor_payable_total(price: Decimal, fee_percent: Decimal) -> Decimal:
+def compute_contractor_payable_total(
+    price: Decimal,
+    fee_percent: Decimal,
+    *,
+    gateway_fee_rate: Decimal | None = None,
+    gateway_fixed_fee: Decimal | None = None,
+) -> Decimal:
+    from app.core.config import settings
+
     M = Decimal(str(price))
     g_percent = Decimal(str(fee_percent))
     g = g_percent / Decimal("100")
-    
-    # Mercado Pago variables (Peru)
-    F = Decimal("1.18")
-    p = Decimal("0.0412")
-    
+
+    # Mercado Pago variables (Peru) from central settings
+    F = gateway_fixed_fee if gateway_fixed_fee is not None else Decimal(str(settings.GATEWAY_FIXED_FEE_PEN))
+    p = gateway_fee_rate if gateway_fee_rate is not None else Decimal(str(settings.GATEWAY_FEE_RATE))
+
     c_unico = (M * (Decimal("1") + g) + F) / (Decimal("1") - p)
     return c_unico.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def compute_platform_commission_amount(price: Decimal, fee_percent: Decimal) -> Decimal:
+    """Comisión pura de servicio de Chivapp (p. ej. 2 % de la tarifa del artista)."""
+    if price <= 0 or fee_percent < 0:
+        return Decimal("0.00")
+    M = Decimal(str(price))
+    g = Decimal(str(fee_percent)) / Decimal("100")
+    return (M * g).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def compute_gateway_fee_estimated(price: Decimal, fee_percent: Decimal) -> Decimal:
+    """Costo estimado de pasarela (total a pagar - tarifa - comisión de servicio)."""
+    if price <= 0:
+        return Decimal("0.00")
+    total = compute_contractor_payable_total(price, fee_percent)
+    commission = compute_platform_commission_amount(price, fee_percent)
+    return max(total - Decimal(str(price)) - commission, Decimal("0.00")).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP
+    )
+
+
+def platform_commission_amount(booking: Booking) -> Decimal | None:
+    if booking.price_agreed is None:
+        return None
+    return compute_platform_commission_amount(
+        Decimal(str(booking.price_agreed)),
+        Decimal(str(booking.platform_fee_percent or 0)),
+    )
+
+
+def gateway_fee_estimated(booking: Booking) -> Decimal | None:
+    if booking.price_agreed is None:
+        return None
+    return compute_gateway_fee_estimated(
+        Decimal(str(booking.price_agreed)),
+        Decimal(str(booking.platform_fee_percent or 0)),
+    )
 
 def contractor_payable_total(booking: Booking) -> Decimal | None:
     if booking.price_agreed is None:

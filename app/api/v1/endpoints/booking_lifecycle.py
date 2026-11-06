@@ -394,6 +394,8 @@ def start_event_phase(
         detail="Solo puedes iniciar el evento dentro de las 2 horas previas a la hora pactada.",
     )
 
+    if booking.status == BookingStatus.change_pending:
+        clear_pending_changes(booking)
     booking.status = BookingStatus.in_progress
     other = (
         _musician_user(db, booking)
@@ -459,6 +461,7 @@ def create_booking_review(
 
     if booking.status not in {
         BookingStatus.payment_retained,
+        BookingStatus.change_pending,
         BookingStatus.in_progress,
         BookingStatus.payment_released,
     }:
@@ -470,7 +473,8 @@ def create_booking_review(
         booking,
         detail="Las reseñas se habilitan una vez llegada la fecha y hora del evento.",
     )
-    if booking.status == BookingStatus.payment_retained:
+    if booking.status in {BookingStatus.payment_retained, BookingStatus.change_pending}:
+        clear_pending_changes(booking)
         booking.status = BookingStatus.in_progress
 
     is_final = bool(payload.is_final)
@@ -588,6 +592,7 @@ def create_final_booking_review(
 
         if booking.status not in {
             BookingStatus.payment_retained,
+            BookingStatus.change_pending,
             BookingStatus.in_progress,
             BookingStatus.payment_released,
         }:
@@ -595,10 +600,13 @@ def create_final_booking_review(
                 400,
                 "Las quejas se habilitan después de confirmar el pago e iniciar el evento",
             )
-        assert_event_finished(
+        assert_event_started(
             booking,
-            detail="Las quejas y el cierre del evento se habilitan una vez finalizado el horario del evento.",
+            tolerance_minutes=0,
+            detail="Las quejas y reportes de no presentación se habilitan una vez llegada la hora de inicio del evento.",
         )
+        if booking.status == BookingStatus.change_pending:
+            clear_pending_changes(booking)
 
         complaint = (
             db.query(BookingComplaint)
@@ -708,6 +716,90 @@ def create_final_booking_review(
             if hasattr(review_out, "model_dump")
             else review_out
         ),
+    }
+
+
+@router.post("/{booking_id}/report-no-show")
+def report_musician_no_show(
+    booking_id: str,
+    payload: dict | None = None,
+    current_user: User = Depends(deps.get_current_user),
+    db: Session = Depends(deps.get_db),
+):
+    """
+    WP-04 (Paso 5): Permite al contratista reportar que el músico no se presentó
+    una vez llegada la hora de inicio del evento, abriendo una queja que congela
+    la liquidación y habilita el reembolso de hasta el 100 % de la tarifa.
+    """
+    from app.models.booking_complaint import BookingComplaint, BookingComplaintStatus
+    from app.services.settlement import serialize_complaint
+
+    booking = get_booking_or_404(db, booking_id)
+    assert_booking_contractor_owner(db, booking, current_user)
+
+    if booking.status not in {
+        BookingStatus.payment_retained,
+        BookingStatus.change_pending,
+        BookingStatus.in_progress,
+        BookingStatus.payment_released,
+        BookingStatus.completed,
+    }:
+        raise HTTPException(
+            400,
+            "Solo puedes reportar inasistencia en una reserva con pago confirmado.",
+        )
+
+    assert_event_started(
+        booking,
+        tolerance_minutes=0,
+        detail="Solo puedes reportar que el músico no se presentó una vez llegada la hora de inicio del evento.",
+    )
+
+    if booking.status == BookingStatus.change_pending:
+        clear_pending_changes(booking)
+
+    extra_detail = ""
+    evidence_url = None
+    if isinstance(payload, dict):
+        extra_detail = str(payload.get("reason") or payload.get("details") or "").strip()
+        evidence_url = payload.get("evidence_url")
+
+    reason_text = (
+        f"[NO-SHOW] El músico no se presentó al evento. {extra_detail}".strip()
+        if extra_detail
+        else "[NO-SHOW] El músico no se presentó al evento en el horario pactado."
+    )
+
+    complaint = (
+        db.query(BookingComplaint)
+        .filter(BookingComplaint.booking_id == booking.id)
+        .first()
+    )
+    if not complaint:
+        complaint = BookingComplaint(
+            booking_id=booking.id,
+            opened_by_user_id=current_user.id,
+            reason=reason_text,
+            evidence_url=evidence_url,
+            status=BookingComplaintStatus.open,
+        )
+        db.add(complaint)
+        db.flush()
+        musician_user = _musician_user(db, booking)
+        notify_complaint_opened(db, musician_user, str(booking.id))
+    elif complaint.status == BookingComplaintStatus.settled:
+        raise HTTPException(400, "La queja de esta reserva ya fue liquidada")
+
+    booking.status = BookingStatus.completed
+    disable_booking_share(booking)
+
+    db.commit()
+    db.refresh(complaint)
+    out = serialize_complaint(complaint)
+    return {
+        "mode": "no_show_complaint",
+        "completed": True,
+        "complaint": out.model_dump(mode="json") if out else None,
     }
 
 
@@ -976,6 +1068,7 @@ def recommend_contractor(
 
     if booking.status not in {
         BookingStatus.payment_retained,
+        BookingStatus.change_pending,
         BookingStatus.in_progress,
         BookingStatus.payment_released,
         BookingStatus.completed,
@@ -988,6 +1081,9 @@ def recommend_contractor(
         booking,
         detail="Solo puedes recomendar al cliente una vez llegada la fecha y hora del evento.",
     )
+    if booking.status == BookingStatus.change_pending:
+        clear_pending_changes(booking)
+        booking.status = BookingStatus.in_progress
 
     existing = (
         db.query(ContractorRecommendation)
@@ -1096,6 +1192,7 @@ def complete_booking(
 
     if booking.status not in {
         BookingStatus.payment_retained,
+        BookingStatus.change_pending,
         BookingStatus.in_progress,
         BookingStatus.payment_released,
     }:
@@ -1104,6 +1201,8 @@ def complete_booking(
             "Aún no puedes finalizar: falta completar la fase de evento. "
             "Revisa el timeline para ver el paso pendiente.",
         )
+    if booking.status == BookingStatus.change_pending:
+        clear_pending_changes(booking)
     assert_event_finished(
         booking,
         detail="No puedes finalizar la reserva antes de que termine el horario del evento.",

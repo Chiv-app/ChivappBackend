@@ -13,6 +13,8 @@ class PlatformPaymentInstructionsOut(BaseModel):
     qr_image_url: str | None = None
     instructions: str | None = None
     platform_fee_percent: float = 0
+    gateway_fee_rate: float = 0.0412
+    gateway_fixed_fee_pen: float = 1.18
     updated_at: datetime | None = None
 
     model_config = {"from_attributes": True}
@@ -27,6 +29,24 @@ class PlatformPaymentInstructionsOut(BaseModel):
     def coerce_fee(cls, value):
         if value is None:
             return 0.0
+        return float(value)
+
+    @field_validator("gateway_fee_rate", mode="before")
+    @classmethod
+    def coerce_gateway_rate(cls, value):
+        from app.core.config import settings
+
+        if value is None:
+            return float(settings.GATEWAY_FEE_RATE)
+        return float(value)
+
+    @field_validator("gateway_fixed_fee_pen", mode="before")
+    @classmethod
+    def coerce_gateway_fixed(cls, value):
+        from app.core.config import settings
+
+        if value is None:
+            return float(settings.GATEWAY_FIXED_FEE_PEN)
         return float(value)
 
 

@@ -255,6 +255,7 @@ def compute_musician_earnings(
     total_app_debt = Decimal("0.00")
     total_disputed = Decimal("0.00")
     total_retained_active = Decimal("0.00")
+    total_chargeback_debt = Decimal("0.00")
     items: list[MusicianEarningsItem] = []
     debts: list[MusicianDebtItem] = []
 
@@ -262,26 +263,38 @@ def compute_musician_earnings(
         booking = booking_by_id.get(payment.booking_id)
         if not booking:
             continue
+        is_refund_row = (payment.payment_type or "").lower() == "refund"
         eff_status = effective_status_by_id[booking.id]
-        amount_dec = musician_portion_of_paid(booking, Decimal(str(payment.amount)))
+        amount_dec = (
+            Decimal(str(payment.amount or 0))
+            if is_refund_row
+            else musician_portion_of_paid(booking, Decimal(str(payment.amount or 0)))
+        )
         amount = float(amount_dec)
-        if payment.status == PaymentStatus.released:
-            total_released += amount_dec
-        elif payment.status == PaymentStatus.retained:
-            total_retained += amount_dec
-            is_fully_culminated = eff_status == BookingStatus.completed
-            if not is_fully_culminated:
-                total_retained_active += amount_dec
-        elif payment.status == PaymentStatus.initiated:
-            is_needs_refund = (
-                isinstance(payment.gateway_metadata, dict)
-                and bool(payment.gateway_metadata.get("needs_refund"))
-            )
-            if (
-                eff_status not in {BookingStatus.cancelled, BookingStatus.completed}
-                and not is_needs_refund
-            ):
-                total_pending += amount_dec
+        meta_dict = payment.gateway_metadata if isinstance(payment.gateway_metadata, dict) else {}
+        if not is_refund_row and meta_dict.get("chargeback_after_release"):
+            rem_cb = Decimal(str(meta_dict.get("musician_chargeback_remaining") or 0))
+            if rem_cb > Decimal("0.00"):
+                total_chargeback_debt += rem_cb
+
+        if not is_refund_row:
+            if payment.status == PaymentStatus.released:
+                total_released += amount_dec
+            elif payment.status == PaymentStatus.retained:
+                total_retained += amount_dec
+                is_fully_culminated = eff_status in {
+                    BookingStatus.completed,
+                    BookingStatus.cancelled,
+                }
+                if not is_fully_culminated:
+                    total_retained_active += amount_dec
+            elif payment.status == PaymentStatus.initiated:
+                is_needs_refund = bool(meta_dict.get("needs_refund"))
+                if (
+                    eff_status not in {BookingStatus.cancelled, BookingStatus.completed}
+                    and not is_needs_refund
+                ):
+                    total_pending += amount_dec
 
         items.append(
             MusicianEarningsItem(
@@ -303,15 +316,23 @@ def compute_musician_earnings(
 
     for booking in bookings:
         eff_status = effective_status_by_id[booking.id]
-        if eff_status == BookingStatus.cancelled:
-            continue
         booking_payments = payments_by_booking.get(booking.id, [])
         retained_gross = sum(
-            (Decimal(str(p.amount or 0)) for p in booking_payments if p.status == PaymentStatus.retained),
+            (
+                Decimal(str(p.amount or 0))
+                for p in booking_payments
+                if p.status == PaymentStatus.retained
+                and (p.payment_type or "").lower() != "refund"
+            ),
             Decimal("0.00"),
         )
         released_gross = sum(
-            (Decimal(str(p.amount or 0)) for p in booking_payments if p.status == PaymentStatus.released),
+            (
+                Decimal(str(p.amount or 0))
+                for p in booking_payments
+                if p.status == PaymentStatus.released
+                and (p.payment_type or "").lower() != "refund"
+            ),
             Decimal("0.00"),
         )
         retained_dec = musician_portion_of_paid(booking, retained_gross)
@@ -339,6 +360,16 @@ def compute_musician_earnings(
             total_app_debt += retained_dec
         elif state in {"disputed", "awaiting_admin"}:
             total_disputed += retained_dec
+
+        latest_released_payment = next(
+            (
+                p
+                for p in booking_payments
+                if p.status == PaymentStatus.released
+                and (p.payment_type or "").lower() != "refund"
+            ),
+            None,
+        )
 
         debts.append(
             MusicianDebtItem(
@@ -368,8 +399,20 @@ def compute_musician_earnings(
                     if complaint and complaint.admin_contractor_refund is not None
                     else None
                 ),
+                released_at=(
+                    latest_released_payment.released_at
+                    if latest_released_payment
+                    else None
+                ),
+                payout_reference=(
+                    latest_released_payment.payout_reference
+                    if latest_released_payment
+                    else None
+                ),
             )
         )
+
+    net_app_debt = max(total_app_debt - total_chargeback_debt, Decimal("0.00"))
 
     pending_payout_out: PayoutRequestOut | None = None
     try:
@@ -382,7 +425,7 @@ def compute_musician_earnings(
             .order_by(PayoutRequest.created_at.desc())
             .first()
         )
-        if pending_req and total_app_debt > 0:
+        if pending_req and net_app_debt > 0:
             pending_payout_out = PayoutRequestOut.model_validate(pending_req)
     except Exception as exc:
         logger.warning("No se pudo consultar payout_request: %s", exc)
@@ -394,9 +437,10 @@ def compute_musician_earnings(
         total_released=float(total_released),
         total_retained=float(total_retained),
         total_pending=float(total_pending),
-        total_app_debt=float(total_app_debt),
+        total_app_debt=float(net_app_debt),
         total_disputed=float(total_disputed),
         total_retained_active=float(total_retained_active),
+        total_chargeback_debt=float(total_chargeback_debt),
         bookings_active=bookings_active,
         bookings_completed=bookings_completed,
         bookings_cancelled=bookings_cancelled,
@@ -482,13 +526,18 @@ def retain_payment(
     db: Session = Depends(deps.get_db),
 ):
     # Solo admin: los pagos se confirman por el webhook de Mercado Pago.
-    payment = _get_payment_or_404(db, payment_id)
-    booking = get_booking_or_404(db, str(payment.booking_id))
+    payment = db.get(Payment, parse_uuid(payment_id, "payment_id"), with_for_update=True)
+    if not payment:
+        raise HTTPException(404, "Pago no encontrado")
+    booking = db.get(Booking, payment.booking_id, with_for_update=True)
+    if not booking:
+        raise HTTPException(404, "Reserva no encontrada")
 
     if payment.status != PaymentStatus.initiated:
         raise HTTPException(400, "El pago no está en estado 'initiated'")
-    if isinstance(payment.gateway_metadata, dict) and payment.gateway_metadata.get("needs_refund"):
-        raise HTTPException(400, "No se puede retener un pago marcado para reembolso o revisión")
+    meta = payment.gateway_metadata if isinstance(payment.gateway_metadata, dict) else {}
+    if meta.get("needs_refund") or meta.get("in_mediation"):
+        raise HTTPException(400, "No se puede retener un pago marcado para reembolso, revisión o mediación")
     if booking.status in {BookingStatus.cancelled, BookingStatus.completed}:
         raise HTTPException(400, "No se puede retener el pago de una reserva cerrada o cancelada")
     if booking.status not in {
@@ -527,17 +576,51 @@ def release_payment(
     current_user: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
 ):
-    # Solo admin: los pagos se confirman por el webhook de Mercado Pago.
-    payment = _get_payment_or_404(db, payment_id)
-    booking = get_booking_or_404(db, str(payment.booking_id))
+    """
+    WP-03 (P-08): Unifica la validación con la liquidación (`settle`).
+    Exige reserva con evento finalizado, sin queja abierta ni mediación activa, y delega en
+    `release_retained_payments` para mantener un único camino de liberación.
+    """
+    from app.models.booking_complaint import BookingComplaint, BookingComplaintStatus
+    from app.services.booking_lifecycle import is_event_finished
+    from app.services.settlement import booking_has_gateway_mediation, release_retained_payments
+
+    payment = db.get(Payment, parse_uuid(payment_id, "payment_id"), with_for_update=True)
+    if not payment:
+        raise HTTPException(404, "Pago no encontrado")
+    booking = db.get(Booking, payment.booking_id, with_for_update=True)
+    if not booking:
+        raise HTTPException(404, "Reserva no encontrada")
 
     if payment.status != PaymentStatus.retained:
         raise HTTPException(400, "El pago debe estar retenido antes de liberarse")
     if booking.status == BookingStatus.cancelled:
         raise HTTPException(400, "Usa el flujo de liquidación para liberar pagos de reservas canceladas")
+    if booking.status != BookingStatus.completed and not is_event_finished(booking):
+        raise HTTPException(400, "No se puede liberar el pago antes de que el evento haya finalizado")
+    if booking_has_gateway_mediation(booking, db):
+        raise HTTPException(
+            400,
+            "No se puede liberar el pago mientras exista una mediación activa en la pasarela.",
+        )
 
-    payment.status = PaymentStatus.released
-    payment.released_at = datetime.utcnow()
+    complaint = (
+        db.query(BookingComplaint)
+        .filter(BookingComplaint.booking_id == booking.id)
+        .first()
+    )
+    if complaint and complaint.status != BookingComplaintStatus.settled:
+        raise HTTPException(
+            400,
+            "Esta reserva tiene un reclamo activo. Liquídala a través del flujo de liquidación.",
+        )
+
+    try:
+        release_retained_payments(db, booking.id)
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(400, str(exc)) from exc
+
     if booking.status != BookingStatus.completed:
         booking.status = BookingStatus.payment_released
 
@@ -642,7 +725,6 @@ def create_mercadopago_preference(
             Payment.booking_id == booking.id,
             Payment.payment_type.is_distinct_from("refund"),
             Payment.status == PaymentStatus.initiated,
-            Payment.gateway_payment_id.isnot(None),
         )
         .all()
     )
@@ -651,6 +733,10 @@ def create_mercadopago_preference(
             p
             for p in in_flight_candidates
             if not (isinstance(p.gateway_metadata, dict) and p.gateway_metadata.get("needs_refund"))
+            and (
+                p.gateway_payment_id is not None
+                or (isinstance(p.gateway_metadata, dict) and p.gateway_metadata.get("in_flight_direct"))
+            )
         ),
         None,
     )
@@ -740,6 +826,37 @@ def create_mercadopago_preference(
             payment_type=payload.payment_type,
             payer_email=payload.payer_email,
         )
+        # WP-05 step 1: Registrar o reutilizar la fila 'initiated' al crear la preferencia de Checkout Pro
+        existing_pref_row = next(
+            (p for p in in_flight_candidates if p.gateway_payment_id is None),
+            None,
+        )
+        pref_meta = {
+            "preference_id": pref.get("preference_id"),
+            "init_point": pref.get("init_point"),
+            "sandbox_init_point": pref.get("sandbox_init_point"),
+            "payment_type": payload.payment_type,
+        }
+        if existing_pref_row:
+            existing_pref_row.amount = Decimal(str(round(total_amount, 2)))
+            existing_pref_row.payment_type = payload.payment_type
+            existing_pref_row.gateway_provider = "mercadopago"
+            existing_pref_row.gateway_preference_id = pref.get("preference_id")
+            existing_pref_row.gateway_metadata = pref_meta
+        else:
+            db.add(
+                Payment(
+                    booking_id=booking.id,
+                    amount=Decimal(str(round(total_amount, 2))),
+                    currency="PEN",
+                    payment_type=payload.payment_type,
+                    status=PaymentStatus.initiated,
+                    gateway_provider="mercadopago",
+                    gateway_preference_id=pref.get("preference_id"),
+                    gateway_metadata=pref_meta,
+                )
+            )
+        db.commit()
         return MercadoPagoPreferenceResponse(**pref)
     except ValueError as exc:
         db.rollback()
@@ -760,7 +877,8 @@ def process_mercadopago_direct_payment(
 ):
     """
     Procesa un pago directo usando el Checkout API de Mercado Pago (Yape nativo o Tarjeta vía Bricks/SDK).
-    Ejecuta el cargo en tiempo real contra /v1/payments y confirma la reserva si es aprobado.
+    WP-05 step 2: Bloquea, valida y persiste el estado 'initiated' con commit ANTES de llamar a Mercado Pago,
+    de modo que no se mantiene FOR UPDATE durante la llamada HTTP externa.
     """
     booking_id = parse_uuid(payload.booking_id, "booking_id")
     booking = db.get(Booking, booking_id, with_for_update=True)
@@ -778,7 +896,6 @@ def process_mercadopago_direct_payment(
             Payment.booking_id == booking.id,
             Payment.payment_type.is_distinct_from("refund"),
             Payment.status == PaymentStatus.initiated,
-            Payment.gateway_payment_id.isnot(None),
         )
         .all()
     )
@@ -787,6 +904,10 @@ def process_mercadopago_direct_payment(
             p
             for p in in_flight_candidates
             if not (isinstance(p.gateway_metadata, dict) and p.gateway_metadata.get("needs_refund"))
+            and (
+                p.gateway_payment_id is not None
+                or (isinstance(p.gateway_metadata, dict) and p.gateway_metadata.get("in_flight_direct"))
+            )
         ),
         None,
     )
@@ -867,6 +988,41 @@ def process_mercadopago_direct_payment(
         if not contract or not contract.contractor_signed:
             raise HTTPException(400, "Debes firmar el contrato antes de realizar el pago")
 
+    # WP-05 step 2: Registrar fila 'initiated' con in_flight_direct=True y hacer commit
+    # para liberar el bloqueo FOR UPDATE antes de la llamada HTTP a Mercado Pago.
+    reusable_init = next(
+        (p for p in in_flight_candidates if p.gateway_payment_id is None),
+        None,
+    )
+    in_flight_meta = {
+        "in_flight_direct": True,
+        "booking_id": str(booking.id),
+        "payment_method": payload.payment_method_id,
+    }
+    if reusable_init:
+        in_flight_payment = reusable_init
+        in_flight_payment.amount = Decimal(str(round(total_amount, 2)))
+        in_flight_payment.payment_type = payload.payment_type
+        in_flight_payment.gateway_provider = "mercadopago"
+        in_flight_payment.gateway_metadata = {
+            **(in_flight_payment.gateway_metadata if isinstance(in_flight_payment.gateway_metadata, dict) else {}),
+            **in_flight_meta,
+        }
+    else:
+        in_flight_payment = Payment(
+            booking_id=booking.id,
+            amount=Decimal(str(round(total_amount, 2))),
+            currency="PEN",
+            payment_type=payload.payment_type,
+            status=PaymentStatus.initiated,
+            gateway_provider="mercadopago",
+            gateway_metadata=in_flight_meta,
+        )
+        db.add(in_flight_payment)
+    db.commit()
+    db.refresh(booking)
+    db.refresh(in_flight_payment)
+
     payment_data = payload.model_dump()
     payment_data["amount"] = total_amount
 
@@ -876,6 +1032,7 @@ def process_mercadopago_direct_payment(
             booking=booking,
             contractor_user=current_user,
             payment_payload=payment_data,
+            in_flight_payment_id=in_flight_payment.id,
         )
         return MercadoPagoProcessPaymentResponse(
             success=res.get("success", False),
@@ -886,6 +1043,17 @@ def process_mercadopago_direct_payment(
         )
     except ValueError as exc:
         db.rollback()
+        try:
+            p_cleanup = db.get(Payment, in_flight_payment.id, with_for_update=True)
+            if p_cleanup and p_cleanup.status == PaymentStatus.initiated and not p_cleanup.gateway_payment_id:
+                p_cleanup.status = PaymentStatus.rejected
+                p_cleanup.rejection_reason = "validation_error"
+                meta_clean = dict(p_cleanup.gateway_metadata or {}) if isinstance(p_cleanup.gateway_metadata, dict) else {}
+                meta_clean["in_flight_direct"] = False
+                p_cleanup.gateway_metadata = meta_clean
+                db.commit()
+        except Exception:
+            db.rollback()
         logger.warning("Error procesando pago directo de Mercado Pago para reserva %s: %s", booking.id, exc)
         msg = str(exc)
         safe_detail = (
@@ -897,6 +1065,60 @@ def process_mercadopago_direct_payment(
             else "No se pudo procesar el pago con la pasarela. Verifica los datos ingresados e inténtalo nuevamente."
         )
         raise HTTPException(400, detail=safe_detail) from exc
+
+
+_SUPPORTED_PAYMENT_TOPICS = {"payment", "payments"}
+_SUPPORTED_MERCHANT_ORDER_TOPICS = {"merchant_order", "merchant_orders"}
+
+
+def _is_supported_webhook_topic(topic: str | None) -> tuple[bool, bool]:
+    """
+    Devuelve (is_supported, is_merchant_order) para el topic/action del webhook de Mercado Pago.
+    Solo se procesan notificaciones de `payment` / `payment.*` y `merchant_order` / `merchant_orders`.
+    Otros avisos (`chargebacks`, `claims`, `topic_merchant_order_wh`, etc.) se ignoran con 200.
+    """
+    if not topic:
+        return True, False
+    norm = str(topic).strip().lower()
+    if norm in _SUPPORTED_MERCHANT_ORDER_TOPICS:
+        return True, True
+    if norm in _SUPPORTED_PAYMENT_TOPICS or norm.startswith("payment."):
+        return True, False
+    return False, False
+
+
+def _alert_invalid_webhook_signature_rate_limited(db: Session, data_id: str) -> None:
+    """Crea una alerta para los administradores por firma inválida con límite de una por hora."""
+    from datetime import datetime, timedelta
+    from app.models.notification import Notification
+    from app.services.booking_notifications import notify_admins
+
+    try:
+        cutoff = datetime.utcnow() - timedelta(hours=1)
+        recent_alert = (
+            db.query(Notification.id)
+            .filter(
+                Notification.type == "webhook_security_alert",
+                Notification.created_at >= cutoff,
+            )
+            .first()
+        )
+        if recent_alert is not None:
+            return
+        notify_admins(
+            db,
+            type="webhook_security_alert",
+            title="Firma inválida en webhook de Mercado Pago",
+            message=(
+                f"Se rechazó una notificación al webhook de Mercado Pago con firma inválida o expirada "
+                f"(data_id: {data_id})."
+            ),
+            meta={"data_id": str(data_id), "reason": "invalid_signature"},
+        )
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.warning("No se pudo registrar alerta de firma inválida de webhook: %s", exc)
 
 
 @router.post("/mercadopago/webhook")
@@ -920,7 +1142,12 @@ def mercadopago_webhook(
     if not data_id:
         data_id = (body_data.get("data") or {}).get("id") or body_data.get("id")
     if not topic:
-        topic = body_data.get("type") or body_data.get("action")
+        topic = body_data.get("type") or body_data.get("topic") or body_data.get("action")
+
+    # P-13: Filtrar tipos de aviso no soportados (claims, chargebacks, etc.) respondiendo 200 ignored
+    is_supported, is_merchant_order = _is_supported_webhook_topic(topic)
+    if not is_supported:
+        return {"status": "ignored", "reason": "unsupported_topic", "topic": str(topic)}
 
     if not data_id:
         return {"status": "ignored", "reason": "no_data_id"}
@@ -934,10 +1161,14 @@ def mercadopago_webhook(
         data_id=str(data_id),
     ):
         logger.warning("Firma inválida o ausente en webhook de Mercado Pago (id: %s)", data_id)
-        return {"status": "ignored", "reason": "invalid_signature"}
+        _alert_invalid_webhook_signature_rate_limited(db, str(data_id))
+        raise HTTPException(
+            status_code=401,
+            detail={"status": "ignored", "reason": "invalid_signature"},
+        )
 
     # Manejo de notificaciones de merchant_order
-    if topic in ("merchant_order", "merchant_orders"):
+    if is_merchant_order:
         try:
             order_details = mercadopago_service.get_merchant_order_details(str(data_id))
             payments = order_details.get("payments") or []
@@ -1023,6 +1254,19 @@ def check_mercadopago_payment_status(
                     mp_status = "rejected"
                 elif recent_payment.status == PaymentStatus.initiated:
                     mp_status = "pending"
+    elif (
+        booking.status in mercadopago_service.PAYABLE_BOOKING_STATUSES
+        and mercadopago_service.is_mercadopago_configured()
+    ):
+        try:
+            reconciled_rows = mercadopago_service.reconcile_booking_payments(db, booking)
+            if reconciled_rows:
+                db.refresh(booking)
+                recent_payment = reconciled_rows[0]
+                if recent_payment.gateway_payment_id:
+                    effective_payment_id = recent_payment.gateway_payment_id
+        except Exception as exc:
+            logger.warning("No se pudo conciliar pagos por external_reference para reserva %s: %s", booking.id, exc)
 
     is_approved = booking.status in (
         BookingStatus.payment_retained,
@@ -1107,16 +1351,23 @@ def request_payout(
         d
         for d in summary.debts
         if d.debt_state == "payable"
-        and d.booking_status == BookingStatus.completed.value
+        and d.booking_status in {BookingStatus.completed.value, BookingStatus.cancelled.value}
         and d.retained_total > 0
     ]
-    amount_dec = sum(
+    gross_eligible_dec = sum(
         (Decimal(str(d.retained_total)) for d in eligible_debts),
         Decimal("0.00"),
     ).quantize(Decimal("0.01"))
+    cb_debt_dec = Decimal(str(summary.total_chargeback_debt or 0)).quantize(Decimal("0.01"))
+    amount_dec = max(gross_eligible_dec - cb_debt_dec, Decimal("0.00")).quantize(Decimal("0.01"))
     amount = float(amount_dec)
 
     if amount <= 0 or not eligible_debts:
+        if eligible_debts and cb_debt_dec >= gross_eligible_dec and cb_debt_dec > Decimal("0.00"):
+            raise HTTPException(
+                400,
+                f"Tu saldo por retirar (S/ {gross_eligible_dec:.2f}) se encuentra cubierto por un descuento pendiente de contracargo (S/ {cb_debt_dec:.2f}).",
+            )
         awaiting_reviews = [
             d for d in summary.debts if d.debt_state == "awaiting_reviews" and d.retained_total > 0
         ]
@@ -1127,7 +1378,7 @@ def request_payout(
             )
         raise HTTPException(
             400,
-            "No tienes saldo disponible para retirar. Solo se pueden desembolsar reservas culminadas donde tanto el contratista como tú hayan dejado su reseña.",
+            "No tienes saldo disponible para retirar. Solo se pueden desembolsar reservas culminadas donde tanto el contratista como tú hayan dejado su reseña (o reservas canceladas con retención a tu favor).",
         )
 
     # Persistir el paso a 'completed' de las reservas elegibles que ya cuentan con ambas reseñas (SEC2-05)

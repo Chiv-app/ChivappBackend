@@ -23,6 +23,7 @@ REQUESTED_EXPIRY_HOURS = 72
 REQUESTED_WARNING_HOURS = 48
 UNPAID_EXPIRY_DAYS = 7
 UNPAID_WARNING_DAYS = 6
+CHANGE_PENDING_EXPIRY_HOURS = 48
 
 
 def _has_notification(db: Session, user_id, notif_type: str, booking_id: str) -> bool:
@@ -112,8 +113,18 @@ def expire_stale_bookings(db: Session, now: datetime | None = None) -> dict[str,
         .filter(Booking.status.in_(unpaid_statuses))
         .all()
     )
+    # Consulta por lote de pagos para todas las reservas candidatas (evita N+1).
+    payments_by_booking: dict = {}
+    if unpaid_bookings:
+        booking_ids = [b.id for b in unpaid_bookings]
+        for p_row in db.query(Payment).filter(Payment.booking_id.in_(booking_ids)).all():
+            payments_by_booking.setdefault(p_row.booking_id, []).append(p_row)
+
+    from app.services import mercadopago_service
+    from app.services.booking_notifications import notify_admins
+
     for b in unpaid_bookings:
-        payments = db.query(Payment).filter(Payment.booking_id == b.id).all()
+        payments = payments_by_booking.get(b.id, [])
         if any(p.status in (PaymentStatus.retained, PaymentStatus.released) for p in payments):
             continue
 
@@ -129,6 +140,49 @@ def expire_stale_bookings(db: Session, now: datetime | None = None) -> dict[str,
         )
 
         if age >= timedelta(days=UNPAID_EXPIRY_DAYS):
+            # P-02 / P-12: Bloquear la reserva y conciliar con Mercado Pago antes de cancelar.
+            locked_b = db.get(Booking, b.id, with_for_update=True)
+            if not locked_b or locked_b.status not in unpaid_statuses:
+                continue
+            b = locked_b
+
+            if mercadopago_service.is_mercadopago_configured():
+                try:
+                    mercadopago_service.reconcile_booking_payments(db, b)
+                    db.refresh(b)
+                except Exception as exc:
+                    logger.warning(
+                        "Error conciliando pagos de Mercado Pago antes de expirar reserva %s: %s",
+                        b_id,
+                        exc,
+                    )
+
+            payments = db.query(Payment).filter(Payment.booking_id == b.id).all()
+            has_paid_or_approved = (
+                b.status not in unpaid_statuses
+                or any(p.status in (PaymentStatus.retained, PaymentStatus.released) for p in payments)
+                or any(
+                    isinstance(p.gateway_metadata, dict) and p.gateway_metadata.get("status") == "approved"
+                    for p in payments
+                )
+            )
+            if has_paid_or_approved:
+                stats["reconciled_unpaid"] = stats.get("reconciled_unpaid", 0) + 1
+                try:
+                    notify_admins(
+                        db,
+                        type="payment_alert",
+                        title="Reserva con pago aprobado detectada antes de expirar",
+                        message=(
+                            f"La reserva #{b_id[:8]} tenía un pago aprobado en Mercado Pago "
+                            f"y no fue cancelada por el cron de expiración."
+                        ),
+                        meta={"booking_id": b_id, "reason": "reconciled_before_expiry"},
+                    )
+                except Exception as exc:
+                    logger.warning("No se pudo alertar a admins sobre reserva conciliada %s: %s", b_id, exc)
+                continue
+
             for p in payments:
                 if p.status == PaymentStatus.initiated:
                     p.status = PaymentStatus.failed
@@ -188,6 +242,92 @@ def expire_stale_bookings(db: Session, now: datetime | None = None) -> dict[str,
                 )
                 if is_guest_contractor:
                     stats["warned_unpaid"] += 1
+
+    # 3. WP-04 (Paso 6): Expirar `change_pending` tras 48 h (o si ya empezó el evento) volviendo a `payment_retained`
+    from app.services.booking_lifecycle import clear_pending_changes, is_event_started
+    from app.models.booking_complaint import BookingComplaint, BookingComplaintStatus
+    from app.services.booking_notifications import notify_admins
+
+    change_pending_bookings = (
+        db.query(Booking)
+        .options(joinedload(Booking.contractor), joinedload(Booking.musician))
+        .filter(Booking.status == BookingStatus.change_pending)
+        .all()
+    )
+    for b in change_pending_bookings:
+        ref_dt = (b.change_requested_at or b.updated_at or b.created_at or now_utc).replace(tzinfo=None)
+        age = now_utc - ref_dt
+        if age >= timedelta(hours=CHANGE_PENDING_EXPIRY_HOURS) or is_event_started(b):
+            clear_pending_changes(b)
+            b.status = BookingStatus.payment_retained
+            stats["expired_change_pending"] = stats.get("expired_change_pending", 0) + 1
+            b_id = str(b.id)
+            contractor_user = b.contractor.user if b.contractor else None
+            musician_user = b.musician.user if b.musician else None
+            if contractor_user:
+                notify_user(
+                    db,
+                    user=contractor_user,
+                    type="booking_change_expired",
+                    title="Solicitud de cambio expirada",
+                    message="La solicitud de cambio expiró sin respuesta; la reserva continúa confirmada con los datos originales.",
+                    booking_id=b_id,
+                )
+            if musician_user:
+                notify_user(
+                    db,
+                    user=musician_user,
+                    type="booking_change_expired",
+                    title="Solicitud de cambio expirada",
+                    message="La solicitud de cambio pendiente expiró; la reserva continúa confirmada con los datos originales.",
+                    booking_id=b_id,
+                )
+
+    # 4. WP-04 (Paso 6): Recordatorios para reembolsos en `pending_approval` (> 24 h) y quejas abiertas sin respuesta (> 24 h)
+    pending_refund_bookings = (
+        db.query(Booking)
+        .filter(
+            Booking.status == BookingStatus.cancelled,
+            Booking.cancellation_refund_status == "pending_approval",
+        )
+        .all()
+    )
+    for b in pending_refund_bookings:
+        ref_dt = (b.cancelled_at or b.updated_at or b.created_at or now_utc).replace(tzinfo=None)
+        if now_utc - ref_dt >= timedelta(hours=24):
+            try:
+                notify_admins(
+                    db,
+                    type="refund_approval_reminder",
+                    title="Reembolso de cancelación pendiente de aprobación",
+                    message=f"La reserva cancelada #{str(b.id)[:8]} lleva más de 24 h esperando aprobación de reembolso.",
+                    meta={"booking_id": str(b.id)},
+                )
+                stats["refund_approval_reminders"] = stats.get("refund_approval_reminders", 0) + 1
+            except Exception as exc:
+                logger.warning("No se pudo enviar recordatorio de reembolso %s: %s", b.id, exc)
+
+    open_complaints = (
+        db.query(BookingComplaint)
+        .filter(BookingComplaint.status == BookingComplaintStatus.open)
+        .all()
+    )
+    for comp in open_complaints:
+        ref_dt = (comp.created_at or now_utc).replace(tzinfo=None)
+        if now_utc - ref_dt >= timedelta(hours=24):
+            b_obj = db.get(Booking, comp.booking_id)
+            musician_user = b_obj.musician.user if b_obj and b_obj.musician else None
+            b_id = str(comp.booking_id)
+            if musician_user and not _has_notification(db, musician_user.id, "complaint_response_reminder", b_id):
+                notify_user(
+                    db,
+                    user=musician_user,
+                    type="complaint_response_reminder",
+                    title="Queja pendiente de tu respuesta",
+                    message="Tienes una queja abierta hace más de 24 h. Acepta o presenta tu descargo para continuar con la liquidación.",
+                    booking_id=b_id,
+                )
+                stats["complaint_response_reminders"] = stats.get("complaint_response_reminders", 0) + 1
 
     db.commit()
     return stats

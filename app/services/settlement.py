@@ -13,7 +13,9 @@ from app.models.booking_complaint import (
     REFUND_STATUS_AWAITING_TRANSFER,
     REFUND_STATUS_AWAITING_VALIDATION,
     REFUND_STATUS_COMPLETED,
+    REFUND_STATUS_NEEDS_ATTENTION,
     REFUND_STATUS_NONE,
+    REFUND_STATUS_PROCESSING,
     REFUND_STATUS_REJECTED,
     BookingComplaint,
     BookingComplaintStatus,
@@ -172,8 +174,30 @@ def settlement_state_for_booking(
 
     if status != BookingStatus.completed:
         if retained > 0:
+            from app.services.booking_lifecycle import is_event_finished
+
+            if (
+                status
+                in {
+                    BookingStatus.payment_retained,
+                    BookingStatus.in_progress,
+                    BookingStatus.change_pending,
+                    BookingStatus.payment_released,
+                }
+                and is_event_finished(booking)
+            ):
+                if complaint and complaint.refund_status == REFUND_STATUS_NEEDS_ATTENTION:
+                    return "needs_attention"
+                if complaint and complaint.status != BookingComplaintStatus.settled:
+                    if complaint.status == BookingComplaintStatus.open:
+                        return "disputed"
+                    return "awaiting_admin"
+                return "awaiting_reviews"
             return "in_progress"
         return "none"
+
+    if complaint and complaint.refund_status == REFUND_STATUS_NEEDS_ATTENTION:
+        return "needs_attention"
 
     if complaint and complaint.status != BookingComplaintStatus.settled:
         if complaint.status == BookingComplaintStatus.open:
@@ -186,6 +210,8 @@ def settlement_state_for_booking(
     refund = complaint_refund_amount(complaint)
     if complaint and refund > 0:
         rs = complaint_refund_status(complaint)
+        if rs == REFUND_STATUS_PROCESSING:
+            return "awaiting_admin"
         if rs in {
             REFUND_STATUS_NONE,
             REFUND_STATUS_AWAITING_TRANSFER,
@@ -200,6 +226,53 @@ def settlement_state_for_booking(
     if released > 0:
         return "settled"
     return "settled"
+
+
+def deduct_musician_chargeback_debt(
+    db: Session,
+    musician_id,
+    max_deduction: Decimal,
+) -> Decimal:
+    """
+    D3: Descuenta deuda pendiente por contracargo posterior a liberación
+    del siguiente desembolso del músico.
+    """
+    if not musician_id or max_deduction <= Decimal("0.00"):
+        return Decimal("0.00")
+
+    debt_payments = (
+        db.query(Payment)
+        .join(Booking, Booking.id == Payment.booking_id)
+        .filter(
+            Booking.musician_id == musician_id,
+            Payment.status == PaymentStatus.refunded,
+            Payment.payment_type.is_distinct_from("refund"),
+        )
+        .order_by(Payment.created_at.asc())
+        .all()
+    )
+    total_deducted = Decimal("0.00")
+    remaining_budget = max_deduction
+    for dp in debt_payments:
+        if remaining_budget <= Decimal("0.00"):
+            break
+        meta = dict(dp.gateway_metadata) if isinstance(dp.gateway_metadata, dict) else {}
+        if not meta.get("chargeback_after_release"):
+            continue
+        rem = Decimal(str(meta.get("musician_chargeback_remaining") or 0)).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        if rem <= Decimal("0.00"):
+            continue
+        applied = min(rem, remaining_budget)
+        new_rem = (rem - applied).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        meta["musician_chargeback_remaining"] = float(new_rem)
+        meta["musician_chargeback_last_deducted_at"] = datetime.utcnow().isoformat()
+        dp.gateway_metadata = meta
+        remaining_budget -= applied
+        total_deducted += applied
+
+    return total_deducted.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 def release_retained_payments(
@@ -224,15 +297,34 @@ def release_retained_payments(
             raise ValueError(
                 "No se puede liberar el pago mientras exista una mediación activa en la pasarela."
             )
-    for payment in payments:
+    booking = db.get(Booking, booking_id) if payments else None
+    deducted_total = Decimal("0.00")
+    if booking and booking.musician_id and payments:
+        gross_releasing = sum(
+            (Decimal(str(p.amount or 0)) for p in payments if (p.payment_type or "").lower() != "refund"),
+            Decimal("0.00"),
+        )
+        musician_releasing = musician_portion_of_paid(booking, gross_releasing)
+        deducted_total = deduct_musician_chargeback_debt(
+            db, booking.musician_id, musician_releasing
+        )
+
+    for idx, payment in enumerate(payments):
         payment.status = PaymentStatus.released
         payment.released_at = now
         if payout_reference:
             payment.payout_reference = payout_reference
         if payout_evidence_url:
             payment.payout_evidence_url = payout_evidence_url
-        if payout_notes:
-            payment.payout_notes = payout_notes
+        effective_notes = payout_notes
+        if idx == 0 and deducted_total > Decimal("0.00"):
+            meta_dict = dict(payment.gateway_metadata) if isinstance(payment.gateway_metadata, dict) else {}
+            meta_dict["chargeback_deducted"] = float(deducted_total)
+            payment.gateway_metadata = meta_dict
+            deduct_note = f"[Descuento por contracargo previo: S/ {float(deducted_total):.2f}]"
+            effective_notes = f"{payout_notes} {deduct_note}".strip() if payout_notes else deduct_note
+        if effective_notes:
+            payment.payout_notes = effective_notes
 
     if payments:
         db.flush()

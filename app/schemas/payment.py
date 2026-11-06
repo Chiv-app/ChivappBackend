@@ -117,7 +117,7 @@ class MercadoPagoProcessPaymentRequest(BaseModel):
     token: str
     payment_method_id: str = "yape"
     amount: float | None = None
-    installments: int = 1
+    installments: int = Field(default=1, ge=1, le=24)
     issuer_id: str | None = None
     payer_email: str | None = None
 
@@ -186,6 +186,8 @@ class MusicianDebtItem(BaseModel):
     complaint_reason: str | None = None
     admin_musician_amount: float | None = None
     admin_contractor_refund: float | None = None
+    released_at: datetime | None = None
+    payout_reference: str | None = None
 
 
 class MusicianEarningsSummary(BaseModel):
@@ -197,6 +199,7 @@ class MusicianEarningsSummary(BaseModel):
     total_app_debt: float = 0
     total_disputed: float = 0
     total_retained_active: float = 0
+    total_chargeback_debt: float = 0
     bookings_active: int
     bookings_completed: int
     bookings_cancelled: int

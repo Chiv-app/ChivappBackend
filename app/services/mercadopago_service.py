@@ -28,7 +28,9 @@ logger = logging.getLogger(__name__)
 
 MERCADO_PAGO_API_BASE = "https://api.mercadopago.com"
 _NUMERIC_MP_ID_RE = re.compile(r"^\d{1,20}$")
-WEBHOOK_SIGNATURE_MAX_AGE_SECONDS = 300
+# Ventana de 24 h para firmas HMAC: la firma autentica el origen y la idempotencia en BD
+# protege contra repeticiones, permitiendo aceptar reintentos diferidos de Mercado Pago.
+WEBHOOK_SIGNATURE_MAX_AGE_SECONDS = 86400
 
 
 def _mp_headers() -> dict[str, str]:
@@ -204,6 +206,167 @@ def get_merchant_order_details(merchant_order_id: str) -> dict[str, Any]:
         raise ValueError(f"Error al conectar con Mercado Pago: {exc}") from exc
 
 
+def search_payments_by_external_reference(
+    booking_id: str,
+    *,
+    timeout: float = 10.0,
+    max_retries: int = 2,
+) -> list[dict[str, Any]]:
+    """Busca pagos en Mercado Pago asociados a `external_reference = booking_id` con reintentos cortos."""
+    if not is_mercadopago_configured():
+        return []
+    cleaned_ref = str(booking_id or "").strip()
+    if not cleaned_ref:
+        return []
+
+    params = {
+        "external_reference": cleaned_ref,
+        "sort": "date_created",
+        "criteria": "desc",
+        "limit": 30,
+    }
+    last_exc: Exception | None = None
+    for attempt in range(max(1, max_retries + 1)):
+        try:
+            with httpx.Client(timeout=timeout) as client:
+                resp = client.get(
+                    f"{MERCADO_PAGO_API_BASE}/v1/payments/search",
+                    headers=_mp_headers(),
+                    params=params,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                results = data.get("results") if isinstance(data, dict) else None
+                return [r for r in (results or []) if isinstance(r, dict)]
+        except Exception as exc:
+            last_exc = exc
+            logger.warning(
+                "Intento %d/%d fallido buscando pagos en MP para external_reference=%s: %s",
+                attempt + 1,
+                max_retries + 1,
+                cleaned_ref,
+                exc,
+            )
+    if last_exc:
+        raise ValueError(f"Error al buscar pagos en Mercado Pago para {cleaned_ref}: {last_exc}") from last_exc
+    return []
+
+
+def reconcile_booking_payments(db: Session, booking: Booking) -> list[Payment]:
+    """Consulta los pagos de la reserva en Mercado Pago y los procesa de manera idempotente."""
+    results = search_payments_by_external_reference(str(booking.id))
+    if not results:
+        return []
+    # Procesar primero pagos aprobados (o en orden cronológico ascendente) para confirmar si existe un pago aprobado.
+    ordered = sorted(
+        results,
+        key=lambda item: (0 if item.get("status") == "approved" else 1, str(item.get("date_created") or "")),
+    )
+    processed: list[Payment] = []
+    for payment_data in ordered:
+        p_row = process_approved_mercadopago_payment(db, payment_data)
+        if p_row is not None:
+            processed.append(p_row)
+    return processed
+
+
+def search_recent_approved_payments(
+    *,
+    lookback_hours: int = 24,
+    limit: int = 50,
+    timeout: float = 10.0,
+) -> list[dict[str, Any]]:
+    """Busca pagos aprobados recientes en Mercado Pago por rango de fechas."""
+    if not is_mercadopago_configured():
+        return []
+    now_utc = datetime.now(dt.timezone.utc)
+    begin_utc = now_utc - dt.timedelta(hours=max(1, lookback_hours))
+    params = {
+        "status": "approved",
+        "sort": "date_created",
+        "criteria": "desc",
+        "range": "date_created",
+        "begin_date": begin_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "end_date": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "limit": limit,
+    }
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            resp = client.get(
+                f"{MERCADO_PAGO_API_BASE}/v1/payments/search",
+                headers=_mp_headers(),
+                params=params,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            results = data.get("results") if isinstance(data, dict) else None
+            return [r for r in (results or []) if isinstance(r, dict)]
+    except Exception as exc:
+        logger.error("Error al consultar pagos aprobados recientes en Mercado Pago: %s", exc)
+        raise ValueError(f"Error al consultar pagos recientes en Mercado Pago: {exc}") from exc
+
+
+def detect_orphan_mercadopago_payments(
+    db: Session,
+    *,
+    lookback_hours: int = 24,
+) -> list[dict[str, Any]]:
+    """
+    Busca pagos aprobados recientes en Mercado Pago sin fila local.
+    Si tienen booking_id válido intenta conciliarlos; los que sigan sin fila local se alertan al admin.
+    """
+    recent = search_recent_approved_payments(lookback_hours=lookback_hours)
+    if not recent:
+        return []
+
+    orphans: list[dict[str, Any]] = []
+    for p_data in recent:
+        pid = str(p_data.get("id") or "").strip()
+        if not pid:
+            continue
+        existing = (
+            db.query(Payment)
+            .filter(
+                Payment.gateway_payment_id == pid,
+                Payment.payment_type.is_distinct_from("refund"),
+            )
+            .first()
+        )
+        if existing is not None:
+            continue
+
+        # Intentar conciliar automáticamente si tiene referencia a una reserva válida
+        try:
+            reconciled = process_approved_mercadopago_payment(db, p_data)
+        except Exception as exc:
+            logger.warning("Error intentando conciliar pago huérfano MP %s: %s", pid, exc)
+            reconciled = None
+
+        if reconciled is None:
+            orphans.append(p_data)
+
+    if orphans:
+        orphan_ids = ", ".join(str(p.get("id")) for p in orphans[:10])
+        try:
+            notify_admins(
+                db,
+                type="payment_alert",
+                title="Pagos aprobados en Mercado Pago sin reserva asociada (huérfanos)",
+                message=(
+                    f"Se detectaron {len(orphans)} pago(s) aprobados en Mercado Pago sin fila local: {orphan_ids}."
+                ),
+                meta={
+                    "orphan_payment_ids": [str(p.get("id")) for p in orphans],
+                    "orphan_count": len(orphans),
+                },
+            )
+            db.commit()
+        except Exception as exc:
+            logger.warning("No se pudo enviar alerta de pagos huérfanos: %s", exc)
+
+    return orphans
+
+
 def verify_webhook_signature(
     x_signature: str | None,
     x_request_id: str | None,
@@ -230,7 +393,11 @@ def verify_webhook_signature(
         # Si ts viene en milisegundos, convertir a segundos
         if ts_val > 10_000_000_000:
             ts_val = ts_val // 1000
-        if abs(int(time.time()) - ts_val) > WEBHOOK_SIGNATURE_MAX_AGE_SECONDS:
+        max_age = int(
+            getattr(settings, "MERCADO_PAGO_WEBHOOK_MAX_AGE_SECONDS", WEBHOOK_SIGNATURE_MAX_AGE_SECONDS)
+            or WEBHOOK_SIGNATURE_MAX_AGE_SECONDS
+        )
+        if abs(int(time.time()) - ts_val) > max_age:
             logger.warning("Webhook de Mercado Pago rechazado por timestamp fuera de ventana: %s", ts)
             return False
 
@@ -410,9 +577,13 @@ def process_approved_mercadopago_payment(db: Session, payment_data: dict[str, An
         # SEC4-05 / BUG5-13 (2): Reembolso parcial (0 < refunded_amount < amount) sin cancelar la reserva.
         if Decimal("0") < refunded_amount < amount and status != "charged_back":
             already_alerted = bool(meta_dict.get("partial_refund_alerted"))
+            was_in_mediation = bool(meta_dict.get("in_mediation"))
             meta_dict.update(payment_data)
             meta_dict["partial_refund_amount"] = float(refunded_amount)
             meta_dict["post_approval_event"] = "partial_refund"
+            if status == "approved" and was_in_mediation:
+                meta_dict["in_mediation"] = False
+                meta_dict["in_mediation_resolved_at"] = datetime.utcnow().isoformat()
             if not is_own_refund and not already_alerted:
                 meta_dict["partial_refund_alerted"] = True
                 try:
@@ -470,7 +641,46 @@ def process_approved_mercadopago_payment(db: Session, payment_data: dict[str, An
             db.refresh(existing)
             return existing
 
+        # P-04: Limpiar marca in_mediation cuando el pago vuelve a 'approved' sin reclamo abierto.
+        status_detail_lower = str(payment_data.get("status_detail") or "").lower()
+        has_open_claim = status_detail_lower in {"in_mediation", "pending_challenge", "claim_opened"} or bool(
+            payment_data.get("in_mediation")
+        )
+        if status == "approved" and bool(meta_dict.get("in_mediation")) and not has_open_claim:
+            meta_dict.update(payment_data)
+            meta_dict["in_mediation"] = False
+            meta_dict["in_mediation_resolved_at"] = datetime.utcnow().isoformat()
+            meta_dict["post_approval_event"] = "mediation_resolved"
+            existing.gateway_metadata = meta_dict
+            logger.info(
+                "Mediación resuelta a favor del vendedor para pago MP %s (reserva %s); desembolso desbloqueado.",
+                payment_id,
+                booking.id,
+            )
+            try:
+                notify_admins(
+                    db,
+                    type="payment_alert",
+                    title="Mediación resuelta en Mercado Pago: desembolso desbloqueado",
+                    message=(
+                        f"El pago MP {payment_id} de la reserva {str(booking.id)[:8]} volvió a estado "
+                        f"'approved' sin reclamo abierto. El desembolso ya está desbloqueado."
+                    ),
+                    meta={
+                        "booking_id": str(booking.id),
+                        "payment_id": str(payment_id),
+                        "post_approval_event": "mediation_resolved",
+                        "in_mediation": False,
+                    },
+                )
+            except Exception as exc:
+                logger.warning("No se pudo notificar resolución de mediación %s: %s", payment_id, exc)
+            db.commit()
+            db.refresh(existing)
+            return existing
+
         if status in ("refunded", "charged_back", "cancelled", "rejected"):
+            was_released = existing.status == PaymentStatus.released
             prev_post_event = meta_dict.get("post_approval_event")
             meta_dict.update(payment_data)
             meta_dict["post_approval_event"] = status
@@ -485,6 +695,56 @@ def process_approved_mercadopago_payment(db: Session, payment_data: dict[str, An
                     db.commit()
                     db.refresh(existing)
                     return existing
+
+                # D3 (WP-04): Si el pago ya había sido liberado al músico antes del contracargo,
+                # registrar deuda del músico para descontarla de su siguiente desembolso.
+                if was_released or bool(meta_dict.get("chargeback_after_release")):
+                    from app.services.platform_payment import musician_portion_of_paid
+
+                    chargeback_debt = float(
+                        musician_portion_of_paid(
+                            booking, Decimal(str(existing.amount or amount))
+                        )
+                    )
+                    meta_dict["chargeback_after_release"] = True
+                    meta_dict["musician_chargeback_debt"] = chargeback_debt
+                    if "musician_chargeback_remaining" not in meta_dict:
+                        meta_dict["musician_chargeback_remaining"] = chargeback_debt
+                    meta_dict["chargeback_recorded_at"] = (
+                        meta_dict.get("chargeback_recorded_at")
+                        or datetime.utcnow().isoformat()
+                    )
+                    existing.gateway_metadata = meta_dict
+                    try:
+                        musician = (
+                            db.query(MusicianProfile)
+                            .filter(MusicianProfile.id == booking.musician_id)
+                            .first()
+                        )
+                        musician_user = (
+                            db.query(User).filter(User.id == musician.user_id).first()
+                            if musician
+                            else None
+                        )
+                        if musician_user and prev_post_event != status:
+                            notify_user(
+                                db,
+                                user=musician_user,
+                                type="payment_chargeback_debt",
+                                title="Contracargo posterior al desembolso",
+                                message=(
+                                    f"El pago de la reserva #{str(booking.id)[:8]} sufrió un contracargo "
+                                    f"en la pasarela después de haberse desembolsado. Se registró un saldo "
+                                    f"a descontar de S/ {chargeback_debt:.2f} para tu próximo retiro."
+                                ),
+                                booking_id=str(booking.id),
+                            )
+                    except Exception as exc:
+                        logger.warning(
+                            "No se pudo notificar deuda por contracargo al músico %s: %s",
+                            booking.musician_id,
+                            exc,
+                        )
 
                 booking_was_cancelled_now = False
                 if booking.status in (
@@ -691,6 +951,26 @@ def process_approved_mercadopago_payment(db: Session, payment_data: dict[str, An
 
     is_rejected = status in ("rejected", "cancelled")
 
+    # WP-06: Registrar costo real de pasarela (fee_details) vs estimado cuando el pago es aprobado
+    if is_approved and isinstance(payment_data, dict):
+        fee_details = payment_data.get("fee_details")
+        if isinstance(fee_details, list):
+            actual_fee_dec = sum(
+                (
+                    Decimal(str(fd.get("amount") or 0))
+                    for fd in fee_details
+                    if isinstance(fd, dict)
+                ),
+                Decimal("0.00"),
+            )
+            from app.services.platform_payment import gateway_fee_estimated
+
+            est_fee_dec = gateway_fee_estimated(booking) or Decimal("0.00")
+            payment_data = dict(payment_data)
+            payment_data["gateway_fee_actual"] = float(actual_fee_dec)
+            payment_data["gateway_fee_estimated"] = float(est_fee_dec)
+            payment_data["gateway_fee_diff"] = float(actual_fee_dec - est_fee_dec)
+
     if existing:
         if is_approved:
             existing.status = PaymentStatus.retained
@@ -775,8 +1055,140 @@ def process_approved_mercadopago_payment(db: Session, payment_data: dict[str, An
         _confirm_booking_notifications_and_calendar(db, booking)
         db.commit()
 
+    if (
+        getattr(settings, "MP_AUTO_REFUND_NEEDS_REFUND", False)
+        and isinstance(payment.gateway_metadata, dict)
+        and payment.gateway_metadata.get("needs_refund")
+    ):
+        auto_refund_single_flagged_payment(db, payment)
+
     db.refresh(payment)
     return payment
+
+
+def auto_refund_single_flagged_payment(db: Session, payment: Payment) -> bool:
+    """
+    WP-05: Intenta reembolsar automáticamente un pago marcado con `needs_refund`.
+    Si tiene éxito cambia el estado a `refunded` y avisa al admin; si falla registra el error
+    para reintento y alerta si supera las 24 h sin resolverse.
+    """
+    if payment.status == PaymentStatus.refunded or not payment.gateway_payment_id:
+        return False
+    meta = dict(payment.gateway_metadata or {}) if isinstance(payment.gateway_metadata, dict) else {}
+    if not meta.get("needs_refund"):
+        return False
+    if not is_mercadopago_configured():
+        return False
+
+    attempts = int(meta.get("auto_refund_attempts") or 0)
+    try:
+        refund_resp = issue_refund(
+            payment.gateway_payment_id,
+            float(payment.amount),
+            idempotency_key=f"auto-needs-refund-{payment.id}",
+            check_existing=(attempts > 0),
+        )
+        payment.status = PaymentStatus.refunded
+        payment.released_at = datetime.utcnow()
+        meta["needs_refund"] = False
+        meta["auto_refunded"] = True
+        meta["auto_refunded_at"] = datetime.utcnow().isoformat()
+        meta["mp_refund_id"] = str(refund_resp.get("id") or "")
+        payment.gateway_metadata = meta
+        try:
+            notify_admins(
+                db,
+                type="payment_alert",
+                title="Pago duplicado o inválido reembolsado automáticamente",
+                message=(
+                    f"El pago MP {payment.gateway_payment_id} por S/ {float(payment.amount):.2f} "
+                    f"(reserva {str(payment.booking_id)[:8]}, motivo: {meta.get('needs_refund_reason')}) "
+                    f"fue reembolsado automáticamente."
+                ),
+                meta={
+                    "booking_id": str(payment.booking_id),
+                    "payment_id": str(payment.gateway_payment_id),
+                    "auto_refunded": True,
+                },
+            )
+        except Exception as notify_exc:
+            logger.warning("No se pudo notificar auto-reembolso de %s: %s", payment.id, notify_exc)
+        db.commit()
+        return True
+    except Exception as exc:
+        db.rollback()
+        p_locked = db.get(Payment, payment.id, with_for_update=True)
+        if p_locked:
+            meta_err = dict(p_locked.gateway_metadata or {}) if isinstance(p_locked.gateway_metadata, dict) else {}
+            meta_err["auto_refund_attempts"] = attempts + 1
+            meta_err["auto_refund_error"] = str(exc)[:500]
+            age_hours = (
+                (datetime.utcnow() - p_locked.created_at.replace(tzinfo=None)).total_seconds() / 3600.0
+                if p_locked.created_at
+                else 0.0
+            )
+            if age_hours >= 24.0 and not meta_err.get("needs_refund_sla_alerted"):
+                meta_err["needs_refund_sla_alerted"] = True
+                try:
+                    notify_admins(
+                        db,
+                        type="payment_alert",
+                        title="Reembolso automático pendiente por más de 24 h",
+                        message=(
+                            f"El pago MP {p_locked.gateway_payment_id} lleva más de 24 h en estado needs_refund "
+                            f"sin poder reembolsarse automáticamente ({exc})."
+                        ),
+                        meta={
+                            "booking_id": str(p_locked.booking_id),
+                            "payment_id": str(p_locked.gateway_payment_id),
+                            "needs_refund_sla_breached": True,
+                        },
+                    )
+                except Exception as notify_exc:
+                    logger.warning("No se pudo alertar SLA de needs_refund %s: %s", p_locked.id, notify_exc)
+            p_locked.gateway_metadata = meta_err
+            db.commit()
+        return False
+
+
+def auto_refund_flagged_payments(db: Session, *, batch_size: int = 50) -> dict[str, int]:
+    """Job por lotes que reembolsa automáticamente todos los pagos con `needs_refund=True`."""
+    stats = {"checked": 0, "refunded": 0, "failed": 0}
+    if not is_mercadopago_configured():
+        return stats
+
+    candidates = (
+        db.query(Payment)
+        .filter(
+            Payment.status.in_((PaymentStatus.initiated, PaymentStatus.retained)),
+            Payment.payment_type.is_distinct_from("refund"),
+            Payment.gateway_payment_id.isnot(None),
+        )
+        .order_by(Payment.created_at.asc())
+        .limit(batch_size * 2)
+        .all()
+    )
+    flagged_ids = [
+        p.id
+        for p in candidates
+        if isinstance(p.gateway_metadata, dict) and p.gateway_metadata.get("needs_refund")
+    ][:batch_size]
+
+    for pid in flagged_ids:
+        p_row = (
+            db.query(Payment)
+            .filter(Payment.id == pid)
+            .with_for_update(skip_locked=True)
+            .first()
+        )
+        if not p_row:
+            continue
+        stats["checked"] += 1
+        if auto_refund_single_flagged_payment(db, p_row):
+            stats["refunded"] += 1
+        else:
+            stats["failed"] += 1
+    return stats
 
 
 def process_direct_payment(
@@ -784,6 +1196,8 @@ def process_direct_payment(
     booking: Booking,
     contractor_user: User,
     payment_payload: dict[str, Any],
+    *,
+    in_flight_payment_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     """
     Procesa un pago directo (Checkout API / Payments API) usando un token generado en el frontend.
@@ -853,7 +1267,8 @@ def process_direct_payment(
     headers = _mp_headers()
     # El token de tarjeta/Yape es de un solo uso: si la petición se reintenta
     # (timeout, doble clic), la misma clave evita un segundo cobro.
-    headers["X-Idempotency-Key"] = "pay-" + hashlib.sha256(f"{booking.id}:{token}".encode()).hexdigest()[:48]
+    idempotency_key = "pay-" + hashlib.sha256(f"{booking.id}:{token}".encode()).hexdigest()[:48]
+    headers["X-Idempotency-Key"] = idempotency_key
     device_id = payment_payload.get("device_id")
     if device_id:
         headers["X-meli-session-id"] = device_id
@@ -874,6 +1289,18 @@ def process_direct_payment(
                     resp.text,
                     safe_body,
                 )
+                if in_flight_payment_id:
+                    try:
+                        p_err = db.get(Payment, in_flight_payment_id, with_for_update=True)
+                        if p_err and p_err.status == PaymentStatus.initiated and not p_err.gateway_payment_id:
+                            p_err.status = PaymentStatus.rejected
+                            p_err.rejection_reason = str(data.get("error") or "api_error")
+                            meta_err = dict(p_err.gateway_metadata or {}) if isinstance(p_err.gateway_metadata, dict) else {}
+                            meta_err["in_flight_direct"] = False
+                            p_err.gateway_metadata = meta_err
+                            db.commit()
+                    except Exception:
+                        db.rollback()
                 message = data.get("message") or "El pago no pudo ser procesado."
                 cause = data.get("cause")
                 if cause and isinstance(cause, list) and len(cause) > 0:
@@ -890,6 +1317,49 @@ def process_direct_payment(
                 }
     except Exception as exc:
         logger.error("Excepción al contactar con Mercado Pago v1/payments: %s", exc)
+        # WP-05 step 5: Si la respuesta de MP se pierde (network_error), dejar una fila
+        # 'initiated' con la clave de idempotencia para que la conciliación (WP-01) la resuelva.
+        try:
+            net_meta = {
+                "in_flight_direct": False,
+                "network_error": True,
+                "idempotency_key": idempotency_key,
+                "booking_id": str(booking.id),
+                "payment_method": payment_method_id,
+            }
+            if in_flight_payment_id:
+                p_net = db.get(Payment, in_flight_payment_id, with_for_update=True)
+                if p_net:
+                    p_net.gateway_metadata = net_meta
+                    db.commit()
+            else:
+                existing_init = (
+                    db.query(Payment)
+                    .filter(
+                        Payment.booking_id == booking.id,
+                        Payment.status == PaymentStatus.initiated,
+                        Payment.gateway_payment_id.is_(None),
+                    )
+                    .first()
+                )
+                if existing_init:
+                    existing_init.gateway_metadata = net_meta
+                else:
+                    db.add(
+                        Payment(
+                            booking_id=booking.id,
+                            amount=Decimal(str(round(amount, 2))),
+                            currency="PEN",
+                            payment_type=payment_type,
+                            status=PaymentStatus.initiated,
+                            gateway_provider="mercadopago",
+                            gateway_metadata=net_meta,
+                        )
+                    )
+                db.commit()
+        except Exception as db_exc:
+            db.rollback()
+            logger.warning("No se pudo persistir fila initiated tras network_error en reserva %s: %s", booking.id, db_exc)
         return {
             "success": False,
             "status": "error",
@@ -966,14 +1436,59 @@ def process_direct_payment(
         "raw": data,
     }
 
-def issue_refund(payment_id: str, amount: float, idempotency_key: str | None = None) -> dict[str, Any]:
+def find_existing_refund(payment_id: str, amount: float) -> dict[str, Any] | None:
+    """
+    Consulta los reembolsos existentes del pago en Mercado Pago para evitar duplicar un reembolso
+    cuando se reintenta más allá de la ventana de X-Idempotency-Key (24 h).
+    """
+    try:
+        details = get_payment_details(payment_id)
+        refunds = details.get("refunds") if isinstance(details, dict) else None
+        if not isinstance(refunds, list):
+            return None
+        target = Decimal(str(round(float(amount), 2)))
+        for ref in refunds:
+            if not isinstance(ref, dict):
+                continue
+            ref_status = str(ref.get("status") or "approved").lower()
+            if ref_status in {"rejected", "cancelled"}:
+                continue
+            try:
+                ref_amt = Decimal(str(ref.get("amount") or 0))
+            except Exception:
+                continue
+            if abs(ref_amt - target) <= AMOUNT_TOLERANCE:
+                return ref
+    except Exception as exc:
+        logger.warning("No se pudo verificar reembolsos previos en MP para %s: %s", payment_id, exc)
+    return None
+
+
+def issue_refund(
+    payment_id: str,
+    amount: float,
+    idempotency_key: str | None = None,
+    *,
+    check_existing: bool = False,
+) -> dict[str, Any]:
     """
     Emite un reembolso total o parcial para un pago procesado.
     Llama a: POST /v1/payments/{payment_id}/refunds
-    Con `idempotency_key` fijo, reintentar la misma operación no reembolsa dos veces.
+    Con `idempotency_key` fijo ligado al intento registrado y `check_existing=True` en reintentos,
+    reintentar la misma operación (incluso de forma tardía) no reembolsa dos veces.
     """
     if not is_mercadopago_configured():
         raise ValueError("Mercado Pago no está configurado.")
+
+    if check_existing:
+        existing_ref = find_existing_refund(payment_id, amount)
+        if existing_ref is not None:
+            logger.info(
+                "Reembolso previo encontrado en Mercado Pago para pago %s (id=%s); omitiendo nuevo POST.",
+                payment_id,
+                existing_ref.get("id"),
+            )
+            return existing_ref
 
     payload = {"amount": float(amount)}
     headers = _mp_headers()

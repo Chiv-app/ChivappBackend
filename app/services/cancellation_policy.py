@@ -289,10 +289,12 @@ def execute_cancellation_refund(db: Session, booking: Booking) -> None:
                     "Hay un pago sin Mercado Pago (comprobante manual): el reembolso debe hacerse por transferencia."
                 )
             portion = min(pending, Decimal(str(payment.amount))).quantize(CENT, rounding=ROUND_HALF_UP)
+            is_retry = bool(booking.cancellation_refund_error)
             response = issue_refund(
                 payment.gateway_payment_id,
                 float(portion),
                 idempotency_key=f"cancel-{booking.id}-{payment.id}-{portion}",
+                check_existing=is_retry,
             )
             remaining = Decimal(str(payment.amount)) - portion
             if remaining <= 0:

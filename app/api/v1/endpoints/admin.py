@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
@@ -62,6 +63,7 @@ from app.services.cancellation_policy import (
 )
 from app.services.payment_evidence import payment_evidence_list
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
 ACTIVE_BOOKING_STATUSES = {
@@ -78,8 +80,15 @@ ACTIVE_BOOKING_STATUSES = {
     BookingStatus.in_progress,
 }
 
-# Finalizadas, o canceladas tarde con parte del pago retenido para el músico.
-SETTLEABLE_BOOKING_STATUSES = {BookingStatus.completed, BookingStatus.cancelled}
+# Finalizadas, canceladas tarde con parte del pago retenido, o eventos ya culminados
+# pendientes de reseña donde el administrador autoriza manualmente la liquidación (A2).
+SETTLEABLE_BOOKING_STATUSES = {
+    BookingStatus.completed,
+    BookingStatus.cancelled,
+    BookingStatus.payment_retained,
+    BookingStatus.in_progress,
+    BookingStatus.change_pending,
+}
 
 # Reservas esperando la confirmación del pago único en Mercado Pago.
 PAYMENT_REVIEW_STATUSES = {
@@ -1406,15 +1415,18 @@ def settle_admin_booking(
     from app.models.booking_complaint import (
         REFUND_STATUS_AWAITING_TRANSFER,
         REFUND_STATUS_COMPLETED,
+        REFUND_STATUS_NEEDS_ATTENTION,
         REFUND_STATUS_NONE,
+        REFUND_STATUS_PROCESSING,
         BookingComplaint,
         BookingComplaintStatus,
     )
     from app.schemas.settlement import AdminSettlementOut
-    from app.services.booking_notifications import notify_settlement_completed
+    from app.services.booking_notifications import notify_admins, notify_settlement_completed
     from app.services.cancellation_policy import REFUND_UNRESOLVED
     from app.services.platform_payment import musician_portion_of_paid
     from app.services.settlement import (
+        booking_has_gateway_mediation,
         fee_portion_from_gross,
         release_retained_payments,
         released_total_for_booking,
@@ -1429,6 +1441,22 @@ def settle_admin_booking(
         raise HTTPException(404, "Reserva no encontrada")
     if booking.status not in SETTLEABLE_BOOKING_STATUSES:
         raise HTTPException(400, "Solo se liquidan reservas finalizadas o canceladas con fondos retenidos")
+    if booking.status in {
+        BookingStatus.payment_retained,
+        BookingStatus.in_progress,
+        BookingStatus.change_pending,
+    }:
+        from app.services.booking_lifecycle import clear_pending_changes, is_event_finished
+        from app.services.booking_share import disable_booking_share
+
+        if not is_event_finished(booking):
+            raise HTTPException(
+                400,
+                "Solo se liquidan reservas cuyo evento ya haya finalizado o canceladas con fondos retenidos",
+            )
+        clear_pending_changes(booking)
+        booking.status = BookingStatus.completed
+        disable_booking_share(booking)
     if (
         booking.status == BookingStatus.cancelled
         and booking.cancellation_refund_status in REFUND_UNRESOLVED
@@ -1437,10 +1465,17 @@ def settle_admin_booking(
             400,
             "No se puede liquidar una reserva cancelada mientras tenga un reembolso pendiente de resolución",
         )
+    # P-03: Validar mediación activa ANTES de ejecutar cualquier reembolso externo.
+    if booking_has_gateway_mediation(booking, db):
+        raise HTTPException(
+            400,
+            "No se puede liquidar ni reembolsar mientras exista una mediación activa en la pasarela.",
+        )
 
     complaint = (
         db.query(BookingComplaint)
         .filter(BookingComplaint.booking_id == booking.id)
+        .with_for_update()
         .first()
     )
     retained_gross = retained_total_for_booking(db, booking.id)
@@ -1459,20 +1494,29 @@ def settle_admin_booking(
             f"(S/ {musician_pool:.2f}). La comisión de plataforma no se reparte.",
         )
 
+    refund_already_executed = False
     if complaint:
         if complaint.status == BookingComplaintStatus.open:
             raise HTTPException(
                 400,
                 "El músico aún no responde la queja. Espera su aceptación o descargo.",
             )
-        if complaint.status == BookingComplaintStatus.settled:
+        if (
+            complaint.status == BookingComplaintStatus.settled
+            and complaint.refund_status != REFUND_STATUS_NEEDS_ATTENTION
+        ):
             raise HTTPException(400, "La queja ya fue liquidada")
+
+        previous_complaint_status = (
+            BookingComplaintStatus.musician_responded
+            if complaint.status == BookingComplaintStatus.settled
+            else complaint.status
+        )
         complaint.admin_musician_amount = body.musician_amount
         complaint.admin_contractor_refund = body.contractor_refund
         complaint.admin_notes = body.notes
         complaint.settled_by_admin_id = current_user.id
-        complaint.settled_at = datetime.utcnow()
-        complaint.status = BookingComplaintStatus.settled
+
         if body.contractor_refund > 0:
             from app.models.payment import Payment, PaymentStatus
             from app.services.mercadopago_service import issue_refund
@@ -1495,36 +1539,70 @@ def settle_admin_booking(
                     "No se encontró el pago original en Mercado Pago para reembolsar automáticamente",
                 )
 
-            try:
-                mp_refund = issue_refund(
-                    original_payment.gateway_payment_id,
-                    float(body.contractor_refund),
-                    idempotency_key=f"complaint-refund-{complaint.id}",
-                )
-                refund_payment = Payment(
-                    booking_id=booking.id,
-                    amount=Decimal(str(round(body.contractor_refund, 2))),
-                    currency="PEN",
-                    payment_type="refund",
-                    status=PaymentStatus.released,
-                    released_at=datetime.utcnow(),
-                    gateway_provider="mercadopago",
-                    gateway_payment_id=str(mp_refund.get("id") or "") or None,
-                    gateway_metadata=mp_refund if isinstance(mp_refund, dict) else None,
-                    payout_notes=f"Reembolso por reclamo #{complaint.id}",
-                )
-                db.add(refund_payment)
-                db.flush()
+            existing_refund_payment = (
+                db.get(Payment, complaint.refund_payment_id, with_for_update=True)
+                if complaint.refund_payment_id
+                else None
+            )
+            if existing_refund_payment and existing_refund_payment.status in (
+                PaymentStatus.released,
+                PaymentStatus.refunded,
+            ):
+                # El reembolso ya se ejecutó en un intento previo que quedó en needs_attention.
+                refund_payment = existing_refund_payment
+                refund_already_executed = True
                 complaint.refund_status = REFUND_STATUS_COMPLETED
-                complaint.refund_validated_at = datetime.utcnow()
-                complaint.refund_rejection_reason = None
-                complaint.refund_payment_id = refund_payment.id
-                complaint.refund_evidence_url = "Reembolso automático de Mercado Pago"
-                complaint.refund_sent_at = datetime.utcnow()
-            except Exception as e:
-                raise HTTPException(
-                    500, f"Error al ejecutar reembolso en Mercado Pago: {str(e)}"
-                ) from e
+            else:
+                is_retry = existing_refund_payment is not None
+                if existing_refund_payment is None:
+                    refund_payment = Payment(
+                        booking_id=booking.id,
+                        amount=Decimal(str(round(body.contractor_refund, 2))),
+                        currency="PEN",
+                        payment_type="refund",
+                        status=PaymentStatus.initiated,
+                        gateway_provider="mercadopago",
+                        payout_notes=f"Reembolso por reclamo #{complaint.id}",
+                    )
+                    db.add(refund_payment)
+                    db.flush()
+                    complaint.refund_payment_id = refund_payment.id
+                else:
+                    refund_payment = existing_refund_payment
+                    refund_payment.amount = Decimal(str(round(body.contractor_refund, 2)))
+
+                complaint.refund_status = REFUND_STATUS_PROCESSING
+                # P-03: Persistir el intento en estado 'processing' antes de llamar a Mercado Pago
+                db.commit()
+                db.refresh(booking)
+                db.refresh(complaint)
+                db.refresh(refund_payment)
+
+                try:
+                    mp_refund = issue_refund(
+                        original_payment.gateway_payment_id,
+                        float(body.contractor_refund),
+                        idempotency_key=f"complaint-refund-{complaint.id}",
+                        check_existing=is_retry,
+                    )
+                    refund_payment.status = PaymentStatus.released
+                    refund_payment.released_at = datetime.utcnow()
+                    refund_payment.gateway_payment_id = str(mp_refund.get("id") or "") or None
+                    refund_payment.gateway_metadata = mp_refund if isinstance(mp_refund, dict) else None
+                    complaint.refund_status = REFUND_STATUS_COMPLETED
+                    complaint.refund_validated_at = datetime.utcnow()
+                    complaint.refund_rejection_reason = None
+                    complaint.refund_evidence_url = "Reembolso automático de Mercado Pago"
+                    complaint.refund_sent_at = datetime.utcnow()
+                    refund_already_executed = True
+                    db.commit()
+                    db.refresh(booking)
+                    db.refresh(complaint)
+                except Exception as e:
+                    db.rollback()
+                    raise HTTPException(
+                        502, f"Error al ejecutar reembolso en Mercado Pago: {str(e)}"
+                    ) from e
         else:
             complaint.refund_status = REFUND_STATUS_NONE
     elif body.contractor_refund > 0:
@@ -1533,13 +1611,60 @@ def settle_admin_booking(
             "Sin queja no aplica reembolso al contratista. Desembolsa el total al músico.",
         )
 
-    release_retained_payments(
-        db,
-        booking.id,
-        payout_reference=body.payout_reference,
-        payout_evidence_url=body.payout_evidence_url,
-        payout_notes=body.notes,
-    )
+    release_failed_after_refund = False
+    try:
+        release_retained_payments(
+            db,
+            booking.id,
+            payout_reference=body.payout_reference,
+            payout_evidence_url=body.payout_evidence_url,
+            payout_notes=body.notes,
+        )
+        if complaint:
+            complaint.settled_at = datetime.utcnow()
+            complaint.status = BookingComplaintStatus.settled
+    except ValueError as exc:
+        if not refund_already_executed:
+            db.rollback()
+            raise HTTPException(400, str(exc)) from exc
+        release_failed_after_refund = True
+        release_error_msg = str(exc)
+    except Exception as exc:
+        if not refund_already_executed:
+            db.rollback()
+            raise
+        release_failed_after_refund = True
+        release_error_msg = str(exc)
+
+    if release_failed_after_refund and complaint:
+        db.rollback()
+        complaint = db.get(BookingComplaint, complaint.id, with_for_update=True)
+        booking = db.get(Booking, booking.id)
+        if complaint:
+            complaint.status = previous_complaint_status
+            complaint.refund_status = REFUND_STATUS_NEEDS_ATTENTION
+            complaint.refund_rejection_reason = (
+                f"Reembolso ejecutado en MP, pero falló la liberación del saldo: {release_error_msg}"
+            )
+            try:
+                notify_admins(
+                    db,
+                    type="payment_alert",
+                    title="Liquidación requiere atención tras reembolso en Mercado Pago",
+                    message=(
+                        f"El reembolso por queja de la reserva #{str(booking.id)[:8]} se ejecutó en Mercado Pago, "
+                        f"pero la liberación posterior falló ({release_error_msg}). Reintenta desde liquidaciones."
+                    ),
+                    meta={
+                        "booking_id": str(booking.id),
+                        "complaint_id": str(complaint.id),
+                        "settlement_state": "needs_attention",
+                    },
+                )
+            except Exception as notify_exc:
+                logger.warning("No se pudo alertar needs_attention en liquidación %s: %s", booking.id, notify_exc)
+            db.commit()
+            db.refresh(complaint)
 
     musician = (
         db.query(MusicianProfile)
@@ -1553,7 +1678,7 @@ def settle_admin_booking(
         .filter(ContractorProfile.id == booking.contractor_id)
         .first()
     )
-    if musician and musician.user and contractor and contractor.user:
+    if not release_failed_after_refund and musician and musician.user and contractor and contractor.user:
         notify_settlement_completed(
             db,
             musician_user=musician.user,
@@ -1646,6 +1771,22 @@ def release_admin_settlement(
         raise HTTPException(404, "Reserva no encontrada")
     if booking.status not in SETTLEABLE_BOOKING_STATUSES:
         raise HTTPException(400, "Solo se liquidan reservas finalizadas o canceladas con fondos retenidos")
+    if booking.status in {
+        BookingStatus.payment_retained,
+        BookingStatus.in_progress,
+        BookingStatus.change_pending,
+    }:
+        from app.services.booking_lifecycle import clear_pending_changes, is_event_finished
+        from app.services.booking_share import disable_booking_share
+
+        if not is_event_finished(booking):
+            raise HTTPException(
+                400,
+                "Solo se liquidan reservas cuyo evento ya haya finalizado o canceladas con fondos retenidos",
+            )
+        clear_pending_changes(booking)
+        booking.status = BookingStatus.completed
+        disable_booking_share(booking)
     if (
         booking.status == BookingStatus.cancelled
         and booking.cancellation_refund_status in REFUND_UNRESOLVED
@@ -1674,13 +1815,17 @@ def release_admin_settlement(
         musician_portion_of_paid(booking, Decimal(str(retained_gross)))
     )
 
-    release_retained_payments(
-        db,
-        booking.id,
-        payout_reference=body.payout_reference,
-        payout_evidence_url=body.payout_evidence_url,
-        payout_notes=body.payout_notes,
-    )
+    try:
+        release_retained_payments(
+            db,
+            booking.id,
+            payout_reference=body.payout_reference,
+            payout_evidence_url=body.payout_evidence_url,
+            payout_notes=body.payout_notes,
+        )
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(400, str(exc)) from exc
 
     musician = (
         db.query(MusicianProfile)
@@ -2263,23 +2408,31 @@ def process_admin_payout_request(
         if b_id not in target_booking_ids:
             target_booking_ids.append(b_id)
     target_total = sum((eligible_booking_ids[b_id] for b_id in target_booking_ids), Decimal("0.00"))
+    cb_debt_dec = Decimal("0.00")
+    if musician and musician.user:
+        cb_debt_dec = Decimal(str(earnings.total_chargeback_debt or 0)).quantize(Decimal("0.01"))
+    net_target_total = max(target_total - cb_debt_dec, Decimal("0.00")).quantize(Decimal("0.01"))
     req_amount_dec = Decimal(str(req.amount))
-    if abs(target_total - req_amount_dec) > Decimal("0.05"):
+    if abs(target_total - req_amount_dec) > Decimal("0.05") and abs(net_target_total - req_amount_dec) > Decimal("0.05"):
         raise HTTPException(
             409,
-            f"El monto elegible de las reservas vinculadas (S/ {target_total:.2f}) ya no coincide con el monto solicitado (S/ {req_amount_dec:.2f}). Rechaza esta solicitud para que el músico genere una nueva.",
+            f"El monto elegible de las reservas vinculadas (S/ {net_target_total:.2f}) ya no coincide con el monto solicitado (S/ {req_amount_dec:.2f}). Rechaza esta solicitud para que el músico genere una nueva.",
         )
 
     for b_id in target_booking_ids:
         b_row = db.get(Booking, b_id)
         if b_row and b_row.status not in {BookingStatus.completed, BookingStatus.cancelled}:
             b_row.status = BookingStatus.completed
-        release_retained_payments(
-            db,
-            b_id,
-            payout_reference=f"payout_request:{req.id}",
-            payout_notes=admin_note,
-        )
+        try:
+            release_retained_payments(
+                db,
+                b_id,
+                payout_reference=f"payout_request:{req.id}",
+                payout_notes=admin_note,
+            )
+        except ValueError as exc:
+            db.rollback()
+            raise HTTPException(400, str(exc)) from exc
 
     req.status = "processed"
     req.processed_at = datetime.utcnow()

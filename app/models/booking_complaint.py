@@ -26,6 +26,8 @@ class BookingComplaintStatus(str, enum.Enum):
 
 # Refund transfer lifecycle (string column — avoids PG enum migrations).
 REFUND_STATUS_NONE = "none"
+REFUND_STATUS_PROCESSING = "processing"
+REFUND_STATUS_NEEDS_ATTENTION = "needs_attention"
 REFUND_STATUS_AWAITING_TRANSFER = "awaiting_transfer"
 REFUND_STATUS_AWAITING_VALIDATION = "awaiting_validation"
 REFUND_STATUS_COMPLETED = "completed"

@@ -36,6 +36,15 @@ def _auth_cookies(user: User) -> dict[str, str]:
     return {"Cookie": f"access_token={token}"}
 
 
+def _auth_cookie(client: TestClient, user: User) -> None:
+    token = create_access_token(
+        subject=str(user.id),
+        role=user.role.value,
+        version=user.token_version or 0,
+    )
+    client.cookies.set("access_token", token)
+
+
 def _sign_webhook(secret: str, data_id: str, request_id: str, ts: int | None = None) -> str:
     ts_val = ts if ts is not None else int(time.time())
     manifest = f"id:{data_id};request-id:{request_id};ts:{ts_val};"
@@ -368,26 +377,51 @@ def test_mock_transport_webhook_signature_replay_and_merchant_order(
     _, _, booking_mo = _create_signed_booking(db_session)
     _patch_mp_transport(monkeypatch, handler)
 
-    # 1. Firma inválida -> ignored sin llamar a GET /v1/payments
+    # 1. Firma inválida -> 401 sin llamar a GET /v1/payments y alerta a admin (máx. 1 por hora)
+    admin_user = User(
+        email="admin.wh.alert@test.com",
+        fullname="Admin Webhook",
+        role=UserRole.admin,
+        is_active=True,
+        is_verified=True,
+    )
+    db_session.add(admin_user)
+    db_session.commit()
+
     res_bad = client.post(
         "/api/v1/payments/mercadopago/webhook?data.id=777001&type=payment",
         headers={"x-signature": "ts=1700000000,v1=deadbeef", "x-request-id": "req-1"},
         json={"data": {"id": "777001"}, "type": "payment"},
     )
-    assert res_bad.status_code == 200
-    assert res_bad.json()["status"] == "ignored"
+    assert res_bad.status_code == 401
+    assert res_bad.json()["detail"]["reason"] == "invalid_signature"
     assert len(get_calls) == 0
 
-    # 2. Timestamp expirado (> 300s) -> ignored sin llamar a GET /v1/payments
-    old_sig = _sign_webhook(secret, "777001", "req-old", ts=int(time.time()) - 900)
+    from app.models.notification import Notification
+
+    alerts_after_first = (
+        db_session.query(Notification)
+        .filter(Notification.type == "webhook_security_alert")
+        .count()
+    )
+    assert alerts_after_first >= 1
+
+    # 2. Timestamp expirado (> 24h) -> 401 sin llamar a GET /v1/payments y sin duplicar alerta en la misma hora
+    old_sig = _sign_webhook(secret, "777001", "req-old", ts=int(time.time()) - 90000)
     res_old = client.post(
         "/api/v1/payments/mercadopago/webhook?data.id=777001&type=payment",
         headers={"x-signature": old_sig, "x-request-id": "req-old"},
         json={"data": {"id": "777001"}, "type": "payment"},
     )
-    assert res_old.status_code == 200
-    assert res_old.json()["reason"] == "invalid_signature"
+    assert res_old.status_code == 401
+    assert res_old.json()["detail"]["reason"] == "invalid_signature"
     assert len(get_calls) == 0
+    alerts_after_second = (
+        db_session.query(Notification)
+        .filter(Notification.type == "webhook_security_alert")
+        .count()
+    )
+    assert alerts_after_second == alerts_after_first
 
     # 3. Firma válida -> promueve el pago initiated a retained y la reserva a payment_retained
     valid_sig = _sign_webhook(secret, "777001", "req-valid")
@@ -478,6 +512,18 @@ def test_mock_transport_webhook_post_approval_events(
     assert payment.status == PaymentStatus.retained
     assert payment.gateway_metadata["post_approval_event"] == "in_mediation"
     assert payment.gateway_metadata["in_mediation"] is True
+
+    # 1b. Mediación resuelta a favor del vendedor (status vuelve a approved sin reembolso) -> limpia in_mediation
+    mp_state.update({"status": "approved", "refunded": 0.0})
+    res_med_resolved = client.post(
+        "/api/v1/payments/mercadopago/webhook?data.id=888001&type=payment",
+        headers={"x-signature": sig, "x-request-id": "req-post"},
+        json={"data": {"id": "888001"}, "type": "payment"},
+    )
+    assert res_med_resolved.status_code == 200
+    db_session.refresh(payment)
+    assert payment.gateway_metadata["in_mediation"] is False
+    assert payment.gateway_metadata["post_approval_event"] == "mediation_resolved"
 
     # 2. Reembolso parcial en MP -> alerta partial_refund sin cancelar la reserva
     mp_state.update({"status": "approved", "refunded": 50.0})
@@ -687,4 +733,702 @@ def test_mock_transport_concurrent_two_threads_double_click(
     assert len(mp_post_calls) == 1
     db_session.expire_all()
     assert db_session.query(Payment).filter(Payment.booking_id == booking.id).count() == 1
+
+
+def test_wp01_webhook_topics_reconciliation_cron_and_orphans(
+    client: TestClient, db_session: Session, monkeypatch
+) -> None:
+    """
+    WP-01:
+    1) Webhook con topic desconocido ('chargebacks', 'claims') responde 200 ignored.
+    2) Pago aprobado en Mercado Pago sin fila local se registra mediante conciliación y confirma la reserva.
+    3) El cron de expiración (7 días) consulta a Mercado Pago antes de cancelar; si hay pago aprobado, no cancela.
+    4) Ejecución concurrente del job de conciliación produce un solo Payment.
+    5) Si Mercado Pago está caído, el job captura el error sin romper y se recupera al reintentar.
+    6) Detección de pagos aprobados huérfanos en Mercado Pago alerta a los administradores.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import datetime, timedelta
+    from app.cli.cron_review_reminders import expire_stale_bookings
+    from app.cli.reconcile_mercadopago_payments import run_reconciliation_batch
+    from app.models.notification import Notification
+    from tests.conftest import TestingSessionLocal
+
+    monkeypatch.setattr(settings, "MERCADO_PAGO_ACCESS_TOKEN", "TEST-MP-TOKEN-123")
+    monkeypatch.setattr(settings, "MERCADO_PAGO_PUBLIC_KEY", "TEST-MP-PUBKEY-123")
+    monkeypatch.setattr(settings, "MP_RECONCILIATION_ENABLED", True)
+
+    admin = User(
+        email="admin.wp01@test.com",
+        fullname="Admin WP01",
+        role=UserRole.admin,
+        is_active=True,
+        is_verified=True,
+    )
+    db_session.add(admin)
+    db_session.commit()
+
+    # 1. Webhook con tipo desconocido -> 200 ignored
+    res_claim = client.post(
+        "/api/v1/payments/mercadopago/webhook?topic=claims&id=abc-claim-1",
+        json={"type": "claims", "data": {"id": "abc-claim-1"}},
+    )
+    assert res_claim.status_code == 200
+    assert res_claim.json()["status"] == "ignored"
+    assert res_claim.json()["reason"] == "unsupported_topic"
+
+    # Crear dos reservas sin fila Payment local:
+    # - booking_reconcile: creada hace 2 horas (para el job periódico y concurrencia)
+    # - booking_cron: creada hace 8 días (para probar que expire_stale_bookings concilia y NO cancela)
+    now_utc = datetime.utcnow()
+    _, _, booking_reconcile = _create_signed_booking(db_session)
+    booking_reconcile.created_at = now_utc - timedelta(hours=2)
+    payable_reconcile = float(contractor_payable_total(booking_reconcile))
+
+    _, _, booking_cron = _create_signed_booking(db_session)
+    booking_cron.created_at = now_utc - timedelta(days=8)
+    booking_cron.quoted_at = now_utc - timedelta(days=8)
+    booking_cron.updated_at = now_utc - timedelta(days=8)
+    payable_cron = float(contractor_payable_total(booking_cron))
+    db_session.commit()
+
+    mp_down = {"outage": True}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if mp_down["outage"]:
+            return httpx.Response(503, json={"message": "service unavailable"})
+        url_str = str(request.url)
+        if "/v1/payments/search" in url_str:
+            ext_ref = request.url.params.get("external_reference")
+            if ext_ref == str(booking_reconcile.id):
+                return httpx.Response(
+                    200,
+                    json={
+                        "results": [
+                            {
+                                "id": 910001,
+                                "status": "approved",
+                                "status_detail": "accredited",
+                                "transaction_amount": payable_reconcile,
+                                "currency_id": "PEN",
+                                "external_reference": str(booking_reconcile.id),
+                                "metadata": {"booking_id": str(booking_reconcile.id), "payment_type": "full"},
+                            }
+                        ]
+                    },
+                )
+            if ext_ref == str(booking_cron.id):
+                return httpx.Response(
+                    200,
+                    json={
+                        "results": [
+                            {
+                                "id": 910002,
+                                "status": "approved",
+                                "status_detail": "accredited",
+                                "transaction_amount": payable_cron,
+                                "currency_id": "PEN",
+                                "external_reference": str(booking_cron.id),
+                                "metadata": {"booking_id": str(booking_cron.id), "payment_type": "full"},
+                            }
+                        ]
+                    },
+                )
+            if request.url.params.get("status") == "approved":
+                return httpx.Response(
+                    200,
+                    json={
+                        "results": [
+                            {
+                                "id": 919999,
+                                "status": "approved",
+                                "transaction_amount": 350.0,
+                                "currency_id": "PEN",
+                                "external_reference": "00000000-0000-0000-0000-000000000000",
+                            }
+                        ]
+                    },
+                )
+        return httpx.Response(200, json={"results": []})
+
+    _patch_mp_transport(monkeypatch, handler)
+
+    # 5. Mercado Pago caído -> el job no rompe y registra el error para reintentar luego
+    stats_outage = run_reconciliation_batch(db_session, now=now_utc)
+    assert stats_outage["errors"] >= 1
+    db_session.refresh(booking_reconcile)
+    assert booking_reconcile.status == BookingStatus.contract_signed
+
+    # Restaurar MP y probar 3. Cron de expiración no cancela booking_cron porque tiene pago aprobado en MP
+    mp_down["outage"] = False
+    cron_stats = expire_stale_bookings(db_session, now=now_utc)
+    assert cron_stats.get("reconciled_unpaid", 0) >= 1
+    assert cron_stats["expired_unpaid"] == 0
+    db_session.refresh(booking_cron)
+    assert booking_cron.status == BookingStatus.payment_retained
+
+    # 2 y 4. Doble ejecución concurrente del job de conciliación + detección de huérfanos
+    def _run_job(check_orphans: bool) -> dict[str, int]:
+        sess = TestingSessionLocal()
+        try:
+            return run_reconciliation_batch(sess, now=now_utc, check_orphans=check_orphans)
+        finally:
+            sess.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        f1 = pool.submit(_run_job, True)
+        f2 = pool.submit(_run_job, False)
+        r1, r2 = f1.result(), f2.result()
+
+    db_session.expire_all()
+    db_session.refresh(booking_reconcile)
+    assert booking_reconcile.status == BookingStatus.payment_retained
+    payments_reconciled = (
+        db_session.query(Payment)
+        .filter(Payment.booking_id == booking_reconcile.id)
+        .all()
+    )
+    assert len(payments_reconciled) == 1
+    assert payments_reconciled[0].status == PaymentStatus.retained
+    assert (r1["orphans_detected"] + r2["orphans_detected"]) == 1
+
+    orphan_alerts = (
+        db_session.query(Notification)
+        .filter(Notification.type == "payment_alert")
+        .all()
+    )
+    assert any("919999" in (n.message or "") for n in orphan_alerts)
+
+
+def test_wp02_wp03_safe_settlement_order_and_single_release_path(
+    client: TestClient, db_session: Session, monkeypatch
+) -> None:
+    """
+    WP-02 & WP-03:
+    1) Liquidación (`settle`) bloqueada por `in_mediation` devuelve 400 y NO ejecuta `issue_refund` en MP.
+    2) `/payments/{id}/release` rechaza liberar si hay mediación activa o queja abierta (400).
+    3) Cuando la disputa se resuelve a favor del vendedor (`status='approved'`), se desbloquea `settle`.
+    4) Si la liberación posterior al reembolso falla, queda en `needs_attention` (sin 500) y al reintentar
+       completa la liquidación sin duplicar el reembolso en Mercado Pago.
+    """
+    from app.models.booking_complaint import (
+        REFUND_STATUS_COMPLETED,
+        REFUND_STATUS_NEEDS_ATTENTION,
+        BookingComplaint,
+        BookingComplaintStatus,
+    )
+    import app.services.settlement as settlement_mod
+
+    secret = "whsec_wp02"
+    monkeypatch.setattr(settings, "MERCADO_PAGO_ACCESS_TOKEN", "TEST-MP-TOKEN-123")
+    monkeypatch.setattr(settings, "MERCADO_PAGO_PUBLIC_KEY", "TEST-MP-PUBKEY-123")
+    monkeypatch.setattr(settings, "MERCADO_PAGO_WEBHOOK_SECRET", secret)
+
+    admin = User(
+        email="admin.wp02@test.com",
+        fullname="Admin WP02",
+        role=UserRole.admin,
+        is_active=True,
+        is_verified=True,
+    )
+    db_session.add(admin)
+    _, contractor_user, booking = _create_signed_booking(db_session)
+    booking.status = BookingStatus.completed
+    payable = float(contractor_payable_total(booking))
+    tariff = float(booking.price_agreed)
+
+    payment = Payment(
+        booking_id=booking.id,
+        amount=Decimal(str(payable)),
+        currency="PEN",
+        payment_type="full",
+        status=PaymentStatus.retained,
+        gateway_provider="mercadopago",
+        gateway_payment_id="920001",
+        gateway_metadata={"in_mediation": True, "post_approval_event": "in_mediation"},
+    )
+    db_session.add(payment)
+    db_session.flush()
+
+    complaint = BookingComplaint(
+        booking_id=booking.id,
+        opened_by_user_id=contractor_user.id,
+        reason="El grupo llegó 30 minutos tarde",
+        status=BookingComplaintStatus.musician_responded,
+        musician_response="Hubo tráfico pero tocamos completo",
+    )
+    db_session.add(complaint)
+    db_session.commit()
+
+    refund_post_calls: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url_str = str(request.url)
+        if request.method == "POST" and "/refunds" in url_str:
+            refund_post_calls.append({"url": url_str, "headers": dict(request.headers)})
+            return httpx.Response(201, json={"id": 700111, "status": "approved", "amount": 100.0})
+        if request.method == "GET" and "/v1/payments/920001" in url_str:
+            return httpx.Response(
+                200,
+                json={
+                    "id": 920001,
+                    "status": "approved",
+                    "transaction_amount": payable,
+                    "transaction_amount_refunded": 100.0 if refund_post_calls else 0.0,
+                    "refunds": [{"id": 700111, "status": "approved", "amount": 100.0}] if refund_post_calls else [],
+                    "currency_id": "PEN",
+                    "external_reference": str(booking.id),
+                    "metadata": {"booking_id": str(booking.id)},
+                },
+            )
+        return httpx.Response(404, json={"message": "not found"})
+
+    _patch_mp_transport(monkeypatch, handler)
+    _auth_cookie(client, admin)
+
+    # 1. Liquidación bloqueada por in_mediation -> 400 y CERO llamadas a /refunds
+    res_blocked = client.post(
+        f"/api/v1/admin/settlements/{booking.id}/settle",
+        json={
+            "musician_amount": round(tariff - 100.0, 2),
+            "contractor_refund": 100.0,
+            "notes": "Intento durante mediación",
+        },
+    )
+    assert res_blocked.status_code == 400
+    assert "mediación" in res_blocked.json()["detail"].lower()
+    assert len(refund_post_calls) == 0
+
+    # 2. WP-03: /payments/{id}/release también bloqueado por mediación y por queja abierta
+    res_rel_blocked = client.post(f"/api/v1/payments/{payment.id}/release")
+    assert res_rel_blocked.status_code == 400
+
+    # 3. Webhook de MP resuelve la disputa a favor del vendedor (status='approved') -> limpia in_mediation
+    sig = _sign_webhook(secret, "920001", "req-wp02-resolve")
+    res_wh = client.post(
+        "/api/v1/payments/mercadopago/webhook?data.id=920001&type=payment",
+        headers={"x-signature": sig, "x-request-id": "req-wp02-resolve"},
+        json={"data": {"id": "920001"}, "type": "payment"},
+    )
+    assert res_wh.status_code == 200
+    db_session.refresh(payment)
+    assert payment.gateway_metadata.get("in_mediation") is False
+
+    # WP-03: Aun sin mediación, /payments/{id}/release sigue bloqueado mientras haya queja sin liquidar
+    res_rel_complaint = client.post(f"/api/v1/payments/{payment.id}/release")
+    assert res_rel_complaint.status_code == 400
+    assert "reclamo" in res_rel_complaint.json()["detail"].lower()
+
+    # 4. Simular fallo en release_retained_payments DESPUÉS de que el reembolso en MP tuvo éxito -> needs_attention (sin 500)
+    orig_release = settlement_mod.release_retained_payments
+    fail_once = {"should_fail": True}
+
+    def _flaky_release(*args, **kwargs):
+        if fail_once["should_fail"]:
+            fail_once["should_fail"] = False
+            raise RuntimeError("Fallo transitorio simulado al liberar saldo")
+        return orig_release(*args, **kwargs)
+
+    monkeypatch.setattr(settlement_mod, "release_retained_payments", _flaky_release)
+
+    res_partial_fail = client.post(
+        f"/api/v1/admin/settlements/{booking.id}/settle",
+        json={
+            "musician_amount": round(tariff - 100.0, 2),
+            "contractor_refund": 100.0,
+            "notes": "Liquidación con fallo a mitad",
+        },
+    )
+    assert res_partial_fail.status_code == 200, res_partial_fail.text
+    assert res_partial_fail.json()["settlement_state"] == "needs_attention"
+    assert len(refund_post_calls) == 1
+    db_session.expire_all()
+    db_session.refresh(complaint)
+    assert complaint.refund_status == REFUND_STATUS_NEEDS_ATTENTION
+
+    # Reintento tardío -> completa la liberación SIN volver a llamar a POST /refunds en Mercado Pago
+    res_retry = client.post(
+        f"/api/v1/admin/settlements/{booking.id}/settle",
+        json={
+            "musician_amount": round(tariff - 100.0, 2),
+            "contractor_refund": 100.0,
+            "notes": "Reintento exitoso",
+        },
+    )
+    assert res_retry.status_code == 200, res_retry.text
+    assert res_retry.json()["settlement_state"] == "settled"
+    assert len(refund_post_calls) == 1
+    db_session.expire_all()
+    db_session.refresh(complaint)
+    db_session.refresh(payment)
+    assert complaint.refund_status == REFUND_STATUS_COMPLETED
+    assert payment.status == PaymentStatus.released
+
+
+def test_wp05_preference_initiated_row_auto_refund_duplicates_and_network_error(
+    client: TestClient, db_session: Session, monkeypatch
+) -> None:
+    """
+    WP-05:
+    1) Crear preferencia Checkout Pro registra una fila Payment en estado 'initiated' (y la reutiliza si se pide de nuevo).
+    2) Si la llamada HTTP de /process falla por red (network_error), deja una fila 'initiated' con idempotency_key
+       lista para ser conciliada por WP-01.
+    3) Dos pagos aprobados para la misma reserva terminan con el primero en 'retained' y el segundo reembolsado
+       automáticamente ('refunded', auto_refunded=True).
+    """
+    monkeypatch.setattr(settings, "MERCADO_PAGO_ACCESS_TOKEN", "TEST-MP-TOKEN-123")
+    monkeypatch.setattr(settings, "MERCADO_PAGO_PUBLIC_KEY", "TEST-MP-PUBKEY-123")
+    monkeypatch.setattr(settings, "MP_AUTO_REFUND_NEEDS_REFUND", True)
+
+    _, contractor_user, booking = _create_signed_booking(db_session)
+    payable = float(contractor_payable_total(booking))
+
+    refund_calls: list[str] = []
+    simulate_net_error = {"active": False}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url_str = str(request.url)
+        if "/checkout/preferences" in url_str:
+            return httpx.Response(
+                201,
+                json={
+                    "id": "pref-wp05-1",
+                    "init_point": "https://www.mercadopago.com.pe/checkout/v1/redirect?pref_id=pref-wp05-1",
+                },
+            )
+        if request.method == "POST" and "/v1/payments" in url_str and "/refunds" not in url_str:
+            if simulate_net_error["active"]:
+                raise httpx.ConnectError("Simulated connection reset")
+            return httpx.Response(
+                201,
+                json={
+                    "id": 950001,
+                    "status": "approved",
+                    "status_detail": "accredited",
+                    "transaction_amount": payable,
+                    "currency_id": "PEN",
+                    "external_reference": str(booking.id),
+                    "metadata": {"booking_id": str(booking.id), "payment_type": "full"},
+                },
+            )
+        if request.method == "POST" and "/refunds" in url_str:
+            refund_calls.append(url_str)
+            return httpx.Response(
+                201,
+                json={"id": 850001, "status": "approved", "amount": payable},
+            )
+        return httpx.Response(404, json={"message": "not found"})
+
+    _patch_mp_transport(monkeypatch, handler)
+    _auth_cookie(client, contractor_user)
+
+    # 1. Crear preferencia -> crea 1 fila Payment en initiated y la reutiliza si se vuelve a llamar
+    res_pref1 = client.post(
+        "/api/v1/payments/mercadopago/preference",
+        json={"booking_id": str(booking.id), "payment_type": "full", "amount": payable},
+    )
+    assert res_pref1.status_code == 200, res_pref1.text
+    res_pref2 = client.post(
+        "/api/v1/payments/mercadopago/preference",
+        json={"booking_id": str(booking.id), "payment_type": "full", "amount": payable},
+    )
+    assert res_pref2.status_code == 200, res_pref2.text
+    init_rows = db_session.query(Payment).filter(Payment.booking_id == booking.id).all()
+    assert len(init_rows) == 1
+    assert init_rows[0].status == PaymentStatus.initiated
+    assert init_rows[0].gateway_preference_id == "pref-wp05-1"
+
+    # 2. Error de red en /process -> deja la fila initiated con network_error=True e idempotency_key
+    simulate_net_error["active"] = True
+    res_net = client.post(
+        "/api/v1/payments/mercadopago/process",
+        json={
+            "booking_id": str(booking.id),
+            "payment_type": "full",
+            "payment_method_id": "visa",
+            "token": "tok_wp05_net",
+            "amount": payable,
+        },
+    )
+    assert res_net.status_code == 200
+    assert res_net.json()["status"] == "error"
+    assert res_net.json()["status_detail"] == "network_error"
+    db_session.expire_all()
+    net_row = db_session.query(Payment).filter(Payment.booking_id == booking.id).first()
+    assert net_row is not None
+    assert net_row.status == PaymentStatus.initiated
+    assert net_row.gateway_metadata.get("network_error") is True
+    assert net_row.gateway_metadata.get("idempotency_key", "").startswith("pay-")
+
+    # 3. Dos pagos aprobados para la misma reserva -> el 1ro queda en retained y el 2do se reembolsa solo
+    from app.services import mercadopago_service
+
+    simulate_net_error["active"] = False
+    p1 = mercadopago_service.process_approved_mercadopago_payment(
+        db_session,
+        {
+            "id": "950001",
+            "status": "approved",
+            "status_detail": "accredited",
+            "transaction_amount": payable,
+            "currency_id": "PEN",
+            "external_reference": str(booking.id),
+            "metadata": {"booking_id": str(booking.id), "payment_type": "full"},
+        },
+    )
+    p2 = mercadopago_service.process_approved_mercadopago_payment(
+        db_session,
+        {
+            "id": "950002",
+            "status": "approved",
+            "status_detail": "accredited",
+            "transaction_amount": payable,
+            "currency_id": "PEN",
+            "external_reference": str(booking.id),
+            "metadata": {"booking_id": str(booking.id), "payment_type": "full"},
+        },
+    )
+    db_session.refresh(p1)
+    db_session.refresh(p2)
+    assert p1.status == PaymentStatus.retained
+    assert p2.status == PaymentStatus.refunded
+    assert p2.gateway_metadata.get("auto_refunded") is True
+    assert len(refund_calls) == 1
+
+
+def test_wp04_wp06_chargeback_debt_cancelled_payout_no_show_and_fee_details(
+    client: TestClient, db_session: Session, monkeypatch
+) -> None:
+    """
+    WP-04 & WP-06:
+    1) WP-06: `GET /payments/platform-instructions` devuelve `gateway_fee_rate` y `gateway_fixed_fee_pen`,
+       y un pago aprobado con `fee_details` guarda `gateway_fee_actual`, `gateway_fee_estimated` y `gateway_fee_diff`.
+    2) WP-04 (D3): Contracargo posterior a liberación (`PaymentStatus.released` -> `charged_back`) registra
+       deuda del músico (`total_chargeback_debt`) y se descuenta automáticamente en el siguiente desembolso.
+    3) WP-04 (P-05): Reserva cancelada con retención a favor del músico aparece como `payable` en
+       `musician/earnings` y puede incluirse en `request-payout`.
+    4) WP-04 (A2): Reserva en `payment_retained` cuyo evento ya finalizó sin reseña del contratista aparece
+       en `/admin/settlements` como `awaiting_reviews` y el admin puede liquidarla manualmente.
+    5) WP-04 (Paso 5 & 6): `POST /bookings/{id}/report-no-show` abre queja `[NO-SHOW]` al iniciar el evento,
+       y `expire_stale_bookings` expira `change_pending` tras 48 h volviendo a `payment_retained`.
+    """
+    from datetime import datetime
+    from app.cli.cron_review_reminders import expire_stale_bookings
+    from app.services import mercadopago_service
+
+    admin = User(
+        email="admin.wp04@test.com",
+        fullname="Admin WP04",
+        role=UserRole.admin,
+        is_active=True,
+        is_verified=True,
+    )
+    db_session.add(admin)
+    musician_user, contractor_user, b1 = _create_signed_booking(db_session, price=Decimal("400.00"))
+    payable_b1 = float(contractor_payable_total(b1))
+
+    # 1. WP-06: Consultar configuración de tarifas y registrar pago con fee_details
+    _auth_cookie(client, contractor_user)
+    res_inst = client.get("/api/v1/payments/platform-instructions")
+    assert res_inst.status_code == 200
+    inst_data = res_inst.json()
+    assert inst_data["gateway_fee_rate"] == 0.0412
+    assert inst_data["gateway_fixed_fee_pen"] == 1.18
+
+    p_b1 = mercadopago_service.process_approved_mercadopago_payment(
+        db_session,
+        {
+            "id": "960001",
+            "status": "approved",
+            "status_detail": "accredited",
+            "transaction_amount": payable_b1,
+            "currency_id": "PEN",
+            "external_reference": str(b1.id),
+            "metadata": {"booking_id": str(b1.id), "payment_type": "full"},
+            "fee_details": [{"type": "mercadopago_fee", "amount": 19.50}],
+        },
+    )
+    db_session.refresh(p_b1)
+    assert p_b1.gateway_metadata.get("gateway_fee_actual") == 19.50
+    assert p_b1.gateway_metadata.get("gateway_fee_estimated") > 0
+    assert "gateway_fee_diff" in p_b1.gateway_metadata
+
+    # 2. WP-04 (D3): Simular que p_b1 ya fue desembolsado (released) y luego sufre un contracargo (charged_back)
+    p_b1.status = PaymentStatus.released
+    p_b1.released_at = datetime.utcnow()
+    b1.status = BookingStatus.completed
+    db_session.commit()
+
+    mercadopago_service.process_approved_mercadopago_payment(
+        db_session,
+        {
+            "id": "960001",
+            "status": "charged_back",
+            "status_detail": "charged_back",
+            "transaction_amount": payable_b1,
+            "currency_id": "PEN",
+            "external_reference": str(b1.id),
+            "metadata": {"booking_id": str(b1.id), "payment_type": "full"},
+        },
+    )
+    db_session.refresh(p_b1)
+    assert p_b1.status == PaymentStatus.refunded
+    assert p_b1.gateway_metadata.get("chargeback_after_release") is True
+    assert p_b1.gateway_metadata.get("musician_chargeback_remaining") == 400.0
+
+    # 3. WP-04 (P-05): Crear una segunda reserva (b2) del mismo músico por S/ 600, cancelada < 7 días (0% reembolso)
+    b2 = Booking(
+        musician_id=b1.musician_id,
+        contractor_id=b1.contractor_id,
+        event_type="Boda",
+        event_date=date.today() + timedelta(days=3),
+        start_time=dt_time(20, 0),
+        end_time=dt_time(21, 0),
+        location_city="Lima",
+        location_address="Av. Larco 500",
+        price_agreed=Decimal("600.00"),
+        platform_fee_percent=Decimal("2.00"),
+        status=BookingStatus.cancelled,
+        cancellation_refund_status="not_applicable",
+    )
+    db_session.add(b2)
+    db_session.flush()
+    payable_b2 = float(contractor_payable_total(b2))
+    p_b2 = Payment(
+        booking_id=b2.id,
+        amount=Decimal(str(payable_b2)),
+        currency="PEN",
+        payment_type="full",
+        status=PaymentStatus.retained,
+        gateway_provider="mercadopago",
+        gateway_payment_id="960002",
+    )
+    db_session.add(p_b2)
+    db_session.commit()
+
+    # Verificar que en musician/earnings aparece b2 como payable (S/ 600), la deuda por contracargo (S/ 400),
+    # y el neto por retirar (total_app_debt) es S/ 200.00
+    _auth_cookie(client, musician_user)
+    res_earn = client.get("/api/v1/payments/musician/earnings")
+    assert res_earn.status_code == 200
+    earn_json = res_earn.json()
+    assert earn_json["total_chargeback_debt"] == 400.0
+    assert earn_json["total_app_debt"] == 200.0
+
+    # Solicitar retiro incluye la reserva cancelada b2 y descuenta el contracargo (monto solicitado = 200.0)
+    res_req = client.post("/api/v1/payments/musician/request-payout")
+    assert res_req.status_code == 200, res_req.text
+    req_data = res_req.json()
+    assert req_data["amount"] == 200.0
+
+    # Cuando el admin procesa la solicitud de retiro, se descuenta la deuda por contracargo (musician_chargeback_remaining -> 0)
+    _auth_cookie(client, admin)
+    res_proc = client.post(
+        f"/api/v1/admin/payout-requests/{req_data['id']}/process",
+        json={"notes": "Desembolso con descuento de contracargo"},
+    )
+    assert res_proc.status_code == 200, res_proc.text
+    db_session.expire_all()
+    db_session.refresh(p_b1)
+    db_session.refresh(p_b2)
+    assert p_b1.gateway_metadata.get("musician_chargeback_remaining") == 0.0
+    assert p_b2.status == PaymentStatus.released
+    assert p_b2.gateway_metadata.get("chargeback_deducted") == 400.0
+
+    # 4. WP-04 (A2): Reserva b3 cuyo evento ya finalizó (ayer) pero sigue en `payment_retained` sin reseñas
+    b3 = Booking(
+        musician_id=b1.musician_id,
+        contractor_id=b1.contractor_id,
+        event_type="Cumpleaños",
+        event_date=date.today() - timedelta(days=2),
+        start_time=dt_time(18, 0),
+        end_time=dt_time(19, 0),
+        location_city="Lima",
+        location_address="Av. Javier Prado 900",
+        price_agreed=Decimal("500.00"),
+        platform_fee_percent=Decimal("2.00"),
+        status=BookingStatus.payment_retained,
+    )
+    db_session.add(b3)
+    db_session.flush()
+    payable_b3 = float(contractor_payable_total(b3))
+    p_b3 = Payment(
+        booking_id=b3.id,
+        amount=Decimal(str(payable_b3)),
+        currency="PEN",
+        payment_type="full",
+        status=PaymentStatus.retained,
+        gateway_provider="mercadopago",
+        gateway_payment_id="960003",
+    )
+    db_session.add(p_b3)
+    db_session.commit()
+
+    res_settlements = client.get("/api/v1/admin/settlements")
+    assert res_settlements.status_code == 200
+    b3_item = next((x for x in res_settlements.json() if x["booking_id"] == str(b3.id)), None)
+    assert b3_item is not None
+    assert b3_item["settlement_state"] == "awaiting_reviews"
+
+    # El admin puede liquidar b3 manualmente aunque el contratista nunca dejó reseña
+    res_settle_b3 = client.post(
+        f"/api/v1/admin/settlements/{b3.id}/settle",
+        json={"musician_amount": 500.0, "contractor_refund": 0.0, "notes": "Liquidación manual sin reseña"},
+    )
+    assert res_settle_b3.status_code == 200, res_settle_b3.text
+    db_session.expire_all()
+    db_session.refresh(b3)
+    db_session.refresh(p_b3)
+    assert b3.status == BookingStatus.completed
+    assert p_b3.status == PaymentStatus.released
+
+    # 5. WP-04 (Paso 5 & 6): No-show y expiración de `change_pending`
+    b4 = Booking(
+        musician_id=b1.musician_id,
+        contractor_id=b1.contractor_id,
+        event_type="Aniversario",
+        event_date=date.today() - timedelta(days=1),
+        start_time=dt_time(15, 0),
+        end_time=dt_time(17, 0),
+        location_city="Lima",
+        location_address="Calle Los Pinos 123",
+        price_agreed=Decimal("450.00"),
+        status=BookingStatus.payment_retained,
+    )
+    b5_change = Booking(
+        musician_id=b1.musician_id,
+        contractor_id=b1.contractor_id,
+        event_type="Corporativo",
+        event_date=date.today() + timedelta(days=10),
+        start_time=dt_time(19, 0),
+        end_time=dt_time(21, 0),
+        location_city="Lima",
+        location_address="Av. Rivera Navarrete 400",
+        pending_location_address="Av. Nueva 999",
+        change_requested_by="contractor",
+        change_requested_at=datetime.utcnow() - timedelta(hours=50),
+        price_agreed=Decimal("700.00"),
+        status=BookingStatus.change_pending,
+    )
+    db_session.add_all([b4, b5_change])
+    db_session.commit()
+
+    _auth_cookie(client, contractor_user)
+    res_noshow = client.post(
+        f"/api/v1/bookings/{b4.id}/report-no-show",
+        json={"details": "Esperamos 45 minutos y nunca llegaron."},
+    )
+    assert res_noshow.status_code == 200, res_noshow.text
+    assert res_noshow.json()["mode"] == "no_show_complaint"
+    assert "[NO-SHOW]" in res_noshow.json()["complaint"]["reason"]
+
+    stats = expire_stale_bookings(db_session)
+    assert stats.get("expired_change_pending", 0) >= 1
+    db_session.refresh(b5_change)
+    assert b5_change.status == BookingStatus.payment_retained
+    assert b5_change.pending_location_address is None
+
+
+
+
 

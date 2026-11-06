@@ -116,6 +116,7 @@ ACTION_RULES: Dict[BookingAction, TransitionRule] = {
     BookingAction.MARK_IN_PROGRESS: TransitionRule(
         from_statuses=[
             BookingStatus.payment_retained,
+            BookingStatus.change_pending,
             BookingStatus.balance_pending,
             BookingStatus.balance_review
         ],
@@ -126,6 +127,7 @@ ACTION_RULES: Dict[BookingAction, TransitionRule] = {
         from_statuses=[
             BookingStatus.in_progress,
             BookingStatus.payment_retained,
+            BookingStatus.change_pending,
             BookingStatus.payment_released,
             BookingStatus.balance_pending,
             BookingStatus.balance_review
@@ -155,6 +157,7 @@ ACTION_RULES: Dict[BookingAction, TransitionRule] = {
             BookingStatus.in_progress,
             BookingStatus.payment_released,
             BookingStatus.payment_retained,
+            BookingStatus.change_pending,
             BookingStatus.balance_pending,
             BookingStatus.balance_review
         ],
@@ -166,6 +169,7 @@ ACTION_RULES: Dict[BookingAction, TransitionRule] = {
             BookingStatus.in_progress,
             BookingStatus.payment_released,
             BookingStatus.payment_retained,
+            BookingStatus.change_pending,
             BookingStatus.balance_pending,
             BookingStatus.balance_review
         ],

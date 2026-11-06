@@ -1049,14 +1049,44 @@ def notify_settlement_completed(
     musician_amount: float,
     contractor_refund: float,
 ) -> None:
+    from datetime import datetime
+    from app.core.timezone import now_peru_naive
+
+    paid_date_str = now_peru_naive().strftime("%d/%m/%Y")
     notify_user(
         db,
         user=musician_user,
         type="booking_settled",
         title="Desembolso autorizado",
-        message=f"El admin liquidó la reserva. Monto a recibir: S/ {musician_amount:.2f}.",
+        message=f"Te pagamos el {paid_date_str}. Monto desembolsado: S/ {musician_amount:.2f}.",
         booking_id=booking_id,
     )
+    try:
+        from app.core.config import settings
+        from app.services.email.defaults import APP_NAME
+        from app.services.email.service import send_templated_email
+
+        if musician_user.email and not musician_user.email.endswith("@guest.local") and musician_amount > 0:
+            action_url = f"{settings.FRONTEND_URL.rstrip('/')}/musician/earnings"
+            send_templated_email(
+                db,
+                slug="musician_payout_completed",
+                to=musician_user.email,
+                context={
+                    "user_name": musician_user.fullname or "Músico",
+                    "amount": f"{musician_amount:.2f}",
+                    "paid_date": paid_date_str,
+                    "booking_id": booking_id[:8],
+                    "action_url": action_url,
+                    "app_name": APP_NAME,
+                },
+                user_id=musician_user.id,
+                meta={"booking_id": booking_id, "musician_amount": musician_amount},
+            )
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).warning("Error enviando correo de desembolso al músico: %s", exc)
     if contractor_refund > 0:
         notify_user(
             db,
