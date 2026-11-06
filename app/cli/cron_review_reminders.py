@@ -21,9 +21,11 @@ logger = logging.getLogger(__name__)
 
 REQUESTED_EXPIRY_HOURS = 72
 REQUESTED_WARNING_HOURS = 48
+REQUESTED_ALTERNATIVES_HOURS = 24
 UNPAID_EXPIRY_DAYS = 7
 UNPAID_WARNING_DAYS = 6
 CHANGE_PENDING_EXPIRY_HOURS = 48
+EVENT_REMINDER_HOURS = 48
 
 
 def _has_notification(db: Session, user_id, notif_type: str, booking_id: str) -> bool:
@@ -101,6 +103,50 @@ def expire_stale_bookings(db: Session, now: datetime | None = None) -> dict[str,
                             booking_id=b_id,
                         )
                         stats["warned_requested"] += 1
+                if (
+                    age >= timedelta(hours=REQUESTED_ALTERNATIVES_HOURS)
+                    and contractor_user
+                    and not _has_notification(db, contractor_user.id, "booking_unanswered_24h", b_id)
+                ):
+                    # WP-21: A las 24 h sin respuesta, sugerir artistas alternativos disponibles.
+                    from app.models.musician_profile import MusicianProfile
+                    from app.models.profile_status import ProfileStatus
+                    from app.models.user import User
+
+                    alt_q = (
+                        db.query(MusicianProfile)
+                        .join(User, MusicianProfile.user_id == User.id)
+                        .filter(
+                            MusicianProfile.id != b.musician_id,
+                            MusicianProfile.status == ProfileStatus.published,
+                            MusicianProfile.is_ensemble_only.is_(False),
+                            User.is_verified.is_(True),
+                            User.is_active.is_(True),
+                        )
+                    )
+                    if b.location_city:
+                        alt_q = alt_q.filter(MusicianProfile.location_city.ilike(f"%{b.location_city.strip()}%"))
+                    alts = alt_q.order_by(MusicianProfile.rating_avg.desc().nulls_last()).limit(3).all()
+                    alt_names = [a.stage_name for a in alts if a.stage_name]
+                    alt_suffix = (
+                        f" Artistas similares disponibles: {', '.join(alt_names)}."
+                        if alt_names
+                        else " Puedes explorar otros artistas verificados para asegurar tu fecha."
+                    )
+                    notify_user(
+                        db,
+                        user=contractor_user,
+                        type="booking_unanswered_24h",
+                        title="El artista aún no responde tu solicitud",
+                        message=f"Han pasado 24 horas sin cotización.{alt_suffix}",
+                        booking_id=b_id,
+                        meta={
+                            "booking_id": b_id,
+                            "alternative_musician_ids": [str(a.id) for a in alts],
+                            "alternative_stage_names": alt_names,
+                        },
+                    )
+                    stats["unanswered_24h_alerts"] = stats.get("unanswered_24h_alerts", 0) + 1
         except Exception as exc:
             logger.error("Error procesando expiración requested de reserva %s: %s", b.id, exc)
             stats["errors"] = stats.get("errors", 0) + 1
@@ -345,6 +391,39 @@ def expire_stale_bookings(db: Session, now: datetime | None = None) -> dict[str,
         .delete(synchronize_session=False)
     )
     stats["purged_location_pings"] = int(purged_pings or 0)
+
+    # 6. WP-23: Recordatorio de evento confirmado (48 h / 24 h antes del show)
+    lima_tz = ZoneInfo("America/Lima")
+    now_lima = datetime.now(lima_tz)
+    confirmed_upcoming = (
+        db.query(Booking)
+        .options(joinedload(Booking.contractor), joinedload(Booking.musician))
+        .filter(Booking.status == BookingStatus.payment_retained)
+        .all()
+    )
+    for b in confirmed_upcoming:
+        if not b.event_date or not b.start_time:
+            continue
+        event_dt_lima = datetime.combine(b.event_date, b.start_time).replace(tzinfo=lima_tz)
+        until_event = event_dt_lima - now_lima
+        if timedelta(hours=0) < until_event <= timedelta(hours=EVENT_REMINDER_HOURS):
+            b_id = str(b.id)
+            contractor_user = b.contractor.user if b.contractor else None
+            musician_user = b.musician.user if b.musician else None
+            for target_user in (contractor_user, musician_user):
+                if target_user and not _has_notification(db, target_user.id, "booking_event_reminder", b_id):
+                    notify_user(
+                        db,
+                        user=target_user,
+                        type="booking_event_reminder",
+                        title="Recordatorio de tu evento confirmado",
+                        message=(
+                            f"Tu evento '{b.event_type}' en {b.location_city or 'Perú'} "
+                            f"es el {b.event_date} a las {b.start_time.strftime('%H:%M')}."
+                        ),
+                        booking_id=b_id,
+                    )
+                    stats["event_reminders"] = stats.get("event_reminders", 0) + 1
 
     db.commit()
     return stats

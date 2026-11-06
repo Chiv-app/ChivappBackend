@@ -13,14 +13,24 @@ class BookingCreate(BaseModel):
     event_date: date
     start_time: time
     end_time: time | None = None
-    location_address: str
+    location_address: str | None = None
     location_city: str | None = None
     location_reference: str | None = None
     event_type: str
     event_description: str | None = None
+    # WP-21: Campos opcionales para enriquecer la solicitud y hacer opcional el pin exacto
+    guests_count: int | None = Field(default=None, ge=1, le=50000)
+    duration_hours: Decimal | None = Field(default=None, gt=0, le=24)
+    estimated_budget: Decimal | None = Field(default=None, gt=0, le=1000000)
 
     @model_validator(mode="after")
-    def validate_time_order(self):
+    def validate_time_and_location(self):
+        addr = (self.location_address or "").strip()
+        city = (self.location_city or "").strip()
+        if not addr and not city:
+            raise ValueError("Indica al menos la ciudad/distrito o la dirección del evento")
+        if not addr:
+            self.location_address = f"Por definir en {city}"
         if self.end_time is not None and self.start_time is not None:
             if self.end_time == self.start_time:
                 raise ValueError("La hora de fin no puede ser igual a la hora de inicio")
@@ -31,6 +41,22 @@ class BookingCreate(BaseModel):
                 if overnight_duration > 12 * 60 or end_min > 8 * 60:
                     raise ValueError("La hora de fin debe ser posterior a la hora de inicio")
         return self
+
+
+class BookingBatchCreate(BaseModel):
+    """WP-21 (D9): Solicitud de cotización a múltiples artistas en un solo envío."""
+    musician_ids: list[UUID] = Field(min_length=1, max_length=5)
+    event_date: date
+    start_time: time
+    end_time: time | None = None
+    location_address: str | None = None
+    location_city: str | None = None
+    location_reference: str | None = None
+    event_type: str
+    event_description: str | None = None
+    guests_count: int | None = Field(default=None, ge=1, le=50000)
+    duration_hours: Decimal | None = Field(default=None, gt=0, le=24)
+    estimated_budget: Decimal | None = Field(default=None, gt=0, le=1000000)
 
 
 class MusicianBookingCreate(BaseModel):

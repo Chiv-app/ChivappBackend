@@ -237,7 +237,7 @@ def compute_visible_stage(status: BookingStatus | str | None) -> str:
         BookingStatus.completed,
     ):
         return "evento_y_cierre"
-    if st in (BookingStatus.cancelled, BookingStatus.rejected):
+    if st == BookingStatus.cancelled or str(status) in ("cancelled", "rejected"):
         return "cancelada"
     return "solicitud"
 

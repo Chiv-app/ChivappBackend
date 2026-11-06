@@ -40,6 +40,7 @@ from app.models.payment import Payment, PaymentStatus
 from app.models.profile_status import ProfileStatus
 from app.schemas.booking import (
     BookingAcceptQuote,
+    BookingBatchCreate,
     BookingCreate,
     BookingOut,
     BookingQuote,
@@ -177,17 +178,31 @@ def create_booking(
         end_time=payload.end_time,
     )
 
+    desc_parts: list[str] = []
+    if payload.event_description and payload.event_description.strip():
+        desc_parts.append(payload.event_description.strip())
+    extras: list[str] = []
+    if payload.guests_count is not None:
+        extras.append(f"Invitados aprox.: {payload.guests_count}")
+    if payload.duration_hours is not None:
+        extras.append(f"Duración estimada: {payload.duration_hours} h")
+    if payload.estimated_budget is not None:
+        extras.append(f"Presupuesto referencial: S/ {float(payload.estimated_budget):.2f}")
+    if extras:
+        desc_parts.append(" | ".join(extras))
+    final_description = "\n".join(desc_parts) if desc_parts else None
+
     booking = Booking(
         contractor_id=contractor.id,
         musician_id=payload.musician_id,
         event_date=payload.event_date,
         start_time=payload.start_time,
         end_time=payload.end_time,
-        location_address=payload.location_address,
+        location_address=payload.location_address or f"Por definir en {payload.location_city or 'Perú'}",
         location_city=payload.location_city,
         location_reference=payload.location_reference,
         event_type=payload.event_type,
-        event_description=payload.event_description,
+        event_description=final_description,
         status=BookingStatus.requested,
     )
 
@@ -208,6 +223,40 @@ def create_booking(
     db.commit()
 
     return booking
+
+
+@router.post("/batch", response_model=list[BookingOut], status_code=201)
+def create_bookings_batch(
+    payload: BookingBatchCreate,
+    current_user: User = Depends(deps.get_current_user),
+    db: Session = Depends(deps.get_db),
+):
+    """WP-21 (D9): Envía una misma solicitud de cotización a múltiples artistas (máx. 5)."""
+    seen: set = set()
+    unique_ids = []
+    for mid in payload.musician_ids:
+        if mid not in seen:
+            seen.add(mid)
+            unique_ids.append(mid)
+
+    created: list[Booking] = []
+    for mid in unique_ids:
+        single = BookingCreate(
+            musician_id=mid,
+            event_date=payload.event_date,
+            start_time=payload.start_time,
+            end_time=payload.end_time,
+            location_address=payload.location_address,
+            location_city=payload.location_city,
+            location_reference=payload.location_reference,
+            event_type=payload.event_type,
+            event_description=payload.event_description,
+            guests_count=payload.guests_count,
+            duration_hours=payload.duration_hours,
+            estimated_budget=payload.estimated_budget,
+        )
+        created.append(create_booking(payload=single, current_user=current_user, db=db))
+    return created
 
 
 @router.post("/musician-created", response_model=BookingOut, status_code=201)
