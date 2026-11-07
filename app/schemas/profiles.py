@@ -30,6 +30,7 @@ class ProfileValidationOut(BaseModel):
     can_submit: bool
     is_public: bool
     is_ensemble_only: bool = False
+    is_listed: bool = True
 
 
 class ProfileReviewAction(BaseModel):

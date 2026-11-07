@@ -1,11 +1,12 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, Text, UniqueConstraint
+from sqlalchemy import Column, ForeignKey, Integer, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
 from app.db.session import Base
+from app.db.types import UTCDateTime
 
 
 class ContractorRecommendation(Base):
@@ -35,7 +36,7 @@ class ContractorRecommendation(Base):
     )
     rating = Column(Integer, nullable=False)  # 1-5
     comment = Column(Text, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(UTCDateTime, default=datetime.utcnow)
 
     booking = relationship("Booking")
     musician = relationship("MusicianProfile")

@@ -1,10 +1,11 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, String, Text
+from sqlalchemy import Boolean, Column, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 from app.db.session import Base
+from app.db.types import UTCDateTime
 
 
 class EmailTemplate(Base):
@@ -19,5 +20,5 @@ class EmailTemplate(Base):
     text_body = Column(Text, nullable=False)
     available_variables = Column(JSONB, nullable=False, default=list)
     enabled = Column(Boolean, default=True, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(UTCDateTime, default=datetime.utcnow)
+    updated_at = Column(UTCDateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

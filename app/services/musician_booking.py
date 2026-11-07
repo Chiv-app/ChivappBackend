@@ -1,4 +1,4 @@
-"""Reservas iniciadas por el músico para un cliente (propuestas).
+"""Reservas iniciadas por el músico para un cliente (cotizaciones).
 
 La reserva queda como cotización aceptable por el cliente: él mismo acepta,
 firma y paga por Mercado Pago. El músico no puede firmar ni validar pagos.
@@ -102,7 +102,7 @@ def resolve_or_create_contractor_client(
         if user.role != UserRole.contractor:
             raise HTTPException(
                 status_code=400,
-                detail="No se pudo crear la propuesta con los datos proporcionados",
+                detail="No se pudo crear la cotización con los datos proporcionados",
             )
         profile = (
             db.query(ContractorProfile)

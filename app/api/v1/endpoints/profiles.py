@@ -271,6 +271,7 @@ def _validation_out(result) -> ProfileValidationOut:
         can_submit=result.can_submit,
         is_public=result.is_public,
         is_ensemble_only=getattr(result, 'is_ensemble_only', False),
+        is_listed=getattr(result, 'is_listed', result.is_public),
     )
 
 
@@ -616,7 +617,7 @@ def update_musician_profile(
             type="payout_info_updated",
             title="Datos de cobro actualizados",
             message=(
-                "Se actualizaron tus datos de cobro y cuenta de desembolso. "
+                "Se actualizaron tus datos de cobro y cuenta de pago. "
                 "Si no realizaste este cambio, cambia tu contraseña de inmediato y contacta a soporte."
             ),
             meta={"changed_fields": sorted(changed_payout_fields)},

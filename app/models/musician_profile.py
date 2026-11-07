@@ -1,11 +1,12 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, Enum, ForeignKey, Integer, Numeric, String, Text, Boolean
+from sqlalchemy import Column, Enum, ForeignKey, Integer, Numeric, String, Text, Boolean
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import relationship
 
 from app.db.session import Base
+from app.db.types import UTCDateTime
 from app.models.profile_status import ProfileStatus
 import enum
 
@@ -91,15 +92,15 @@ class MusicianProfile(Base):
         nullable=False,
         default=ProfileStatus.draft,
     )
-    submitted_at = Column(DateTime, nullable=True)
-    published_at = Column(DateTime, nullable=True)
+    submitted_at = Column(UTCDateTime, nullable=True)
+    published_at = Column(UTCDateTime, nullable=True)
     rejection_reason = Column(String, nullable=True)
 
     rating_avg = Column(Numeric(2, 1), nullable=True)
     rating_count = Column(Integer, nullable=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(UTCDateTime, default=datetime.utcnow)
+    updated_at = Column(UTCDateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     user = relationship("User", back_populates="musician_profile")
 

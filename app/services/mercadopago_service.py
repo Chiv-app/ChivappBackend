@@ -440,7 +440,6 @@ PAYABLE_BOOKING_STATUSES = {
     BookingStatus.accepted,
     BookingStatus.contract_pending,
     BookingStatus.contract_signed,
-    BookingStatus.payment_pending,
 }
 
 

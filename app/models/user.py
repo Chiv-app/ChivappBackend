@@ -1,10 +1,11 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, DateTime, Boolean, Enum, Integer
+from sqlalchemy import Column, String, Boolean, Enum, Integer
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
 from app.db.session import Base
+from app.db.types import UTCDateTime
 import enum
 
 
@@ -30,29 +31,29 @@ class User(Base):
     is_verified = Column(Boolean, default=False)
     is_active = Column(Boolean, default=True, nullable=False)
 
-    email_verified_at = Column(DateTime, nullable=True)
+    email_verified_at = Column(UTCDateTime, nullable=True)
     email_verification_token = Column(String, nullable=True, unique=True, index=True)
-    email_verification_expires_at = Column(DateTime, nullable=True)
+    email_verification_expires_at = Column(UTCDateTime, nullable=True)
     password_reset_token = Column(String, nullable=True, unique=True, index=True)
-    password_reset_expires_at = Column(DateTime, nullable=True)
+    password_reset_expires_at = Column(UTCDateTime, nullable=True)
 
     login_otp_hash = Column(String, nullable=True)
-    login_otp_expires_at = Column(DateTime, nullable=True)
+    login_otp_expires_at = Column(UTCDateTime, nullable=True)
     login_otp_attempts = Column(Integer, nullable=False, default=0, server_default="0")
-    login_otp_last_sent_at = Column(DateTime, nullable=True)
+    login_otp_last_sent_at = Column(UTCDateTime, nullable=True)
     login_otp_sent_count = Column(Integer, nullable=False, default=0, server_default="0")
-    login_otp_window_started_at = Column(DateTime, nullable=True)
-    email_verification_sent_at = Column(DateTime, nullable=True)
+    login_otp_window_started_at = Column(UTCDateTime, nullable=True)
+    email_verification_sent_at = Column(UTCDateTime, nullable=True)
     email_verification_sent_count = Column(Integer, nullable=False, default=0, server_default="0")
-    email_verification_window_started_at = Column(DateTime, nullable=True)
+    email_verification_window_started_at = Column(UTCDateTime, nullable=True)
     created_by_musician_id = Column(UUID(as_uuid=True), nullable=True)
 
-    terms_accepted_at = Column(DateTime, nullable=True)
+    terms_accepted_at = Column(UTCDateTime, nullable=True)
     terms_accepted_ip = Column(String, nullable=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    last_login_at = Column(DateTime, nullable=True)
+    created_at = Column(UTCDateTime, default=datetime.utcnow)
+    updated_at = Column(UTCDateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_login_at = Column(UTCDateTime, nullable=True)
     # Se incrementa para invalidar todas las sesiones (cambio/reset de contraseña,
     # vinculación de cuenta social por email, "cerrar sesión en todos lados").
     token_version = Column(Integer, nullable=False, default=0, server_default="0")

@@ -6,7 +6,6 @@ from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from unittest.mock import MagicMock
 
-from app.cli.cron_review_reminders import expire_stale_bookings
 from app.cli.migrate_private_documents import migrate_url
 from app.core.config import settings
 from app.core.hashing import hash_password as get_password_hash
@@ -598,13 +597,5 @@ def test_sec15_bug32_and_bug4_08_lifecycle_guards(client, db_session):
     )
     assert payout_res.status_code == 400, payout_res.text
 
-    # BUG4-08: expire_stale_bookings expires both stale bookings
-    stats = expire_stale_bookings(db_session, now=now)
-    assert stats["expired_requested"] >= 1
-    assert stats["expired_unpaid"] >= 1
-    db_session.refresh(b_req)
-    db_session.refresh(b_unpaid)
-    assert b_req.status == BookingStatus.cancelled
-    assert b_unpaid.status == BookingStatus.cancelled
     (uploads_mod.PRIVATE_UPLOAD_DIR / "fase3_sig.png").unlink(missing_ok=True)
 

@@ -56,8 +56,8 @@ def notify_booking_created(db: Session, musician_user: User, booking_id: str) ->
         db,
         user=musician_user,
         type="booking_requested",
-        title="Nueva solicitud de reserva",
-        message="Un contratista te envió una solicitud de reserva. Revísala y responde con tu cotización.",
+        title="Nueva solicitud de cotización",
+        message="Un contratista te envió una solicitud de cotización. Revísala y responde con tu cotización.",
         booking_id=booking_id,
     )
 
@@ -118,7 +118,7 @@ def notify_booking_created(db: Session, musician_user: User, booking_id: str) ->
     except Exception as exc:
         import logging
         logging.getLogger(__name__).warning(
-            "Error enviando correo de nueva solicitud de reserva: %s", exc
+            "Error enviando correo de nueva solicitud de cotización: %s", exc
         )
 
 
@@ -561,8 +561,8 @@ def notify_payment_released(db: Session, musician_user: User, booking_id: str) -
         db,
         user=musician_user,
         type="payment_released",
-        title="Pago liberado",
-        message="Los pagos de esta reserva fueron liberados. Ya puedes verlos en tus ingresos.",
+        title="Pago enviado",
+        message="El pago de esta reserva ya fue enviado. Ya puedes verlo en tus ingresos.",
         booking_id=booking_id,
     )
 
@@ -752,7 +752,7 @@ def notify_booking_rejected(
         user=target_user,
         type="booking_rejected",
         title="Solicitud rechazada",
-        message=f"La solicitud de reserva fue rechazada por el {role_label}.",
+        message=f"La solicitud fue rechazada por el {role_label}.",
         booking_id=booking_id,
     )
 
@@ -1057,8 +1057,8 @@ def notify_settlement_completed(
         db,
         user=musician_user,
         type="booking_settled",
-        title="Desembolso autorizado",
-        message=f"Te pagamos el {paid_date_str}. Monto desembolsado: S/ {musician_amount:.2f}.",
+        title="Pago autorizado",
+        message=f"Te pagamos el {paid_date_str}. Monto pagado: S/ {musician_amount:.2f}.",
         booking_id=booking_id,
     )
     try:

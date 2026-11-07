@@ -735,32 +735,26 @@ def test_mock_transport_concurrent_two_threads_double_click(
     assert db_session.query(Payment).filter(Payment.booking_id == booking.id).count() == 1
 
 
-def test_wp01_webhook_topics_reconciliation_cron_and_orphans(
+def test_webhook_unknown_topic_and_manual_payment_verification(
     client: TestClient, db_session: Session, monkeypatch
 ) -> None:
     """
-    WP-01:
-    1) Webhook con topic desconocido ('chargebacks', 'claims') responde 200 ignored.
-    2) Pago aprobado en Mercado Pago sin fila local se registra mediante conciliación y confirma la reserva.
-    3) El cron de expiración (7 días) consulta a Mercado Pago antes de cancelar; si hay pago aprobado, no cancela.
-    4) Ejecución concurrente del job de conciliación produce un solo Payment.
-    5) Si Mercado Pago está caído, el job captura el error sin romper y se recupera al reintentar.
-    6) Detección de pagos aprobados huérfanos en Mercado Pago alerta a los administradores.
+    Sin cron ni conciliación automática (todo es manual para el admin):
+    1) Webhook con topic desconocido ('claims') responde 200 ignored.
+    2) Si Mercado Pago está caído, 'Verificar pago' responde 502 y no cambia la reserva.
+    3) Con Mercado Pago operativo, 'Verificar pago' registra el pago aprobado y confirma la reserva.
+    4) Repetirlo no duplica el pago (idempotente) y responde que ya estaba confirmado.
+    5) Una reserva sin pagos en Mercado Pago responde no_payment_found.
+    6) El admin ve las reservas vencidas con el filtro `stale` (sin respuesta, sin pago, pago sin confirmar).
     """
-    from concurrent.futures import ThreadPoolExecutor
-    from datetime import datetime, timedelta
-    from app.cli.cron_review_reminders import expire_stale_bookings
-    from app.cli.reconcile_mercadopago_payments import run_reconciliation_batch
-    from app.models.notification import Notification
-    from tests.conftest import TestingSessionLocal
+    from datetime import datetime
 
     monkeypatch.setattr(settings, "MERCADO_PAGO_ACCESS_TOKEN", "TEST-MP-TOKEN-123")
     monkeypatch.setattr(settings, "MERCADO_PAGO_PUBLIC_KEY", "TEST-MP-PUBKEY-123")
-    monkeypatch.setattr(settings, "MP_RECONCILIATION_ENABLED", True)
 
     admin = User(
-        email="admin.wp01@test.com",
-        fullname="Admin WP01",
+        email="admin.verify@test.com",
+        fullname="Admin Verify",
         role=UserRole.admin,
         is_active=True,
         is_verified=True,
@@ -777,30 +771,17 @@ def test_wp01_webhook_topics_reconciliation_cron_and_orphans(
     assert res_claim.json()["status"] == "ignored"
     assert res_claim.json()["reason"] == "unsupported_topic"
 
-    # Crear dos reservas sin fila Payment local:
-    # - booking_reconcile: creada hace 2 horas (para el job periódico y concurrencia)
-    # - booking_cron: creada hace 8 días (para probar que expire_stale_bookings concilia y NO cancela)
-    now_utc = datetime.utcnow()
-    _, _, booking_reconcile = _create_signed_booking(db_session)
-    booking_reconcile.created_at = now_utc - timedelta(hours=2)
-    payable_reconcile = float(contractor_payable_total(booking_reconcile))
+    _, _, booking = _create_signed_booking(db_session)
+    payable = float(contractor_payable_total(booking))
+    _, _, booking_without_payment = _create_signed_booking(db_session)
 
-    _, _, booking_cron = _create_signed_booking(db_session)
-    booking_cron.created_at = now_utc - timedelta(days=8)
-    booking_cron.quoted_at = now_utc - timedelta(days=8)
-    booking_cron.updated_at = now_utc - timedelta(days=8)
-    payable_cron = float(contractor_payable_total(booking_cron))
-    db_session.commit()
-
-    mp_down = {"outage": True}
+    mp = {"outage": True}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if mp_down["outage"]:
+        if mp["outage"]:
             return httpx.Response(503, json={"message": "service unavailable"})
-        url_str = str(request.url)
-        if "/v1/payments/search" in url_str:
-            ext_ref = request.url.params.get("external_reference")
-            if ext_ref == str(booking_reconcile.id):
+        if "/v1/payments/search" in str(request.url):
+            if request.url.params.get("external_reference") == str(booking.id):
                 return httpx.Response(
                     200,
                     json={
@@ -809,42 +790,10 @@ def test_wp01_webhook_topics_reconciliation_cron_and_orphans(
                                 "id": 910001,
                                 "status": "approved",
                                 "status_detail": "accredited",
-                                "transaction_amount": payable_reconcile,
+                                "transaction_amount": payable,
                                 "currency_id": "PEN",
-                                "external_reference": str(booking_reconcile.id),
-                                "metadata": {"booking_id": str(booking_reconcile.id), "payment_type": "full"},
-                            }
-                        ]
-                    },
-                )
-            if ext_ref == str(booking_cron.id):
-                return httpx.Response(
-                    200,
-                    json={
-                        "results": [
-                            {
-                                "id": 910002,
-                                "status": "approved",
-                                "status_detail": "accredited",
-                                "transaction_amount": payable_cron,
-                                "currency_id": "PEN",
-                                "external_reference": str(booking_cron.id),
-                                "metadata": {"booking_id": str(booking_cron.id), "payment_type": "full"},
-                            }
-                        ]
-                    },
-                )
-            if request.url.params.get("status") == "approved":
-                return httpx.Response(
-                    200,
-                    json={
-                        "results": [
-                            {
-                                "id": 919999,
-                                "status": "approved",
-                                "transaction_amount": 350.0,
-                                "currency_id": "PEN",
-                                "external_reference": "00000000-0000-0000-0000-000000000000",
+                                "external_reference": str(booking.id),
+                                "metadata": {"booking_id": str(booking.id), "payment_type": "full"},
                             }
                         ]
                     },
@@ -852,52 +801,85 @@ def test_wp01_webhook_topics_reconciliation_cron_and_orphans(
         return httpx.Response(200, json={"results": []})
 
     _patch_mp_transport(monkeypatch, handler)
+    _auth_cookie(client, admin)
 
-    # 5. Mercado Pago caído -> el job no rompe y registra el error para reintentar luego
-    stats_outage = run_reconciliation_batch(db_session, now=now_utc)
-    assert stats_outage["errors"] >= 1
-    db_session.refresh(booking_reconcile)
-    assert booking_reconcile.status == BookingStatus.contract_signed
+    # 2. Mercado Pago caído
+    res_outage = client.post(f"/api/v1/admin/bookings/{booking.id}/verify-payment")
+    assert res_outage.status_code == 502, res_outage.text
+    db_session.refresh(booking)
+    assert booking.status == BookingStatus.contract_signed
 
-    # Restaurar MP y probar 3. Cron de expiración no cancela booking_cron porque tiene pago aprobado en MP
-    mp_down["outage"] = False
-    cron_stats = expire_stale_bookings(db_session, now=now_utc)
-    assert cron_stats.get("reconciled_unpaid", 0) >= 1
-    assert cron_stats["expired_unpaid"] == 0
-    db_session.refresh(booking_cron)
-    assert booking_cron.status == BookingStatus.payment_retained
-
-    # 2 y 4. Doble ejecución concurrente del job de conciliación + detección de huérfanos
-    def _run_job(check_orphans: bool) -> dict[str, int]:
-        sess = TestingSessionLocal()
-        try:
-            return run_reconciliation_batch(sess, now=now_utc, check_orphans=check_orphans)
-        finally:
-            sess.close()
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        f1 = pool.submit(_run_job, True)
-        f2 = pool.submit(_run_job, False)
-        r1, r2 = f1.result(), f2.result()
-
+    # 3. Mercado Pago operativo: se registra y confirma
+    mp["outage"] = False
+    res_ok = client.post(f"/api/v1/admin/bookings/{booking.id}/verify-payment")
+    assert res_ok.status_code == 200, res_ok.text
+    assert res_ok.json()["result"] == "confirmed"
+    assert res_ok.json()["payments_found"] == 1
     db_session.expire_all()
-    db_session.refresh(booking_reconcile)
-    assert booking_reconcile.status == BookingStatus.payment_retained
-    payments_reconciled = (
-        db_session.query(Payment)
-        .filter(Payment.booking_id == booking_reconcile.id)
-        .all()
-    )
-    assert len(payments_reconciled) == 1
-    assert payments_reconciled[0].status == PaymentStatus.retained
-    assert (r1["orphans_detected"] + r2["orphans_detected"]) == 1
+    db_session.refresh(booking)
+    assert booking.status == BookingStatus.payment_retained
+    payments = db_session.query(Payment).filter(Payment.booking_id == booking.id).all()
+    assert len(payments) == 1 and payments[0].status == PaymentStatus.retained
 
-    orphan_alerts = (
-        db_session.query(Notification)
-        .filter(Notification.type == "payment_alert")
-        .all()
+    # 4. Idempotente
+    res_again = client.post(f"/api/v1/admin/bookings/{booking.id}/verify-payment")
+    assert res_again.status_code == 200, res_again.text
+    assert res_again.json()["result"] == "already_confirmed"
+    assert db_session.query(Payment).filter(Payment.booking_id == booking.id).count() == 1
+
+    # 5. Sin pagos en Mercado Pago
+    res_none = client.post(f"/api/v1/admin/bookings/{booking_without_payment.id}/verify-payment")
+    assert res_none.status_code == 200, res_none.text
+    assert res_none.json()["result"] == "no_payment_found"
+
+    # 6. Filtros de vencidas
+    now = datetime.utcnow()
+    musician_id = booking.musician_id
+    contractor_id = booking.contractor_id
+
+    def _booking(status: BookingStatus, **extra) -> Booking:
+        row = Booking(
+            musician_id=musician_id,
+            contractor_id=contractor_id,
+            event_type="Boda",
+            event_date=date.today() + timedelta(days=40),
+            start_time=dt_time(20, 0),
+            location_city="Lima",
+            location_address="Av. Prueba 123",
+            price_agreed=Decimal("400.00"),
+            status=status,
+            **extra,
+        )
+        db_session.add(row)
+        db_session.flush()
+        return row
+
+    requested_old = _booking(BookingStatus.requested, created_at=now - timedelta(hours=80))
+    requested_new = _booking(BookingStatus.requested, created_at=now - timedelta(hours=2))
+    unpaid_old = _booking(BookingStatus.accepted, quoted_at=now - timedelta(days=9), created_at=now - timedelta(days=9))
+    unconfirmed = _booking(BookingStatus.contract_signed, created_at=now - timedelta(hours=3))
+    db_session.add(
+        Payment(
+            booking_id=unconfirmed.id,
+            amount=Decimal("420.00"),
+            payment_type="full",
+            status=PaymentStatus.initiated,
+            created_at=now - timedelta(hours=1),
+        )
     )
-    assert any("919999" in (n.message or "") for n in orphan_alerts)
+    db_session.commit()
+
+    def _ids(stale: str) -> set[str]:
+        res = client.get(f"/api/v1/admin/bookings?stale={stale}&limit=200")
+        assert res.status_code == 200, res.text
+        return {item["id"] for item in res.json()}
+
+    assert str(requested_old.id) in _ids("requested_no_response")
+    assert str(requested_new.id) not in _ids("requested_no_response")
+    assert str(unpaid_old.id) in _ids("unpaid_expired")
+    assert str(unconfirmed.id) in _ids("unconfirmed_payment")
+    assert str(booking.id) not in _ids("unpaid_expired")  # ya pagada
+    assert client.get("/api/v1/admin/bookings?stale=otra").status_code == 400
 
 
 def test_wp02_wp03_safe_settlement_order_and_single_release_path(
@@ -1209,11 +1191,9 @@ def test_wp04_wp06_chargeback_debt_cancelled_payout_no_show_and_fee_details(
        `musician/earnings` y puede incluirse en `request-payout`.
     4) WP-04 (A2): Reserva en `payment_retained` cuyo evento ya finalizó sin reseña del contratista aparece
        en `/admin/settlements` como `awaiting_reviews` y el admin puede liquidarla manualmente.
-    5) WP-04 (Paso 5 & 6): `POST /bookings/{id}/report-no-show` abre queja `[NO-SHOW]` al iniciar el evento,
-       y `expire_stale_bookings` expira `change_pending` tras 48 h volviendo a `payment_retained`.
+    5) WP-04 (Paso 5): `POST /bookings/{id}/report-no-show` abre queja `[NO-SHOW]` al iniciar el evento.
     """
     from datetime import datetime
-    from app.cli.cron_review_reminders import expire_stale_bookings
     from app.services import mercadopago_service
 
     admin = User(
@@ -1395,22 +1375,7 @@ def test_wp04_wp06_chargeback_debt_cancelled_payout_no_show_and_fee_details(
         price_agreed=Decimal("450.00"),
         status=BookingStatus.payment_retained,
     )
-    b5_change = Booking(
-        musician_id=b1.musician_id,
-        contractor_id=b1.contractor_id,
-        event_type="Corporativo",
-        event_date=date.today() + timedelta(days=10),
-        start_time=dt_time(19, 0),
-        end_time=dt_time(21, 0),
-        location_city="Lima",
-        location_address="Av. Rivera Navarrete 400",
-        pending_location_address="Av. Nueva 999",
-        change_requested_by="contractor",
-        change_requested_at=datetime.utcnow() - timedelta(hours=50),
-        price_agreed=Decimal("700.00"),
-        status=BookingStatus.change_pending,
-    )
-    db_session.add_all([b4, b5_change])
+    db_session.add(b4)
     db_session.commit()
 
     _auth_cookie(client, contractor_user)
@@ -1421,14 +1386,3 @@ def test_wp04_wp06_chargeback_debt_cancelled_payout_no_show_and_fee_details(
     assert res_noshow.status_code == 200, res_noshow.text
     assert res_noshow.json()["mode"] == "no_show_complaint"
     assert "[NO-SHOW]" in res_noshow.json()["complaint"]["reason"]
-
-    stats = expire_stale_bookings(db_session)
-    assert stats.get("expired_change_pending", 0) >= 1
-    db_session.refresh(b5_change)
-    assert b5_change.status == BookingStatus.payment_retained
-    assert b5_change.pending_location_address is None
-
-
-
-
-

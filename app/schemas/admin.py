@@ -106,6 +106,15 @@ class AdminBookingCancel(BaseModel):
     refund_percent: int = Field(default=100, ge=0, le=100)
 
 
+class AdminVerifyPaymentOut(BaseModel):
+    """Resultado de consultar a Mercado Pago el pago de una reserva (acción manual del admin)."""
+
+    result: str  # confirmed | already_confirmed | no_payment_found | pending
+    message: str
+    payments_found: int = 0
+    booking: AdminBookingOut
+
+
 class AdminApproveRefund(BaseModel):
     # Monto a reembolsar; None = el calculado por la política, 0 = rechazar.
     amount: Decimal | None = Field(default=None, ge=0)

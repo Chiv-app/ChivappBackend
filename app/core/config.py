@@ -75,15 +75,11 @@ class Settings(BaseSettings):
     MERCADO_PAGO_WEBHOOK_BASE_URL: str = ""
     # Ventana máxima de antigüedad del timestamp en x-signature (24 h para tolerar reintentos diferidos de MP).
     MERCADO_PAGO_WEBHOOK_MAX_AGE_SECONDS: int = 86400
-    # Activa el job periódico de conciliación de pagos con Mercado Pago (apagado por defecto hasta validar en entorno de pruebas).
-    MP_RECONCILIATION_ENABLED: bool = False
     # Reembolsa automáticamente pagos marcados con needs_refund (duplicados, tardíos o con monto inválido).
     MP_AUTO_REFUND_NEEDS_REFUND: bool = False
     # Parámetros de costo de pasarela Mercado Pago Perú (WP-06: centralizados en configuración).
     GATEWAY_FEE_RATE: float = 0.0412
     GATEWAY_FIXED_FEE_PEN: float = 1.18
-    # Retención de historial de ubicación en vivo en días (S-05 / WP-08).
-    LOCATION_PING_RETENTION_DAYS: int = 7
 
     # Política de cancelación (cuando cancela el contratista con el pago retenido).
     # Días de anticipación al evento -> % de reembolso sobre la TARIFA del músico

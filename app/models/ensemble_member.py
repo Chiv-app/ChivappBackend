@@ -4,7 +4,6 @@ from datetime import datetime
 
 from sqlalchemy import (
     Column,
-    DateTime,
     Enum,
     ForeignKey,
     Numeric,
@@ -16,6 +15,7 @@ from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import relationship
 
 from app.db.session import Base
+from app.db.types import UTCDateTime
 
 
 class EnsembleMemberStatus(str, enum.Enum):
@@ -75,12 +75,12 @@ class EnsembleMember(Base):
     )
 
     password_setup_token = Column(String, nullable=True, unique=True, index=True)
-    password_setup_expires_at = Column(DateTime, nullable=True)
-    invited_at = Column(DateTime, default=datetime.utcnow)
-    joined_at = Column(DateTime, nullable=True)
+    password_setup_expires_at = Column(UTCDateTime, nullable=True)
+    invited_at = Column(UTCDateTime, default=datetime.utcnow)
+    joined_at = Column(UTCDateTime, nullable=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(UTCDateTime, default=datetime.utcnow)
+    updated_at = Column(UTCDateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     leader = relationship("User", foreign_keys=[leader_user_id])
     member_user = relationship("User", foreign_keys=[member_user_id])
@@ -122,11 +122,11 @@ class BookingMemberInvite(Base):
         default=BookingMemberInviteStatus.pending,
     )
     response_token = Column(String, nullable=False, unique=True, index=True)
-    invited_at = Column(DateTime, default=datetime.utcnow)
-    responded_at = Column(DateTime, nullable=True)
+    invited_at = Column(UTCDateTime, default=datetime.utcnow)
+    responded_at = Column(UTCDateTime, nullable=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(UTCDateTime, default=datetime.utcnow)
+    updated_at = Column(UTCDateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     booking = relationship("Booking")
     ensemble_member = relationship("EnsembleMember")
@@ -170,11 +170,11 @@ class BookingMemberPayout(Base):
         default=BookingMemberPayoutStatus.draft,
     )
     note = Column(Text, nullable=True)
-    set_by_leader_at = Column(DateTime, nullable=True)
-    paid_at = Column(DateTime, nullable=True)
+    set_by_leader_at = Column(UTCDateTime, nullable=True)
+    paid_at = Column(UTCDateTime, nullable=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(UTCDateTime, default=datetime.utcnow)
+    updated_at = Column(UTCDateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     booking = relationship("Booking")
     ensemble_member = relationship("EnsembleMember")

@@ -40,9 +40,6 @@ RETAINED_STATUSES = {
     BookingStatus.payment_retained,
     BookingStatus.change_pending,
     BookingStatus.in_progress,
-    # Legacy (unreachable) statuses from the old advance/balance flow.
-    BookingStatus.balance_pending,
-    BookingStatus.balance_review,
 }
 
 CANCELLABLE_STATUSES = {
@@ -50,7 +47,6 @@ CANCELLABLE_STATUSES = {
     BookingStatus.accepted,
     BookingStatus.contract_pending,
     BookingStatus.contract_signed,
-    BookingStatus.payment_pending,
 } | RETAINED_STATUSES
 
 REFUND_PENDING_APPROVAL = "pending_approval"  # calculado, espera aprobación del admin

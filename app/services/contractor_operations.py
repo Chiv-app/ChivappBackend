@@ -54,13 +54,6 @@ _LIFECYCLE: dict[BookingStatus, tuple[str, str, str, str, str]] = {
         "Firma el contrato y paga el 100 % con Mercado Pago.",
         "Firmar contrato",
     ),
-    BookingStatus.payment_pending: (
-        "payment_review",
-        "pending_other",
-        "Pago en proceso",
-        "Mercado Pago está confirmando tu pago.",
-        "Ver reserva",
-    ),
     BookingStatus.change_pending: (
         "change_pending",
         "pending_other",
@@ -327,8 +320,8 @@ def build_contractor_operations(
         )
         status_hint = {
             PaymentStatus.initiated: "Comprobante en revisión",
-            PaymentStatus.retained: "Retenido en garantía",
-            PaymentStatus.released: "Liberado",
+            PaymentStatus.retained: "Pago protegido",
+            PaymentStatus.released: "Pagado al artista",
             PaymentStatus.refunded: "Reembolsado",
             PaymentStatus.failed: "Fallido",
         }.get(payment.status, payment.status.value)

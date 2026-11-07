@@ -8,7 +8,11 @@ from app.models.musician_media import MusicianMedia, MediaType
 from app.models.musician_profile import AvailabilityType, MusicianProfile
 from app.models.profile_status import ProfileStatus
 from app.services.contract_pdf import contract_html_text_length
-from app.services.profile_visibility import is_profile_public
+from app.services.profile_visibility import (
+    is_profile_public,
+    musician_has_city_and_price,
+    musician_has_price,
+)
 
 
 MISSING_FIELD_LABELS: dict[str, str] = {
@@ -60,6 +64,8 @@ class ProfileValidationResult:
     can_submit: bool
     is_public: bool
     is_ensemble_only: bool = False
+    # Aparece en búsquedas y listados (publicado, verificado y con ciudad y tarifa).
+    is_listed: bool = True
 
     @property
     def missing_fields(self) -> list[str]:
@@ -69,14 +75,6 @@ class ProfileValidationResult:
             if step.required
             for item in step.missing
         ]
-
-
-def _has_price(profile: MusicianProfile) -> bool:
-    if profile.availability_type == AvailabilityType.hourly:
-        return profile.price_per_hour is not None
-    if profile.availability_type == AvailabilityType.per_event:
-        return profile.price_per_event is not None
-    return profile.price_per_hour is not None or profile.price_per_event is not None
 
 
 def _has_social_link(profile: MusicianProfile) -> bool:
@@ -139,9 +137,8 @@ def validate_musician_profile(db: Session, profile: MusicianProfile) -> ProfileV
     location_missing: list[str] = []
     if not profile.location_city or not profile.location_city.strip():
         location_missing.append("location_city")
-    if not profile.location_zone or not profile.location_zone.strip():
-        location_missing.append("location_zone")
-    if not _has_price(profile):
+    # El distrito o zona es opcional: solo ciudad y tarifa son obligatorias para publicar.
+    if not musician_has_price(profile):
         location_missing.append("price")
 
     repertoire_missing: list[str] = []
@@ -196,7 +193,7 @@ def validate_musician_profile(db: Session, profile: MusicianProfile) -> ProfileV
             "Ubicación y tarifas",
             not location_missing,
             location_missing,
-            required=False,
+            required=True,
         ),
         ValidationStep(
             4,
@@ -264,6 +261,7 @@ def validate_musician_profile(db: Session, profile: MusicianProfile) -> ProfileV
         # todas las fases vía is_musician_listed_publicly().
         is_public=is_profile_public(profile),
         is_ensemble_only=getattr(profile, 'is_ensemble_only', False),
+        is_listed=is_profile_public(profile) and musician_has_city_and_price(profile),
     )
 
 

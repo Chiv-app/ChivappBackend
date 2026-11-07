@@ -87,7 +87,7 @@ def test_bug5_02_admin_approve_musician_incomplete_and_complete(client, db_sessi
     assert profile.status == ProfileStatus.pending_review
     assert musician_user.is_verified is False
 
-    # 2. Completar todos los campos obligatorios (pasos 1, 2, 8, 9)
+    # 2. Completar todos los campos obligatorios (pasos 1, 2, 3 -ciudad y tarifa-, 8, 9)
     profile.bio = (
         "Agrupación profesional de mariachi con más de diez años de trayectoria "
         "en eventos corporativos y serenatas en Lima."
@@ -96,6 +96,8 @@ def test_bug5_02_admin_approve_musician_incomplete_and_complete(client, db_sessi
     profile.genres = ["Mariachi", "Ranchera"]
     profile.instruments = ["Trompeta", "Violín", "Guitarrón"]
     profile.availability_type = AvailabilityType.per_event
+    profile.location_city = "Lima"
+    profile.price_per_event = Decimal("1200.00")
     profile.id_document_url = "https://res.cloudinary.com/demo/image/upload/dni.jpg"
     profile.contract_template_body = (
         "<p>Cláusula primera: El músico se compromete a brindar el espectáculo musical "

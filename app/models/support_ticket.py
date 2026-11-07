@@ -2,11 +2,12 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, Enum, ForeignKey, String, Text
+from sqlalchemy import Column, Enum, ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
 from app.db.session import Base
+from app.db.types import UTCDateTime
 
 
 class SupportTicketStatus(str, enum.Enum):
@@ -34,15 +35,15 @@ class SupportTicket(Base):
 
     admin_response = Column(Text, nullable=True)
     responded_by_admin_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=True)
-    responded_at = Column(DateTime, nullable=True)
+    responded_at = Column(UTCDateTime, nullable=True)
 
     # Metadata de la operación puntual — clave para trazar tickets anónimos.
     submitted_ip = Column(String, nullable=True)
     submitted_user_agent = Column(String, nullable=True)
     submitted_path = Column(String, nullable=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(UTCDateTime, default=datetime.utcnow)
+    updated_at = Column(UTCDateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     user = relationship("User", foreign_keys=[user_id])
     responded_by = relationship("User", foreign_keys=[responded_by_admin_id])

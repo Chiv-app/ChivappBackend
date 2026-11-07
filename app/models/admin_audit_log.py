@@ -1,11 +1,12 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, String
+from sqlalchemy import Column, ForeignKey, String
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
 
 from app.db.session import Base
+from app.db.types import UTCDateTime
 
 
 class AdminAuditLog(Base):
@@ -24,7 +25,7 @@ class AdminAuditLog(Base):
     before_data = Column(JSONB, nullable=True)
     after_data = Column(JSONB, nullable=True)
     ip_address = Column(String, nullable=True)
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    created_at = Column(UTCDateTime, nullable=False, default=datetime.utcnow, index=True)
 
     admin_user = relationship("User", lazy="joined")
 

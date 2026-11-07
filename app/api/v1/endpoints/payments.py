@@ -46,6 +46,7 @@ from app.services.payment_evidence import (
     normalize_evidence_urls,
 )
 from app.services import mercadopago_service
+from app.services.settlement import musician_released_amount
 from app.services.uploads import assert_private_upload_owned
 
 logger = logging.getLogger(__name__)
@@ -336,7 +337,9 @@ def compute_musician_earnings(
             Decimal("0.00"),
         )
         retained_dec = musician_portion_of_paid(booking, retained_gross)
-        released_dec = musician_portion_of_paid(booking, released_gross)
+        released_dec = musician_released_amount(
+            booking, released_gross, complaint_by_booking.get(booking.id)
+        )
         retained = float(retained_dec)
         released = float(released_dec)
         if retained <= 0 and released <= 0 and eff_status != BookingStatus.completed:
@@ -519,57 +522,6 @@ def get_contractor_expenses(
     )
 
 
-@router.post("/{payment_id}/retain", response_model=PaymentOut)
-def retain_payment(
-    payment_id: str,
-    current_user: User = Depends(deps.get_current_admin),
-    db: Session = Depends(deps.get_db),
-):
-    # Solo admin: los pagos se confirman por el webhook de Mercado Pago.
-    payment = db.get(Payment, parse_uuid(payment_id, "payment_id"), with_for_update=True)
-    if not payment:
-        raise HTTPException(404, "Pago no encontrado")
-    booking = db.get(Booking, payment.booking_id, with_for_update=True)
-    if not booking:
-        raise HTTPException(404, "Reserva no encontrada")
-
-    if payment.status != PaymentStatus.initiated:
-        raise HTTPException(400, "El pago no está en estado 'initiated'")
-    meta = payment.gateway_metadata if isinstance(payment.gateway_metadata, dict) else {}
-    if meta.get("needs_refund") or meta.get("in_mediation"):
-        raise HTTPException(400, "No se puede retener un pago marcado para reembolso, revisión o mediación")
-    if booking.status in {BookingStatus.cancelled, BookingStatus.completed}:
-        raise HTTPException(400, "No se puede retener el pago de una reserva cerrada o cancelada")
-    if booking.status not in {
-        BookingStatus.accepted,
-        BookingStatus.contract_pending,
-        BookingStatus.contract_signed,
-        BookingStatus.payment_pending,
-    }:
-        raise HTTPException(400, "La reserva no está en un estado que permita retener un pago")
-
-    from app.services.availability_match import assert_no_booking_overlap
-
-    if booking.musician_id and booking.event_date and booking.start_time:
-        assert_no_booking_overlap(
-            db,
-            booking.musician_id,
-            booking.event_date,
-            booking.start_time,
-            end_time=booking.end_time,
-            exclude_booking_id=booking.id,
-        )
-
-    payment.status = PaymentStatus.retained
-    payment.retained_at = datetime.utcnow()
-    booking.status = BookingStatus.payment_retained
-
-    db.commit()
-    db.refresh(payment)
-
-    return payment
-
-
 @router.post("/{payment_id}/release", response_model=PaymentOut)
 def release_payment(
     payment_id: str,
@@ -634,6 +586,17 @@ def release_payment(
         if musician_user:
             notify_payment_released(db, musician_user, str(booking.id))
 
+    from app.services.admin_audit import record_admin_audit
+
+    record_admin_audit(
+        db,
+        admin_user=current_user,
+        action="payment.release",
+        target_type="payment",
+        target_id=str(payment.id),
+        before_state={"status": "retained"},
+        after_state={"status": "released", "booking_id": str(booking.id)},
+    )
     db.commit()
     db.refresh(payment)
 
@@ -642,7 +605,7 @@ def release_payment(
 
 # Pago único (100 %) por Mercado Pago.
 PAYABLE_STATUSES = {
-    "full": (BookingStatus.accepted, BookingStatus.contract_pending, BookingStatus.contract_signed, BookingStatus.payment_pending),
+    "full": (BookingStatus.accepted, BookingStatus.contract_pending, BookingStatus.contract_signed),
 }
 
 
@@ -810,7 +773,7 @@ def create_mercadopago_preference(
 
             db.flush()
 
-    if booking.status not in (BookingStatus.contract_signed, BookingStatus.payment_pending):
+    if booking.status != BookingStatus.contract_signed:
         from app.models.contract import Contract
 
         contract = db.query(Contract).filter(Contract.booking_id == booking.id).first()
@@ -981,7 +944,7 @@ def process_mercadopago_direct_payment(
 
             db.flush()
 
-    if booking.status not in (BookingStatus.contract_signed, BookingStatus.payment_pending):
+    if booking.status != BookingStatus.contract_signed:
         from app.models.contract import Contract
 
         contract = db.query(Contract).filter(Contract.booking_id == booking.id).first()
@@ -1278,11 +1241,11 @@ def check_mercadopago_payment_status(
         mp_status in ("rejected", "cancelled")
         or (mp_status is None and recent_payment is not None and recent_payment.status == PaymentStatus.rejected)
     )
-    has_payment_in_flight = bool(effective_payment_id) or booking.status == BookingStatus.payment_pending
+    has_payment_in_flight = bool(effective_payment_id)
 
     if is_approved:
         status_value = "approved"
-        message = "¡Tu pago fue verificado y retenido con éxito! La reserva está confirmada."
+        message = "¡Tu pago fue verificado y está protegido! La reserva está confirmada."
     elif is_rejected:
         status_value = "rejected"
         message = "Mercado Pago rechazó el pago. Puedes intentarlo nuevamente."
@@ -1374,11 +1337,11 @@ def request_payout(
         if awaiting_reviews:
             raise HTTPException(
                 400,
-                "Aún no tienes reservas listas para desembolso. Verifica que el evento haya culminado y que tanto el contratista como tú hayan dejado su reseña.",
+                "Aún no tienes reservas listas para cobrar. Verifica que el evento haya culminado y que tanto el contratista como tú hayan dejado su reseña.",
             )
         raise HTTPException(
             400,
-            "No tienes saldo disponible para retirar. Solo se pueden desembolsar reservas culminadas donde tanto el contratista como tú hayan dejado su reseña (o reservas canceladas con retención a tu favor).",
+            "No tienes saldo disponible para retirar. Solo se pueden cobrar reservas culminadas donde tanto el contratista como tú hayan dejado su reseña (o reservas canceladas con retención a tu favor).",
         )
 
     # Persistir el paso a 'completed' de las reservas elegibles que ya cuentan con ambas reseñas (SEC2-05)

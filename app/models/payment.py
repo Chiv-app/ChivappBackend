@@ -1,11 +1,12 @@
 import uuid
 from datetime import datetime
 from sqlalchemy import (
-    Column, String, Numeric, DateTime, Enum, ForeignKey, Index, text
+    CheckConstraint, Column, String, Numeric, Enum, ForeignKey, Index, text
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
 from app.db.session import Base
+from app.db.types import UTCDateTime
 import enum
 
 
@@ -25,7 +26,7 @@ class Payment(Base):
 
     booking_id = Column(UUID(as_uuid=True), ForeignKey("booking.id"))
 
-    amount = Column(Numeric, nullable=False)
+    amount = Column(Numeric(12, 2), nullable=False)
     currency = Column(String, default="PEN")
 
     payment_type = Column(String, nullable=True)
@@ -35,12 +36,12 @@ class Payment(Base):
 
     status = Column(Enum(PaymentStatus), default=PaymentStatus.initiated)
 
-    retained_at = Column(DateTime, nullable=True)
-    released_at = Column(DateTime, nullable=True)
+    retained_at = Column(UTCDateTime, nullable=True)
+    released_at = Column(UTCDateTime, nullable=True)
 
     # Auditoría de revisión admin (validar/rechazar comprobantes).
     reviewed_by_user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=True)
-    reviewed_at = Column(DateTime, nullable=True)
+    reviewed_at = Column(UTCDateTime, nullable=True)
     rejection_reason = Column(String, nullable=True)
 
     # Datos de desembolso al músico (liquidación realizada por admin / Mercado Pago)
@@ -55,14 +56,15 @@ class Payment(Base):
     gateway_preference_id = Column(String, nullable=True)
     gateway_metadata = Column(JSONB, nullable=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime,
+    created_at = Column(UTCDateTime, default=datetime.utcnow)
+    updated_at = Column(UTCDateTime,
                         default=datetime.utcnow,
                         onupdate=datetime.utcnow)
 
     booking = relationship("Booking")
 
     __table_args__ = (
+        CheckConstraint("amount >= 0", name="ck_payment_amount_nonneg"),
         # Un pago de la pasarela se registra una sola vez. Las filas de reembolso
         # repiten el id del pago original, por eso se excluyen.
         Index(

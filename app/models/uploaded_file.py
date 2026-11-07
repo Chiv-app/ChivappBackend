@@ -1,10 +1,11 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String
+from sqlalchemy import Column, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import UUID
 
 from app.db.session import Base
+from app.db.types import UTCDateTime
 
 
 class UploadedFile(Base):
@@ -19,4 +20,4 @@ class UploadedFile(Base):
     owner_user_id = Column(UUID(as_uuid=True), ForeignKey("user.id"), nullable=False, index=True)
     content_type = Column(String, nullable=False)
     size_bytes = Column(Integer, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(UTCDateTime, default=datetime.utcnow)

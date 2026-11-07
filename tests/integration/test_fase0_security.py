@@ -57,5 +57,6 @@ def test_magic_link_login_blocks_open_redirect(client):
 def test_contractor_cannot_retain_or_release_payment(client):
     assert _guest(client, email="pagador@example.com").status_code == 201
     fake_id = "00000000-0000-0000-0000-000000000000"
-    assert client.post(f"/api/v1/payments/{fake_id}/retain").status_code == 403
+    # /retain fue eliminado: ya no hay forma de marcar un pago como retenido a mano.
+    assert client.post(f"/api/v1/payments/{fake_id}/retain").status_code in (404, 405)
     assert client.post(f"/api/v1/payments/{fake_id}/release").status_code == 403

@@ -179,7 +179,7 @@ def create_booking_event(
         "<br>",
         f"<b>Lugar:</b> {location_address}, {location_zone}, {location_city}",
         "<br>",
-        "<b>Nota:</b> Este evento fue agendado automáticamente por Chivapp porque el pago ha sido retenido con éxito."
+        "<b>Nota:</b> Este evento fue agendado automáticamente por Chivapp porque el pago fue confirmado y está protegido."
     ]
     
     event_body = {

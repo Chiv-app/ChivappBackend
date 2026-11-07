@@ -177,6 +177,10 @@ class AdminSettlementOut(BaseModel):
     payout_reference: str | None = None
     payout_evidence_url: str | None = None
     payout_notes: str | None = None
+    # Deuda pendiente del músico por contracargos posteriores a una liberación (D3) y lo que
+    # realmente debe transferirse tras descontarla.
+    musician_chargeback_debt: float = 0
+    musician_net_payable: float = 0
 
 
 class AdminReleaseSettlement(BaseModel):

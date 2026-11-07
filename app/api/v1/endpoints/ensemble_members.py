@@ -76,8 +76,6 @@ INVITE_STATUSES = {
     BookingStatus.payment_retained,
     BookingStatus.change_pending,
     # Legacy (unreachable) statuses, treated as confirmed.
-    BookingStatus.balance_pending,
-    BookingStatus.balance_review,
     BookingStatus.in_progress,
     BookingStatus.payment_released,
 }

@@ -126,13 +126,12 @@ def get_public_cancellation_policy():
     )
 
 
-@router.post("", response_model=BookingOut, status_code=201)
-@router.post("/", response_model=BookingOut, status_code=201, include_in_schema=False)
-def create_booking(
+def _prepare_booking(
     payload: BookingCreate,
-    current_user: User = Depends(deps.get_current_user),
-    db: Session = Depends(deps.get_db),
-):
+    current_user: User,
+    db: Session,
+) -> tuple[Booking, MusicianProfile]:
+    """Valida y arma la solicitud de cotización sin confirmar la transacción."""
     if current_user.role != UserRole.contractor:
         raise HTTPException(403, "Solo los contratistas pueden crear reservas")
 
@@ -209,19 +208,34 @@ def create_booking(
     from app.services.platform_payment import sync_booking_platform_fee
     sync_booking_platform_fee(db, booking, use_current_settings=True)
     db.add(booking)
-    db.commit()
-    db.refresh(booking)
+    return booking, musician
 
+
+def _notify_booking_requested(
+    db: Session,
+    booking: Booking,
+    musician: MusicianProfile,
+    current_user: User,
+) -> None:
     musician_user = musician.user or _load_musician_user(db, musician)
     if musician_user:
         notify_booking_created(db, musician_user, str(booking.id))
-        
-    contractor_user = current_user
-    if contractor_user:
-        notify_booking_requested_contractor(db, contractor_user, str(booking.id))
-        
-    db.commit()
+    if current_user:
+        notify_booking_requested_contractor(db, current_user, str(booking.id))
 
+
+@router.post("", response_model=BookingOut, status_code=201)
+@router.post("/", response_model=BookingOut, status_code=201, include_in_schema=False)
+def create_booking(
+    payload: BookingCreate,
+    current_user: User = Depends(deps.get_current_user),
+    db: Session = Depends(deps.get_db),
+):
+    booking, musician = _prepare_booking(payload, current_user, db)
+    db.commit()
+    db.refresh(booking)
+    _notify_booking_requested(db, booking, musician, current_user)
+    db.commit()
     return booking
 
 
@@ -231,7 +245,11 @@ def create_bookings_batch(
     current_user: User = Depends(deps.get_current_user),
     db: Session = Depends(deps.get_db),
 ):
-    """WP-21 (D9): Envía una misma solicitud de cotización a múltiples artistas (máx. 5)."""
+    """Cotización múltiple: envía la misma solicitud a varios artistas (máx. 5).
+
+    Es todo o nada: si algún artista no puede recibir la solicitud (no existe, no está
+    disponible esa fecha, etc.) no se crea ninguna y se indica cuál falló.
+    """
     seen: set = set()
     unique_ids = []
     for mid in payload.musician_ids:
@@ -239,7 +257,7 @@ def create_bookings_batch(
             seen.add(mid)
             unique_ids.append(mid)
 
-    created: list[Booking] = []
+    prepared: list[tuple[Booking, MusicianProfile]] = []
     for mid in unique_ids:
         single = BookingCreate(
             musician_id=mid,
@@ -255,7 +273,24 @@ def create_bookings_batch(
             duration_hours=payload.duration_hours,
             estimated_budget=payload.estimated_budget,
         )
-        created.append(create_booking(payload=single, current_user=current_user, db=db))
+        try:
+            prepared.append(_prepare_booking(single, current_user, db))
+        except HTTPException as exc:
+            db.rollback()
+            failed = db.get(MusicianProfile, mid)
+            name = (failed.stage_name if failed and failed.stage_name else "uno de los artistas")
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail=f"No se envió ninguna solicitud. {name}: {exc.detail}",
+            ) from exc
+
+    db.commit()
+    created: list[Booking] = []
+    for booking, musician in prepared:
+        db.refresh(booking)
+        _notify_booking_requested(db, booking, musician, current_user)
+        created.append(booking)
+    db.commit()
     return created
 
 
@@ -266,7 +301,7 @@ def create_booking_as_musician(
     current_user: User = Depends(deps.get_current_user),
     db: Session = Depends(deps.get_db),
 ):
-    """El músico crea una propuesta para un cliente; el cliente la acepta, firma y paga."""
+    """El músico crea una cotización para un cliente; el cliente la acepta, firma y paga."""
     if current_user.role != UserRole.musician:
         raise HTTPException(403, "Solo los músicos pueden crear contratas desde este flujo")
 
@@ -298,7 +333,7 @@ def create_booking_as_musician(
                 db,
                 user=current_user,
                 type="booking_created_guest",
-                title="Propuesta creada para cliente sin correo",
+                title="Cotización creada para cliente sin correo",
                 message=(
                     "Creaste una contrata para un cliente sin correo electrónico. "
                     "Comparte el enlace de la reserva por WhatsApp o teléfono para que pueda firmar y pagar."

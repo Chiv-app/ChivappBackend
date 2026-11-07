@@ -1,10 +1,11 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, Numeric, String
+from sqlalchemy import Column, ForeignKey, Numeric, String
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 from app.db.session import Base
+from app.db.types import UTCDateTime
 
 
 class LedgerEntry(Base):
@@ -34,4 +35,4 @@ class LedgerEntry(Base):
     currency = Column(String, nullable=False, default="PEN", server_default="PEN")
     description = Column(String, nullable=True)
     meta = Column(JSONB, nullable=True)
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    created_at = Column(UTCDateTime, nullable=False, default=datetime.utcnow, index=True)

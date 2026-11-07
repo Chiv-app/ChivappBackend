@@ -9,7 +9,6 @@ import uuid
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.cli.cron_review_reminders import expire_stale_bookings, release_cron_lock, try_acquire_cron_lock
 from app.core.hashing import hash_password
 from app.core.jwt import create_access_token
 from app.models.booking import Booking, BookingStatus
@@ -185,56 +184,3 @@ def test_wp14_ledger_entries_on_settlement_and_wp15_booking_stage_actions(
     assert "platform_fee" in entry_types
     payout_entry = next(e for e in entries if e.entry_type == "musician_payout")
     assert Decimal(str(payout_entry.amount)) == Decimal("1000.00")
-
-
-def test_wp16_wp17_cron_advisory_lock_and_savepoint_resilience(db_session: Session):
-    assert try_acquire_cron_lock(db_session) is True
-    release_cron_lock(db_session)
-
-    suffix = uuid.uuid4().hex[:8]
-    mus_user = User(
-        email=f"mus_cron_{suffix}@test.com",
-        password_hash=hash_password("Pass1234!"),
-        role=UserRole.musician,
-        fullname="Músico Cron",
-        is_verified=True,
-        is_active=True,
-    )
-    con_user = User(
-        email=f"con_cron_{suffix}@test.com",
-        password_hash=hash_password("Pass1234!"),
-        role=UserRole.contractor,
-        fullname="Cliente Cron",
-        is_verified=True,
-        is_active=True,
-    )
-    db_session.add_all([mus_user, con_user])
-    db_session.flush()
-    mus = MusicianProfile(
-        user_id=mus_user.id,
-        stage_name=f"Cron Band {suffix}",
-        slug=f"cron-band-{suffix}",
-        status=ProfileStatus.published,
-    )
-    con = ContractorProfile(user_id=con_user.id, status=ProfileStatus.published)
-    db_session.add_all([mus, con])
-    db_session.flush()
-
-    stale = Booking(
-        musician_id=mus.id,
-        contractor_id=con.id,
-        event_type="Corporativo",
-        event_date=date.today() + timedelta(days=10),
-        start_time=time(18, 0),
-        location_address="Av. Prueba 100",
-        location_city="Lima",
-        status=BookingStatus.requested,
-        created_at=datetime.utcnow() - timedelta(hours=80),
-    )
-    db_session.add(stale)
-    db_session.commit()
-
-    stats = expire_stale_bookings(db_session)
-    assert stats["expired_requested"] >= 1
-    db_session.refresh(stale)
-    assert stale.status == BookingStatus.cancelled

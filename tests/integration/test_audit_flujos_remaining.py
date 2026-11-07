@@ -169,8 +169,9 @@ def test_bug_20_retain_and_release_payment_state_guards(client, db_session):
 
     client.cookies.set("access_token", create_access_token(subject=str(admin.id), role="admin"))
 
+    # /retain ya no existe: los pagos solo los confirma el webhook de Mercado Pago.
     res_retain = client.post(f"/api/v1/payments/{p_cancelled.id}/retain")
-    assert res_retain.status_code == 400
+    assert res_retain.status_code in (404, 405)
 
     res_release = client.post(f"/api/v1/payments/{p_completed.id}/release")
     assert res_release.status_code == 200, res_release.text

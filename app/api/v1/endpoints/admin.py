@@ -2,7 +2,7 @@ import logging
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
-from sqlalchemy import func, or_
+from sqlalchemy import exists, func, or_
 from sqlalchemy.orm import Session, joinedload
 
 from app.api import deps
@@ -32,6 +32,7 @@ from app.schemas.admin import (
     AdminStatsOut,
     AdminUserOut,
     AdminUserUpdate,
+    AdminVerifyPaymentOut,
 )
 from app.services.admin_audit import record_admin_audit
 from app.schemas.contract import ContractOut
@@ -64,6 +65,12 @@ from app.services.cancellation_policy import (
     record_cancellation,
 )
 from app.services.payment_evidence import payment_evidence_list
+from app.services.settlement import (
+    chargeback_deducted_for_booking,
+    musician_net_payable,
+    musician_released_amount,
+    outstanding_musician_chargeback_debt,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["Admin"])
@@ -73,12 +80,8 @@ ACTIVE_BOOKING_STATUSES = {
     BookingStatus.accepted,
     BookingStatus.contract_pending,
     BookingStatus.contract_signed,
-    BookingStatus.payment_pending,
     BookingStatus.payment_retained,
     BookingStatus.change_pending,
-    # Legacy (unreachable) statuses from the old advance/balance flow.
-    BookingStatus.balance_pending,
-    BookingStatus.balance_review,
     BookingStatus.in_progress,
 }
 
@@ -90,11 +93,6 @@ SETTLEABLE_BOOKING_STATUSES = {
     BookingStatus.payment_retained,
     BookingStatus.in_progress,
     BookingStatus.change_pending,
-}
-
-# Reservas esperando la confirmación del pago único en Mercado Pago.
-PAYMENT_REVIEW_STATUSES = {
-    BookingStatus.payment_pending,
 }
 
 
@@ -227,8 +225,18 @@ def get_admin_stats(
     change_pending_bookings = (
         db.query(Booking).filter(Booking.status == BookingStatus.change_pending).count()
     )
+    # Reservas sin pago confirmado que ya tienen un intento de pago en Mercado Pago (por verificar).
     payment_review_bookings = (
-        db.query(Booking).filter(Booking.status.in_(PAYMENT_REVIEW_STATUSES)).count()
+        db.query(Booking)
+        .filter(
+            Booking.status.in_(_UNPAID_STATUSES),
+            exists().where(
+                Payment.booking_id == Booking.id,
+                Payment.payment_type.is_distinct_from("refund"),
+                Payment.status == PaymentStatus.initiated,
+            ),
+        )
+        .count()
     )
     completed_bookings = (
         db.query(Booking).filter(Booking.status == BookingStatus.completed).count()
@@ -755,12 +763,59 @@ def moderate_contractor_profile(
 # ── Bookings ops ────────────────────────────────────────────────────────────
 
 
+# Umbrales de "vencido" para la revisión manual del admin (ya no hay cron que cancele solo).
+STALE_REQUESTED_HOURS = 72
+STALE_UNPAID_DAYS = 7
+UNCONFIRMED_PAYMENT_MINUTES = 30
+_UNPAID_STATUSES = (
+    BookingStatus.accepted,
+    BookingStatus.contract_pending,
+    BookingStatus.contract_signed,
+)
+
+
+def _apply_stale_filter(query, stale: str):
+    """Filtra reservas que requieren revisión manual: sin respuesta, sin pago o pago sin confirmar."""
+    now = datetime.utcnow()
+    has_paid = exists().where(
+        Payment.booking_id == Booking.id,
+        Payment.payment_type.is_distinct_from("refund"),
+        Payment.status.in_([PaymentStatus.retained, PaymentStatus.released]),
+    )
+    if stale == "requested_no_response":
+        return query.filter(
+            Booking.status == BookingStatus.requested,
+            Booking.created_at <= now - timedelta(hours=STALE_REQUESTED_HOURS),
+        )
+    if stale == "unpaid_expired":
+        reference = func.coalesce(Booking.quoted_at, Booking.updated_at, Booking.created_at)
+        return query.filter(
+            Booking.status.in_(_UNPAID_STATUSES),
+            reference <= now - timedelta(days=STALE_UNPAID_DAYS),
+            ~has_paid,
+        )
+    if stale == "unconfirmed_payment":
+        attempted = exists().where(
+            Payment.booking_id == Booking.id,
+            Payment.payment_type.is_distinct_from("refund"),
+            Payment.status == PaymentStatus.initiated,
+            Payment.created_at <= now - timedelta(minutes=UNCONFIRMED_PAYMENT_MINUTES),
+        )
+        return query.filter(Booking.status.in_(_UNPAID_STATUSES), attempted, ~has_paid)
+    raise HTTPException(400, "Filtro de vencidas inválido")
+
+
 @router.get("/bookings", response_model=list[AdminBookingOut])
 def list_bookings(
     _: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
     status_filter: str | None = Query(default=None, alias="status"),
     refund_status: str | None = Query(default=None, max_length=40),
+    stale: str | None = Query(
+        default=None,
+        max_length=40,
+        description="requested_no_response | unpaid_expired | unconfirmed_payment",
+    ),
     q: str | None = None,
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=50, le=200),
@@ -777,6 +832,8 @@ def list_bookings(
     if refund_status:
         # p. ej. "pending_approval": cancelaciones con reembolso por aprobar.
         query = query.filter(Booking.cancellation_refund_status == refund_status)
+    if stale:
+        query = _apply_stale_filter(query, stale)
     if q and q.strip():
         term = _escape_like_term(q)
         query = (
@@ -980,6 +1037,67 @@ def cancel_booking_admin(
         execute_cancellation_refund(db, booking)
     db.refresh(booking)
     return _booking_admin_out(booking)
+
+
+@router.post("/bookings/{booking_id}/verify-payment", response_model=AdminVerifyPaymentOut)
+def verify_booking_payment(
+    booking_id: str,
+    admin: User = Depends(deps.get_current_admin),
+    db: Session = Depends(deps.get_db),
+):
+    """Consulta a Mercado Pago el pago de una reserva y lo registra si está aprobado.
+
+    Reemplaza a la conciliación automática: el admin la usa cuando un aviso (webhook) no llegó.
+    Usa el mismo camino idempotente que el webhook, así que repetirlo no duplica pagos.
+    """
+    from app.services import mercadopago_service
+
+    booking = _load_booking_with_parties(db, booking_id)
+    if not mercadopago_service.is_mercadopago_configured():
+        raise HTTPException(400, "Mercado Pago no está configurado en este entorno")
+
+    already_paid = booking.status in (
+        BookingStatus.payment_retained,
+        BookingStatus.change_pending,
+        BookingStatus.in_progress,
+        BookingStatus.payment_released,
+        BookingStatus.completed,
+    )
+    status_before = booking.status.value
+    try:
+        payments = mercadopago_service.reconcile_booking_payments(db, booking)
+    except ValueError as exc:
+        logger.warning("Verificación manual de pago falló para reserva %s: %s", booking_id, exc)
+        raise HTTPException(502, "No se pudo consultar a Mercado Pago. Intenta de nuevo en unos minutos.") from exc
+
+    db.refresh(booking)
+    confirmed_now = (not already_paid) and booking.status == BookingStatus.payment_retained
+    if already_paid:
+        result, message = "already_confirmed", "El pago de esta reserva ya estaba confirmado."
+    elif confirmed_now:
+        result, message = "confirmed", "Mercado Pago tiene el pago aprobado: la reserva quedó confirmada."
+    elif payments:
+        result = "pending"
+        message = "Mercado Pago tiene pagos para esta reserva, pero ninguno está aprobado todavía."
+    else:
+        result, message = "no_payment_found", "Mercado Pago no tiene ningún pago asociado a esta reserva."
+
+    record_admin_audit(
+        db,
+        admin_user=admin,
+        action="payment.verify",
+        target_type="booking",
+        target_id=str(booking.id),
+        before_state={"status": status_before},
+        after_state={"status": booking.status.value, "result": result, "payments_found": len(payments)},
+        commit=True,
+    )
+    return AdminVerifyPaymentOut(
+        result=result,
+        message=message,
+        payments_found=len(payments),
+        booking=_booking_admin_out(booking),
+    )
 
 
 @router.post("/bookings/{booking_id}/approve-refund", response_model=AdminBookingOut)
@@ -1334,6 +1452,7 @@ def list_admin_settlements(
 
     items: list[AdminSettlementOut] = []
     matched_skipped = 0
+    chargeback_debt_cache: dict = {}
     for booking in bookings:
         retained_gross = retained_total_for_booking(db, booking.id)
         released_gross = released_total_for_booking(db, booking.id)
@@ -1341,7 +1460,7 @@ def list_admin_settlements(
             musician_portion_of_paid(booking, Decimal(str(retained_gross)))
         )
         released = float(
-            musician_portion_of_paid(booking, Decimal(str(released_gross)))
+            musician_released_amount(booking, released_gross, complaint_by_id.get(booking.id))
         )
         complaint = complaint_by_id.get(booking.id)
         settlement_state = settlement_state_for_booking(
@@ -1377,8 +1496,15 @@ def list_admin_settlements(
             .first()
         )
 
+        if booking.musician_id not in chargeback_debt_cache:
+            chargeback_debt_cache[booking.musician_id] = outstanding_musician_chargeback_debt(
+                db, booking.musician_id
+            )
+        chargeback_debt = chargeback_debt_cache[booking.musician_id]
         items.append(
             AdminSettlementOut(
+                musician_chargeback_debt=float(chargeback_debt),
+                musician_net_payable=musician_net_payable(retained, chargeback_debt),
                 booking_id=booking.id,
                 event_type=booking.event_type,
                 event_date=booking.event_date,
@@ -1486,7 +1612,7 @@ def export_admin_settlements(
             musician_portion_of_paid(booking, Decimal(str(retained_gross)))
         )
         released = float(
-            musician_portion_of_paid(booking, Decimal(str(released_gross)))
+            musician_released_amount(booking, released_gross, complaint_by_id.get(booking.id))
         )
         complaint = complaint_by_id.get(booking.id)
         settlement_state = settlement_state_for_booking(
@@ -1662,11 +1788,7 @@ def settle_admin_booking(
 
     refund_already_executed = False
     if complaint:
-        if complaint.status == BookingComplaintStatus.open:
-            raise HTTPException(
-                400,
-                "El músico aún no responde la queja. Espera su aceptación o descargo.",
-            )
+        # El admin puede resolver la queja aunque el músico no haya respondido (decisión de negocio).
         if (
             complaint.status == BookingComplaintStatus.settled
             and complaint.refund_status != REFUND_STATUS_NEEDS_ATTENTION
@@ -1761,6 +1883,18 @@ def settle_admin_booking(
                     complaint.refund_evidence_url = "Reembolso automático de Mercado Pago"
                     complaint.refund_sent_at = datetime.utcnow()
                     refund_already_executed = True
+                    from app.services.ledger import record_ledger_entry
+
+                    record_ledger_entry(
+                        db,
+                        entry_type="refund",
+                        amount=body.contractor_refund,
+                        booking_id=booking.id,
+                        payment_id=refund_payment.id,
+                        actor_user_id=current_user.id,
+                        description=f"Reembolso por queja #{complaint.id}",
+                        meta={"complaint_id": str(complaint.id), "source": "complaint_settlement"},
+                    )
                     db.commit()
                     db.refresh(booking)
                     db.refresh(complaint)
@@ -1785,6 +1919,8 @@ def settle_admin_booking(
             payout_reference=body.payout_reference,
             payout_evidence_url=body.payout_evidence_url,
             payout_notes=body.notes,
+            musician_amount=Decimal(str(body.musician_amount)),
+            contractor_refund=Decimal(str(body.contractor_refund)),
         )
         if complaint:
             complaint.settled_at = datetime.utcnow()
@@ -1870,9 +2006,11 @@ def settle_admin_booking(
 
     released_gross = released_total_for_booking(db, booking.id)
     released = float(
-        musician_portion_of_paid(booking, Decimal(str(released_gross)))
+        musician_released_amount(booking, released_gross, complaint)
     )
     complaint_out = serialize_complaint(complaint)
+    deducted_debt = chargeback_deducted_for_booking(db, booking.id)
+    remaining_debt = outstanding_musician_chargeback_debt(db, booking.musician_id)
 
     payout_info = None
     if musician:
@@ -1912,6 +2050,8 @@ def settle_admin_booking(
         ),
         booking_status=booking.status.value,
         settlement_state=settlement_state_for_booking(booking, complaint, 0, released),
+        musician_chargeback_debt=float(remaining_debt),
+        musician_net_payable=musician_net_payable(body.musician_amount, deducted_debt),
         complaint=complaint_out,
         musician_payout_info=payout_info,
         payout_reference=body.payout_reference,
@@ -2050,8 +2190,10 @@ def release_admin_settlement(
 
     released_gross = released_total_for_booking(db, booking.id)
     released = float(
-        musician_portion_of_paid(booking, Decimal(str(released_gross)))
+        musician_released_amount(booking, released_gross, complaint)
     )
+    deducted_debt = chargeback_deducted_for_booking(db, booking.id)
+    remaining_debt = outstanding_musician_chargeback_debt(db, booking.musician_id)
 
     payout_info = None
     if musician:
@@ -2090,6 +2232,8 @@ def release_admin_settlement(
         ),
         booking_status=booking.status.value,
         settlement_state=settlement_state_for_booking(booking, complaint, 0, released),
+        musician_chargeback_debt=float(remaining_debt),
+        musician_net_payable=musician_net_payable(released, deducted_debt),
         complaint=serialize_complaint(complaint),
         musician_payout_info=payout_info,
         payout_reference=body.payout_reference,
@@ -2234,7 +2378,7 @@ def send_admin_refund_transfer(
         musician_portion_of_paid(booking, Decimal(str(retained_gross)))
     )
     released = float(
-        musician_portion_of_paid(booking, Decimal(str(released_gross)))
+        musician_released_amount(booking, released_gross, complaint)
     )
     musician = (
         db.query(MusicianProfile)

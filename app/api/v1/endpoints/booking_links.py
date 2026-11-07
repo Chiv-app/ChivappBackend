@@ -170,7 +170,6 @@ def get_booking_link(
                 BookingStatus.accepted,
                 BookingStatus.contract_pending,
                 BookingStatus.contract_signed,
-                BookingStatus.payment_pending,
             )
         ):
             if not link.expires_at or link.expires_at >= datetime.utcnow():
@@ -415,7 +414,6 @@ def checkout_booking_link(
             BookingStatus.accepted,
             BookingStatus.contract_pending,
             BookingStatus.contract_signed,
-            BookingStatus.payment_pending,
         )
     )
     if link.status == BookingLinkStatus.completed and booking_is_unpaid:
@@ -733,7 +731,6 @@ def reset_link_expiration(
             BookingStatus.accepted,
             BookingStatus.contract_pending,
             BookingStatus.contract_signed,
-            BookingStatus.payment_pending,
         ):
             raise HTTPException(status_code=400, detail="El link ya fue completado.")
 

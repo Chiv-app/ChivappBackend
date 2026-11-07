@@ -41,7 +41,6 @@ def test_cli_modules_import_cleanly():
     """Verify all administrative CLI modules in `app.cli` import without errors."""
     for mod_name in (
         "app.cli.create_admin",
-        "app.cli.cron_review_reminders",
         "app.cli.migrate_private_documents",
     ):
         mod = importlib.import_module(mod_name)

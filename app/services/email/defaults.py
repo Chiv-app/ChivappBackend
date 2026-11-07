@@ -197,9 +197,9 @@ Responde aquí: {{action_url}}
     },
     {
         "slug": "booking_request_received",
-        "name": "Solicitud de reserva recibida",
-        "description": "Se envia al cliente cuando genera una solicitud de reserva confirmando la recepcion.",
-        "subject": "Solicitud de reserva enviada al músico para {{event_type}}",
+        "name": "Solicitud de cotización recibida",
+        "description": "Se envia al cliente cuando genera una solicitud de cotización confirmando la recepcion.",
+        "subject": "Solicitud de cotización enviada al músico para {{event_type}}",
         "available_variables": [
             "contractor_name",
             "musician_name",
@@ -232,8 +232,8 @@ Te avisaremos cuando el músico responda.
     },
     {
         "slug": "booking_new_request",
-        "name": "Nueva solicitud de reserva",
-        "description": "Se envía al músico cuando un cliente genera una solicitud de reserva.",
+        "name": "Nueva solicitud de cotización",
+        "description": "Se envía al músico cuando un cliente genera una solicitud de cotización.",
         "subject": "¡Nueva solicitud de {{contractor_name}} para {{event_type}} en {{app_name}}!",
         "available_variables": [
             "musician_name",
@@ -250,9 +250,9 @@ Te avisaremos cuando el músico responda.
             category_badge="Nueva Solicitud",
             badge_bg="#E0F2FE",
             badge_color="#0369A1",
-            title="¡Tienes una nueva solicitud de reserva!",
+            title="¡Tienes una nueva solicitud de cotización!",
             greeting="Hola {{musician_name}},",
-            lead_text="El cliente <strong>{{contractor_name}}</strong> está interesado en tu agrupación y te ha enviado una solicitud de reserva en {{app_name}}:",
+            lead_text="El cliente <strong>{{contractor_name}}</strong> está interesado en tu agrupación y te ha enviado una solicitud de cotización en {{app_name}}:",
             info_items=[
                 ("Cliente", "{{contractor_name}}"),
                 ("Tipo de evento", "{{event_type}}"),
@@ -268,7 +268,7 @@ Te avisaremos cuando el músico responda.
         "text_body": """
 Hola {{musician_name}},
 
-El cliente {{contractor_name}} te ha enviado una nueva solicitud de reserva en {{app_name}}:
+El cliente {{contractor_name}} te ha enviado una nueva solicitud de cotización en {{app_name}}:
 
 Tipo de evento: {{event_type}}
 Fecha: {{event_date}}
@@ -607,7 +607,7 @@ Por favor, inténtalo nuevamente aquí:
     {
         "slug": "booking_rejected",
         "name": "Reserva rechazada",
-        "description": "Se envía cuando se rechaza una solicitud de reserva.",
+        "description": "Se envía cuando se rechaza una solicitud.",
         "subject": "Actualización sobre tu reserva de {{event_type}}",
         "available_variables": ["user_name", "other_party_name", "event_type", "app_name", "action_url"],
         "html_body": build_email_layout(
@@ -616,13 +616,13 @@ Por favor, inténtalo nuevamente aquí:
             badge_color="#475569",
             title="Reserva rechazada",
             greeting="Hola {{user_name}},",
-            lead_text="La solicitud de reserva para el evento de {{event_type}} con <strong>{{other_party_name}}</strong> ha sido rechazada.",
+            lead_text="La solicitud para el evento de {{event_type}} con <strong>{{other_party_name}}</strong> ha sido rechazada.",
             cta_label="Ver detalles",
             cta_url="{{action_url}}",
         ),
         "text_body": """Hola {{user_name}},
 
-La solicitud de reserva para el evento de {{event_type}} con {{other_party_name}} ha sido rechazada.
+La solicitud para el evento de {{event_type}} con {{other_party_name}} ha sido rechazada.
 
 Ver detalles:
 {{action_url}}"""

@@ -6,7 +6,6 @@ from datetime import datetime
 from sqlalchemy import (
     Boolean,
     Column,
-    DateTime,
     Float,
     ForeignKey,
     String,
@@ -16,6 +15,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
 from app.db.session import Base
+from app.db.types import UTCDateTime
 
 
 class BookingLocationShare(Base):
@@ -35,8 +35,8 @@ class BookingLocationShare(Base):
     # Legacy binary columns (kept for older DBs; unused by multi-participant flow).
     musician_sharing = Column(Boolean, nullable=False, default=False)
     contractor_sharing = Column(Boolean, nullable=False, default=False)
-    musician_requested_at = Column(DateTime, nullable=True)
-    contractor_requested_at = Column(DateTime, nullable=True)
+    musician_requested_at = Column(UTCDateTime, nullable=True)
+    contractor_requested_at = Column(UTCDateTime, nullable=True)
     musician_requested_by_user_id = Column(
         UUID(as_uuid=True), ForeignKey("user.id", ondelete="SET NULL"), nullable=True
     )
@@ -46,19 +46,19 @@ class BookingLocationShare(Base):
     musician_lat = Column(Float, nullable=True)
     musician_lng = Column(Float, nullable=True)
     musician_accuracy = Column(Float, nullable=True)
-    musician_updated_at = Column(DateTime, nullable=True)
+    musician_updated_at = Column(UTCDateTime, nullable=True)
     contractor_lat = Column(Float, nullable=True)
     contractor_lng = Column(Float, nullable=True)
     contractor_accuracy = Column(Float, nullable=True)
-    contractor_updated_at = Column(DateTime, nullable=True)
+    contractor_updated_at = Column(UTCDateTime, nullable=True)
 
     event_lat = Column(Float, nullable=True)
     event_lng = Column(Float, nullable=True)
     event_address = Column(String, nullable=True)
     event_city = Column(String, nullable=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(UTCDateTime, default=datetime.utcnow)
+    updated_at = Column(UTCDateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     booking = relationship("Booking")
 
@@ -96,14 +96,14 @@ class BookingLocationParticipant(Base):
     lat = Column(Float, nullable=True)
     lng = Column(Float, nullable=True)
     accuracy = Column(Float, nullable=True)
-    updated_at = Column(DateTime, nullable=True)
+    updated_at = Column(UTCDateTime, nullable=True)
 
-    requested_at = Column(DateTime, nullable=True)
+    requested_at = Column(UTCDateTime, nullable=True)
     requested_by_user_id = Column(
         UUID(as_uuid=True), ForeignKey("user.id", ondelete="SET NULL"), nullable=True
     )
 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(UTCDateTime, default=datetime.utcnow)
 
     user = relationship("User", foreign_keys=[user_id])
 
@@ -135,6 +135,6 @@ class BookingLocationPing(Base):
     lng = Column(Float, nullable=True)
     accuracy = Column(Float, nullable=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    created_at = Column(UTCDateTime, default=datetime.utcnow, index=True)
 
     booking = relationship("Booking")

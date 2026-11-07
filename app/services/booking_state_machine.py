@@ -84,12 +84,9 @@ ACTION_RULES: Dict[BookingAction, TransitionRule] = {
             BookingStatus.accepted,
             BookingStatus.contract_pending,
             BookingStatus.contract_signed,
-            BookingStatus.payment_pending,
             BookingStatus.payment_retained,
             BookingStatus.change_pending,
             BookingStatus.in_progress,
-            BookingStatus.balance_pending,
-            BookingStatus.balance_review,
         ],
         allowed_roles=[UserRole.contractor, UserRole.musician, UserRole.admin],
         error_message="No se puede cancelar en este estado"
@@ -97,8 +94,6 @@ ACTION_RULES: Dict[BookingAction, TransitionRule] = {
     BookingAction.REQUEST_CHANGE: TransitionRule(
         from_statuses=[
             BookingStatus.payment_retained,
-            BookingStatus.balance_pending,
-            BookingStatus.balance_review
         ],
         allowed_roles=[UserRole.contractor, UserRole.musician],
         error_message="Solo se pueden solicitar cambios en reservas ya confirmadas"
@@ -117,8 +112,6 @@ ACTION_RULES: Dict[BookingAction, TransitionRule] = {
         from_statuses=[
             BookingStatus.payment_retained,
             BookingStatus.change_pending,
-            BookingStatus.balance_pending,
-            BookingStatus.balance_review
         ],
         allowed_roles=[UserRole.admin, UserRole.musician, UserRole.contractor],
         error_message="La reserva no se puede marcar en progreso desde su estado actual"
@@ -129,8 +122,6 @@ ACTION_RULES: Dict[BookingAction, TransitionRule] = {
             BookingStatus.payment_retained,
             BookingStatus.change_pending,
             BookingStatus.payment_released,
-            BookingStatus.balance_pending,
-            BookingStatus.balance_review
         ],
         allowed_roles=[UserRole.admin, UserRole.contractor, UserRole.musician],
         error_message="La reserva no está en curso ni confirmada como para finalizarla"
@@ -141,11 +132,8 @@ ACTION_RULES: Dict[BookingAction, TransitionRule] = {
             BookingStatus.accepted,
             BookingStatus.contract_pending,
             BookingStatus.contract_signed,
-            BookingStatus.payment_pending,
             BookingStatus.payment_retained,
             BookingStatus.change_pending,
-            BookingStatus.balance_pending,
-            BookingStatus.balance_review,
             BookingStatus.in_progress,
             BookingStatus.payment_released
         ],
@@ -158,8 +146,6 @@ ACTION_RULES: Dict[BookingAction, TransitionRule] = {
             BookingStatus.payment_released,
             BookingStatus.payment_retained,
             BookingStatus.change_pending,
-            BookingStatus.balance_pending,
-            BookingStatus.balance_review
         ],
         allowed_roles=[UserRole.contractor],
         error_message="Solo puedes reseñar el evento despues de confirmado o finalizado"
@@ -170,8 +156,6 @@ ACTION_RULES: Dict[BookingAction, TransitionRule] = {
             BookingStatus.payment_released,
             BookingStatus.payment_retained,
             BookingStatus.change_pending,
-            BookingStatus.balance_pending,
-            BookingStatus.balance_review
         ],
         allowed_roles=[UserRole.contractor],
         error_message="Solo puedes reportar un problema si el evento ya empezo o esta por empezar"
@@ -222,13 +206,11 @@ def compute_visible_stage(status: BookingStatus | str | None) -> str:
         return "solicitud"
     if st in (BookingStatus.accepted, BookingStatus.contract_pending):
         return "cotizacion"
-    if st in (BookingStatus.contract_signed, BookingStatus.payment_pending):
+    if st == BookingStatus.contract_signed:
         return "pago"
     if st in (
         BookingStatus.payment_retained,
         BookingStatus.change_pending,
-        BookingStatus.balance_pending,
-        BookingStatus.balance_review,
     ):
         return "confirmada"
     if st in (

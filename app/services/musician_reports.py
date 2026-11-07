@@ -28,20 +28,17 @@ from app.schemas.ensemble import (
 )
 from app.services.ensemble_members import get_leader_musician_or_403
 from app.services.platform_payment import musician_portion_of_paid
+from app.services.settlement import musician_released_amount
 
 BOOKING_STATUS_LABELS = {
     BookingStatus.requested.value: "Solicitada",
     BookingStatus.accepted.value: "Cotizada",
     BookingStatus.contract_pending.value: "Contrato pendiente",
     BookingStatus.contract_signed.value: "Contrato firmado",
-    BookingStatus.payment_pending.value: "Pago pendiente",
     BookingStatus.payment_retained.value: "Confirmada",
     BookingStatus.change_pending.value: "Cambio pendiente",
-    # Legacy (unreachable) statuses: shown like a confirmed booking.
-    BookingStatus.balance_pending.value: "Confirmada",
-    BookingStatus.balance_review.value: "Confirmada",
     BookingStatus.in_progress.value: "En evento",
-    BookingStatus.payment_released.value: "Pago liberado",
+    BookingStatus.payment_released.value: "Pagado al artista",
     BookingStatus.completed.value: "Finalizada",
     BookingStatus.cancelled.value: "Cancelada",
 }
@@ -160,6 +157,7 @@ def build_musician_reports(
         if booking_ids
         else []
     )
+    complaint_by_booking = {c.booking_id: c for c in complaints}
     final_reviews = (
         db.query(BookingReview)
         .filter(
@@ -226,7 +224,9 @@ def build_musician_reports(
             musician_portion_of_paid(booking, Decimal(str(retained_gross)))
         )
         released = float(
-            musician_portion_of_paid(booking, Decimal(str(released_gross)))
+            musician_released_amount(
+                booking, released_gross, complaint_by_booking.get(booking.id)
+            )
         )
         revenue_retained += retained
         revenue_released += released

@@ -228,6 +228,76 @@ def settlement_state_for_booking(
     return "settled"
 
 
+def _chargeback_debt_payments(db: Session, musician_id) -> list[Payment]:
+    return (
+        db.query(Payment)
+        .join(Booking, Booking.id == Payment.booking_id)
+        .filter(
+            Booking.musician_id == musician_id,
+            Payment.status == PaymentStatus.refunded,
+            Payment.payment_type.is_distinct_from("refund"),
+        )
+        .order_by(Payment.created_at.asc())
+        .all()
+    )
+
+
+def outstanding_musician_chargeback_debt(db: Session, musician_id) -> Decimal:
+    """Deuda pendiente del músico por contracargos posteriores a una liberación (D3)."""
+    if not musician_id:
+        return Decimal("0.00")
+    total = Decimal("0.00")
+    for dp in _chargeback_debt_payments(db, musician_id):
+        meta = dp.gateway_metadata if isinstance(dp.gateway_metadata, dict) else {}
+        if not meta.get("chargeback_after_release"):
+            continue
+        remaining = Decimal(str(meta.get("musician_chargeback_remaining") or 0))
+        if remaining > Decimal("0.00"):
+            total += remaining
+    return total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def chargeback_deducted_for_booking(db: Session, booking_id) -> Decimal:
+    """Descuento por contracargo ya aplicado al liberar los pagos de esta reserva."""
+    total = Decimal("0.00")
+    rows = (
+        db.query(Payment)
+        .filter(
+            Payment.booking_id == booking_id,
+            Payment.status == PaymentStatus.released,
+            Payment.payment_type.is_distinct_from("refund"),
+        )
+        .all()
+    )
+    for payment in rows:
+        meta = payment.gateway_metadata if isinstance(payment.gateway_metadata, dict) else {}
+        total += Decimal(str(meta.get("chargeback_deducted") or 0))
+    return total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def musician_net_payable(pool: float | Decimal, debt: Decimal) -> float:
+    """Lo que realmente se transfiere al músico: su parte menos la deuda por contracargo (nunca negativo)."""
+    net = max(Decimal(str(pool or 0)) - debt, Decimal("0.00"))
+    return float(net.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
+def musician_released_amount(
+    booking: Booking,
+    released_gross: float | Decimal,
+    complaint: BookingComplaint | None = None,
+) -> Decimal:
+    """Parte del músico ya liberada.
+
+    Si hubo un reembolso por queja ejecutado, sale del pool del músico: se descuenta aquí
+    porque el pago original queda `released` por el bruto completo.
+    """
+    base = musician_portion_of_paid(booking, Decimal(str(released_gross or 0)))
+    refunded = Decimal("0.00")
+    if complaint is not None and (complaint.refund_status or "") == REFUND_STATUS_COMPLETED:
+        refunded = Decimal(str(complaint.admin_contractor_refund or 0))
+    return max(base - refunded, Decimal("0.00")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
 def deduct_musician_chargeback_debt(
     db: Session,
     musician_id,
@@ -240,17 +310,7 @@ def deduct_musician_chargeback_debt(
     if not musician_id or max_deduction <= Decimal("0.00"):
         return Decimal("0.00")
 
-    debt_payments = (
-        db.query(Payment)
-        .join(Booking, Booking.id == Payment.booking_id)
-        .filter(
-            Booking.musician_id == musician_id,
-            Payment.status == PaymentStatus.refunded,
-            Payment.payment_type.is_distinct_from("refund"),
-        )
-        .order_by(Payment.created_at.asc())
-        .all()
-    )
+    debt_payments = _chargeback_debt_payments(db, musician_id)
     total_deducted = Decimal("0.00")
     remaining_budget = max_deduction
     for dp in debt_payments:
@@ -281,7 +341,14 @@ def release_retained_payments(
     payout_reference: str | None = None,
     payout_evidence_url: str | None = None,
     payout_notes: str | None = None,
+    musician_amount: Decimal | None = None,
+    contractor_refund: Decimal | None = None,
 ) -> list[Payment]:
+    """Libera los pagos retenidos.
+
+    `musician_amount` es lo que el admin asigna al músico (tope del descuento por contracargo);
+    `contractor_refund` es lo ya reembolsado al contratista por queja y sale del pool del músico.
+    """
     now = datetime.utcnow()
     payments = (
         db.query(Payment)
@@ -305,6 +372,8 @@ def release_retained_payments(
             Decimal("0.00"),
         )
         musician_releasing = musician_portion_of_paid(booking, gross_releasing)
+        if musician_amount is not None:
+            musician_releasing = min(musician_releasing, Decimal(str(musician_amount)))
         deducted_total = deduct_musician_chargeback_debt(
             db, booking.musician_id, musician_releasing
         )
@@ -340,6 +409,8 @@ def release_retained_payments(
                 if booking
                 else gross_released
             )
+            if contractor_refund is not None and Decimal(str(contractor_refund)) > Decimal("0.00"):
+                musician_net = max(musician_net - Decimal(str(contractor_refund)), Decimal("0.00"))
             effective_payout = max(musician_net - deducted_total, Decimal("0.00"))
             record_ledger_entry(
                 db,
@@ -355,7 +426,11 @@ def release_retained_payments(
                     "payout_reference": payout_reference,
                 },
             )
-            platform_portion = max(gross_released - musician_net, Decimal("0.00"))
+            platform_portion = max(
+                gross_released
+                - (musician_net + Decimal(str(contractor_refund or 0))),
+                Decimal("0.00"),
+            )
             if platform_portion > Decimal("0.00"):
                 record_ledger_entry(
                     db,

@@ -2,11 +2,12 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, Enum, ForeignKey, String, UniqueConstraint
+from sqlalchemy import Column, Enum, ForeignKey, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
 from app.db.session import Base
+from app.db.types import UTCDateTime
 
 
 class OAuthProvider(str, enum.Enum):
@@ -30,6 +31,6 @@ class OAuthAccount(Base):
     provider = Column(Enum(OAuthProvider), nullable=False)
     provider_user_id = Column(String, nullable=False)
     email = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(UTCDateTime, default=datetime.utcnow)
 
     user = relationship("User", back_populates="oauth_accounts")

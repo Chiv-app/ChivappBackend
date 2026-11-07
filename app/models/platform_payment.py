@@ -1,10 +1,11 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, Numeric, String, Text
+from sqlalchemy import Column, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 
 from app.db.session import Base
+from app.db.types import UTCDateTime
 
 
 class PlatformPaymentSettings(Base):
@@ -19,6 +20,6 @@ class PlatformPaymentSettings(Base):
     qr_image_url = Column(String, nullable=True)
     instructions = Column(Text, nullable=True)
     # Percent added on top of musician price; only the contractor pays it.
-    platform_fee_percent = Column(Numeric, nullable=False, default=2)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    platform_fee_percent = Column(Numeric(5, 2), nullable=False, default=2)
+    updated_at = Column(UTCDateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(UTCDateTime, default=datetime.utcnow)

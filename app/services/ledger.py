@@ -37,9 +37,11 @@ def record_ledger_entry(
             description=description,
             meta=meta,
         )
-        db.add(entry)
-        db.flush()
+        # Savepoint: si el asiento falla no deja la sesión en estado inválido ni revierte el resto.
+        with db.begin_nested():
+            db.add(entry)
+            db.flush()
         return entry
     except Exception as exc:
-        logger.warning("No se pudo registrar asiento en ledger_entry (%s): %s", entry_type, exc)
+        logger.error("No se pudo registrar asiento en ledger_entry (%s): %s", entry_type, exc)
         return None

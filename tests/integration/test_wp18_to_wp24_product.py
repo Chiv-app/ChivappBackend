@@ -5,7 +5,6 @@ from decimal import Decimal
 import uuid
 from zoneinfo import ZoneInfo
 
-from app.cli.cron_review_reminders import expire_stale_bookings
 from app.core.hashing import hash_password
 from app.core.jwt import create_access_token
 from app.models.booking import Booking, BookingStatus
@@ -133,66 +132,42 @@ def test_wp21_booking_optional_address_with_city_and_batch_quotes(client, db_ses
     assert created_musician_ids == {str(musician1.id), str(musician2.id)}
 
 
-def test_wp21_and_wp23_cron_24h_unanswered_alternatives_and_48h_event_reminder(db_session):
-    """WP-21 & WP-23: El cron alerta solicitudes sin respuesta a las 24h con alternativas y envía recordatorio 48h."""
-    contractor_user, contractor_prof = _make_verified_contractor(db_session)
-    musician1_user, musician1 = _make_verified_musician(db_session, "Artista Ocupado", city="Lima")
-    _, _alt_musician = _make_verified_musician(db_session, "Orquesta Alternativa", city="Lima")
+def test_multiple_quote_is_all_or_nothing(client, db_session):
+    """Cotización múltiple: si un artista no puede recibir la solicitud, no se crea ninguna."""
+    contractor_user, _ = _make_verified_contractor(db_session)
+    _, musician1 = _make_verified_musician(db_session, "Banda Tres", city="Lima")
+    headers = _auth_headers(contractor_user)
+    event_date = (date.today() + timedelta(days=30)).isoformat()
 
-    now_utc = datetime.utcnow()
-    lima_tz = ZoneInfo("America/Lima")
-    now_lima = datetime.now(lima_tz)
-    upcoming_dt = now_lima + timedelta(hours=24)
-
-    # Reserva en requested creada hace 30 horas (> 24h y < 48h)
-    stale_booking = Booking(
-        contractor_id=contractor_prof.id,
-        musician_id=musician1.id,
-        event_date=date.today() + timedelta(days=15),
-        start_time=time(20, 0),
-        location_address="Lima",
-        location_city="Lima",
-        event_type="Cumpleaños",
-        status=BookingStatus.requested,
-        created_at=now_utc - timedelta(hours=30),
-        updated_at=now_utc - timedelta(hours=30),
+    res = client.post(
+        "/api/v1/bookings/batch",
+        headers=headers,
+        json={
+            "musician_ids": [str(musician1.id), str(uuid.uuid4())],  # el segundo no existe
+            "event_date": event_date,
+            "start_time": "20:00:00",
+            "location_city": "Lima",
+            "event_type": "Cumpleaños",
+        },
     )
-    # Reserva confirmada (payment_retained) cuyo evento ocurre en ~24h (dentro de la ventana de 48h)
-    upcoming_booking = Booking(
-        contractor_id=contractor_prof.id,
-        musician_id=musician1.id,
-        event_date=upcoming_dt.date(),
-        start_time=time(upcoming_dt.hour, upcoming_dt.minute),
-        location_address="Av. Arequipa 500, Lima",
-        location_city="Lima",
-        event_type="Aniversario",
-        price_agreed=Decimal("1000.00"),
-        status=BookingStatus.payment_retained,
-    )
-    db_session.add_all([stale_booking, upcoming_booking])
-    db_session.commit()
+    assert res.status_code == 404, res.text
+    assert "No se envió ninguna solicitud" in res.json()["detail"]
+    db_session.expire_all()
+    assert db_session.query(Booking).filter(Booking.musician_id == musician1.id).count() == 0
+    assert db_session.query(Notification).filter(Notification.type == "booking_requested").count() == 0
 
-    stats = expire_stale_bookings(db_session, now=now_utc)
-    assert stats.get("unanswered_24h_alerts", 0) >= 1
-    assert stats.get("event_reminders", 0) >= 2
-
-    unanswered_notifs = (
-        db_session.query(Notification)
-        .filter(
-            Notification.user_id == contractor_user.id,
-            Notification.type == "booking_unanswered_24h",
-        )
-        .all()
+    # Con artistas válidos, se envían todas y cada artista recibe su aviso.
+    _, musician2 = _make_verified_musician(db_session, "Banda Cuatro", city="Lima")
+    ok = client.post(
+        "/api/v1/bookings/batch",
+        headers=headers,
+        json={
+            "musician_ids": [str(musician1.id), str(musician2.id)],
+            "event_date": event_date,
+            "start_time": "20:00:00",
+            "location_city": "Lima",
+            "event_type": "Cumpleaños",
+        },
     )
-    assert len(unanswered_notifs) == 1
-    assert "Orquesta Alternativa" in (unanswered_notifs[0].message or "")
-
-    reminder_notifs = (
-        db_session.query(Notification)
-        .filter(
-            Notification.type == "booking_event_reminder",
-            Notification.user_id.in_([contractor_user.id, musician1_user.id]),
-        )
-        .all()
-    )
-    assert len(reminder_notifs) == 2
+    assert ok.status_code == 201, ok.text
+    assert len(ok.json()) == 2
