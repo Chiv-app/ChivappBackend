@@ -554,10 +554,11 @@ def test_mock_transport_webhook_post_approval_events(
     assert booking.status == BookingStatus.cancelled
 
 
-def test_mock_transport_issue_refund_and_check_status(
+def test_mock_transport_manual_refund_never_calls_mp_and_check_status(
     client: TestClient, db_session: Session, monkeypatch
 ) -> None:
-    """Verifica reembolso HTTP con X-Idempotency-Key y sincronización /check-status/{booking_id}."""
+    """Mercado Pago solo cobra: el reembolso de un pago marcado es manual (no llama a /refunds),
+    y /check-status/{booking_id} sigue sincronizando pagos aprobados."""
     monkeypatch.setattr(settings, "MERCADO_PAGO_ACCESS_TOKEN", "TEST-MP-TOKEN-123")
     _, contractor_user, booking = _create_signed_booking(db_session)
     _, _, other_booking = _create_signed_booking(db_session)
@@ -619,13 +620,19 @@ def test_mock_transport_issue_refund_and_check_status(
 
     _patch_mp_transport(monkeypatch, handler)
 
-    # 1. Admin reembolsa pago needs_refund -> envía X-Idempotency-Key: needs-refund-{payment.id}
-    res_ref = client.post(
+    # 1. Admin registra el reembolso manual del pago needs_refund: exige la referencia y no toca MP
+    res_sin_ref = client.post(
         f"/api/v1/admin/payments/{flagged_payment.id}/refund",
         headers=_auth_cookies(admin),
     )
+    assert res_sin_ref.status_code == 400
+    res_ref = client.post(
+        f"/api/v1/admin/payments/{flagged_payment.id}/refund",
+        headers=_auth_cookies(admin),
+        json={"manual_reason": "Transferencia OP-666001"},
+    )
     assert res_ref.status_code == 200, res_ref.text
-    assert refund_headers[-1].get("x-idempotency-key") == f"needs-refund-{flagged_payment.id}"
+    assert refund_headers == []  # ninguna llamada a /refunds de Mercado Pago
     db_session.refresh(flagged_payment)
     assert flagged_payment.status == PaymentStatus.refunded
 
@@ -887,19 +894,17 @@ def test_wp02_wp03_safe_settlement_order_and_single_release_path(
 ) -> None:
     """
     WP-02 & WP-03:
-    1) Liquidación (`settle`) bloqueada por `in_mediation` devuelve 400 y NO ejecuta `issue_refund` en MP.
+    1) Liquidación (`settle`) bloqueada por `in_mediation` devuelve 400 y no llama a Mercado Pago.
     2) `/payments/{id}/release` rechaza liberar si hay mediación activa o queja abierta (400).
     3) Cuando la disputa se resuelve a favor del vendedor (`status='approved'`), se desbloquea `settle`.
-    4) Si la liberación posterior al reembolso falla, queda en `needs_attention` (sin 500) y al reintentar
-       completa la liquidación sin duplicar el reembolso en Mercado Pago.
+    4) La liquidación con devolución NO llama a Mercado Pago: la devolución queda pendiente de que el
+       admin la transfiera a mano (`awaiting_transfer`) y el saldo del músico se libera.
     """
     from app.models.booking_complaint import (
-        REFUND_STATUS_COMPLETED,
-        REFUND_STATUS_NEEDS_ATTENTION,
+        REFUND_STATUS_AWAITING_TRANSFER,
         BookingComplaint,
         BookingComplaintStatus,
     )
-    import app.services.settlement as settlement_mod
 
     secret = "whsec_wp02"
     monkeypatch.setattr(settings, "MERCADO_PAGO_ACCESS_TOKEN", "TEST-MP-TOKEN-123")
@@ -1001,53 +1006,26 @@ def test_wp02_wp03_safe_settlement_order_and_single_release_path(
     assert res_rel_complaint.status_code == 400
     assert "reclamo" in res_rel_complaint.json()["detail"].lower()
 
-    # 4. Simular fallo en release_retained_payments DESPUÉS de que el reembolso en MP tuvo éxito -> needs_attention (sin 500)
-    orig_release = settlement_mod.release_retained_payments
-    fail_once = {"should_fail": True}
-
-    def _flaky_release(*args, **kwargs):
-        if fail_once["should_fail"]:
-            fail_once["should_fail"] = False
-            raise RuntimeError("Fallo transitorio simulado al liberar saldo")
-        return orig_release(*args, **kwargs)
-
-    monkeypatch.setattr(settlement_mod, "release_retained_payments", _flaky_release)
-
-    res_partial_fail = client.post(
+    # 4. Liquidar con devolución: Mercado Pago NO se toca; la devolución queda pendiente de transferir
+    res_settle = client.post(
         f"/api/v1/admin/settlements/{booking.id}/settle",
         json={
             "musician_amount": round(tariff - 100.0, 2),
             "contractor_refund": 100.0,
-            "notes": "Liquidación con fallo a mitad",
+            "notes": "Acuerdo tras la mediación",
         },
     )
-    assert res_partial_fail.status_code == 200, res_partial_fail.text
-    assert res_partial_fail.json()["settlement_state"] == "needs_attention"
-    assert len(refund_post_calls) == 1
-    db_session.expire_all()
-    db_session.refresh(complaint)
-    assert complaint.refund_status == REFUND_STATUS_NEEDS_ATTENTION
-
-    # Reintento tardío -> completa la liberación SIN volver a llamar a POST /refunds en Mercado Pago
-    res_retry = client.post(
-        f"/api/v1/admin/settlements/{booking.id}/settle",
-        json={
-            "musician_amount": round(tariff - 100.0, 2),
-            "contractor_refund": 100.0,
-            "notes": "Reintento exitoso",
-        },
-    )
-    assert res_retry.status_code == 200, res_retry.text
-    assert res_retry.json()["settlement_state"] == "settled"
-    assert len(refund_post_calls) == 1
+    assert res_settle.status_code == 200, res_settle.text
+    assert len(refund_post_calls) == 0
     db_session.expire_all()
     db_session.refresh(complaint)
     db_session.refresh(payment)
-    assert complaint.refund_status == REFUND_STATUS_COMPLETED
+    assert complaint.refund_status == REFUND_STATUS_AWAITING_TRANSFER
+    assert complaint.status == BookingComplaintStatus.settled
     assert payment.status == PaymentStatus.released
 
 
-def test_wp05_preference_initiated_row_auto_refund_duplicates_and_network_error(
+def test_wp05_preference_initiated_row_duplicates_flagged_and_network_error(
     client: TestClient, db_session: Session, monkeypatch
 ) -> None:
     """
@@ -1055,12 +1033,11 @@ def test_wp05_preference_initiated_row_auto_refund_duplicates_and_network_error(
     1) Crear preferencia Checkout Pro registra una fila Payment en estado 'initiated' (y la reutiliza si se pide de nuevo).
     2) Si la llamada HTTP de /process falla por red (network_error), deja una fila 'initiated' con idempotency_key
        lista para ser conciliada por WP-01.
-    3) Dos pagos aprobados para la misma reserva terminan con el primero en 'retained' y el segundo reembolsado
-       automáticamente ('refunded', auto_refunded=True).
+    3) Dos pagos aprobados para la misma reserva terminan con el primero en 'retained' y el segundo marcado
+       `needs_refund` para que el admin lo devuelva a mano: Mercado Pago no reembolsa nunca por API.
     """
     monkeypatch.setattr(settings, "MERCADO_PAGO_ACCESS_TOKEN", "TEST-MP-TOKEN-123")
     monkeypatch.setattr(settings, "MERCADO_PAGO_PUBLIC_KEY", "TEST-MP-PUBKEY-123")
-    monkeypatch.setattr(settings, "MP_AUTO_REFUND_NEEDS_REFUND", True)
 
     _, contractor_user, booking = _create_signed_booking(db_session)
     payable = float(contractor_payable_total(booking))
@@ -1142,7 +1119,7 @@ def test_wp05_preference_initiated_row_auto_refund_duplicates_and_network_error(
     assert net_row.gateway_metadata.get("network_error") is True
     assert net_row.gateway_metadata.get("idempotency_key", "").startswith("pay-")
 
-    # 3. Dos pagos aprobados para la misma reserva -> el 1ro queda en retained y el 2do se reembolsa solo
+    # 3. Dos pagos aprobados para la misma reserva -> el 1ro queda en retained y el 2do queda marcado
     from app.services import mercadopago_service
 
     simulate_net_error["active"] = False
@@ -1173,9 +1150,9 @@ def test_wp05_preference_initiated_row_auto_refund_duplicates_and_network_error(
     db_session.refresh(p1)
     db_session.refresh(p2)
     assert p1.status == PaymentStatus.retained
-    assert p2.status == PaymentStatus.refunded
-    assert p2.gateway_metadata.get("auto_refunded") is True
-    assert len(refund_calls) == 1
+    assert p2.status != PaymentStatus.retained
+    assert p2.gateway_metadata.get("needs_refund") is True
+    assert refund_calls == []  # Mercado Pago solo cobra: no hubo ningún reembolso por API
 
 
 def test_wp04_wp06_chargeback_debt_cancelled_payout_no_show_and_fee_details(

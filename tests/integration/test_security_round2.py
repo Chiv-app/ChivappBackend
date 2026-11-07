@@ -162,14 +162,18 @@ def test_login_flow_answers_are_identical_for_real_missing_inactive_and_admin_ac
     assert blocked_missing.status_code == blocked_real.status_code == 429
 
 
-def test_unverified_email_cannot_sign_or_pay_until_it_is_verified_with_a_code(
+def test_payment_link_checkout_signs_and_pays_first_and_email_is_verified_later(
     client: TestClient, db_session: Session
 ):
-    """S-05: una cuenta nueva del checkout no firma ni paga hasta verificar el correo con un código."""
+    """Enlace de pago: se firma y se paga primero, sin código. El correo se verifica después."""
     from datetime import datetime, timedelta
     from decimal import Decimal
     from unittest.mock import patch
 
+    from fastapi import HTTPException
+
+    from app.api.v1.endpoints.payments import _assert_email_verified_or_link_booking
+    from app.models.booking import Booking, BookingStatus
     from app.models.booking_link import BookingLink, BookingLinkStatus
     from app.models.contract import Contract
     from app.models.musician_profile import MusicianProfile
@@ -206,38 +210,77 @@ def test_unverified_email_cannot_sign_or_pay_until_it_is_verified_with_a_code(
     db_session.commit()
 
     email = f"cliente_{suffix}@test.com"
-    res = client.post(
-        f"/api/v1/booking-links/{link.token}/checkout",
-        json={
-            "fullname": "Cliente Nuevo",
-            "email": email,
-            "phone": "955" + str(uuid.uuid4().int)[:6],
-            "event_date": "2030-08-15",
-            "start_time": "20:00:00",
-            "event_type": "Cumpleaños",
-            "location_address": "Av. Arequipa 100",
-            "location_city": "Lima",
-            "signature_image_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
-            "accept_terms": True,
-        },
-    )
+    with patch("app.services.email.service.send_templated_email") as mock_send:
+        res = client.post(
+            f"/api/v1/booking-links/{link.token}/checkout",
+            json={
+                "fullname": "Cliente Nuevo",
+                "email": email,
+                "phone": "955" + str(uuid.uuid4().int)[:6],
+                "event_date": "2030-08-15",
+                "start_time": "20:00:00",
+                "event_type": "Cumpleaños",
+                "location_address": "Av. Arequipa 100",
+                "location_city": "Lima",
+                "signature_image_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+                "accept_terms": True,
+            },
+        )
     assert res.status_code == 200, res.text
     body = res.json()
-    assert body["email_verification_required"] is True
-    assert body["signature_image_url"] is None
+    # No hay pausa para verificar: la firma se guarda y la reserva queda lista para pagar.
+    assert "email_verification_required" not in body
+    assert body["signature_image_url"]
+    # Quien escribe un correo y nunca paga no hace que le llegue ningún correo.
+    assert not [c for c in mock_send.call_args_list if c.kwargs.get("slug") == "email_verification"]
 
     db_session.expire_all()
     contract = db_session.query(Contract).filter(Contract.booking_id == body["booking_id"]).first()
-    assert contract is not None and not contract.contractor_signed
+    assert contract is not None and contract.contractor_signed
+    booking = db_session.get(Booking, body["booking_id"])
+    assert booking.status == BookingStatus.contract_signed
+    user = db_session.query(User).filter(User.email == email).first()
+    assert user.email_verified_at is None
 
-    # Con la sesión de esa cuenta sin verificar, pagar y firmar está bloqueado.
-    pay = client.post("/api/v1/payments/mercadopago/preference", json={"booking_id": str(body["booking_id"])})
-    assert pay.status_code == 403
-    assert "verificar tu correo" in pay.json()["detail"]
-    process = client.post("/api/v1/payments/mercadopago/process", json={"booking_id": str(body["booking_id"])})
-    assert process.status_code in (403, 422)
+    # La reserva viene de un enlace de pago: puede pagar con el correo sin verificar.
+    _assert_email_verified_or_link_booking(db_session, booking, user)
 
-    # Un código equivocado no verifica; el correcto sí y la sesión sigue activa.
+    # Una reserva que NO viene de un enlace de pago sigue exigiendo el correo verificado.
+    other = Booking(
+        musician_id=musician.id,
+        contractor_id=booking.contractor_id,
+        event_date=booking.event_date,
+        start_time=booking.start_time,
+        location_address="Av. Otra 200",
+        event_type="Boda",
+        status=BookingStatus.accepted,
+        price_agreed=Decimal("300.00"),
+    )
+    db_session.add(other)
+    db_session.commit()
+    with pytest.raises(HTTPException) as exc:
+        _assert_email_verified_or_link_booking(db_session, other, user)
+    assert exc.value.status_code == 403
+    assert "verificar tu correo" in exc.value.detail
+
+
+def test_logged_in_user_can_verify_the_email_with_a_code(client: TestClient, db_session: Session):
+    """Para quien no viene de un enlace de pago: verificar el correo con un código, con la sesión abierta."""
+    from unittest.mock import patch
+
+    suffix = uuid.uuid4().hex[:8]
+    user = User(
+        email=f"sinverificar_{suffix}@test.com",
+        password_hash=hash_password("ClaveSegura123!"),
+        role=UserRole.contractor,
+        fullname="Sin Verificar",
+        is_active=True,
+    )
+    db_session.add(user)
+    db_session.commit()
+    token = create_access_token(subject=str(user.id), role="contractor", version=user.token_version or 0)
+    client.cookies.set("access_token", token)
+
     with patch("secrets.randbelow", return_value=123456), patch(
         "app.services.email.service.send_templated_email"
     ):
@@ -251,11 +294,10 @@ def test_unverified_email_cannot_sign_or_pay_until_it_is_verified_with_a_code(
     assert ok.status_code == 200, ok.text
     assert ok.json()["email_verified"] is True
 
-    user = db_session.query(User).filter(User.email == email).first()
     db_session.refresh(user)
     assert user.email_verified_at is not None
-    me = client.get("/api/v1/auth/me")
-    assert me.status_code == 200
+    # La sesión sigue activa después de verificar.
+    assert client.get("/api/v1/auth/me").status_code == 200
 
 
 def test_s09_booking_inputs_and_search_filters_have_size_limits(client: TestClient):

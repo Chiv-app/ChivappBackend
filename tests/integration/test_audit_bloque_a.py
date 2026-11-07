@@ -357,13 +357,13 @@ def test_admin_endpoints_with_fresh_session_and_settle_refund_and_block_unresolv
         client.cookies.set("access_token", create_access_token(subject=str(admin_id), role="admin"))
 
         # 1. Admin cancel booking on fresh session (BUG-01)
-        with patch("app.services.mercadopago_service.issue_refund", return_value={"id": 66}):
-            res_cancel = client.post(
-                f"/api/v1/admin/bookings/{booking_id}/cancel",
-                json={"reason": "Prueba", "refund_percent": 50},
-            )
-            assert res_cancel.status_code == 200, res_cancel.text
-            assert res_cancel.json()["cancellation_refund_status"] == "completed"
+        res_cancel = client.post(
+            f"/api/v1/admin/bookings/{booking_id}/cancel",
+            json={"reason": "Prueba", "refund_percent": 50},
+        )
+        assert res_cancel.status_code == 200, res_cancel.text
+        # Mercado Pago solo cobra: queda aprobado y pendiente de que el admin transfiera.
+        assert res_cancel.json()["cancellation_refund_status"] == "processing"
 
         # 2. Contractor-cancelled booking in pending_approval: test BUG-09 & BUG-01 approve-refund
         pending_booking = Booking(
@@ -406,14 +406,18 @@ def test_admin_endpoints_with_fresh_session_and_settle_refund_and_block_unresolv
         assert res_release_blocked.status_code == 400
 
         # BUG-01: Approve refund on fresh session must succeed without InvalidRequestError
-        with patch("app.services.mercadopago_service.issue_refund", return_value={"id": 77}) as mock_refund:
-            res_approve = client.post(
-                f"/api/v1/admin/bookings/{pending_booking_id}/approve-refund",
-                json={"amount": 200.0},
-            )
-            assert res_approve.status_code == 200, res_approve.text
-            assert res_approve.json()["cancellation_refund_status"] == "completed"
-            mock_refund.assert_called_once()
+        res_approve = client.post(
+            f"/api/v1/admin/bookings/{pending_booking_id}/approve-refund",
+            json={"amount": 200.0},
+        )
+        assert res_approve.status_code == 200, res_approve.text
+        assert res_approve.json()["cancellation_refund_status"] == "processing"
+        res_sent = client.post(
+            f"/api/v1/admin/bookings/{pending_booking_id}/refund-sent",
+            json={"reference": "OP-77"},
+        )
+        assert res_sent.status_code == 200, res_sent.text
+        assert res_sent.json()["cancellation_refund_status"] == "completed"
 
         # 3. BUG-02 / SEC-08: Create a completed booking with a responded complaint and settle with contractor_refund > 0
         dispute_booking = Booking(
@@ -451,18 +455,18 @@ def test_admin_endpoints_with_fresh_session_and_settle_refund_and_block_unresolv
         complaint_id = complaint.id
         dispute_booking_id = dispute_booking.id
 
-        with patch("app.services.mercadopago_service.issue_refund", return_value={"id": 88}) as mock_settle_ref:
-            res_settle = client.post(
-                f"/api/v1/admin/settlements/{dispute_booking_id}/settle",
-                json={
-                    "musician_amount": 700.0,
-                    "contractor_refund": 300.0,
-                    "notes": "Acuerdo parcial",
-                },
-            )
-            assert res_settle.status_code == 200, res_settle.text
-            mock_settle_ref.assert_called_once()
-            assert mock_settle_ref.call_args.kwargs.get("idempotency_key") == f"complaint-refund-{complaint_id}"
+        res_settle = client.post(
+            f"/api/v1/admin/settlements/{dispute_booking_id}/settle",
+            json={
+                "musician_amount": 700.0,
+                "contractor_refund": 300.0,
+                "notes": "Acuerdo parcial",
+            },
+        )
+        assert res_settle.status_code == 200, res_settle.text
+        # La devolución al contratante la transfiere el admin a mano: queda pendiente de transferir.
+        db_session.expire_all()
+        assert db_session.get(BookingComplaint, complaint_id).refund_status == "awaiting_transfer"
     finally:
         app.dependency_overrides[deps.get_db] = lambda: db_session
 

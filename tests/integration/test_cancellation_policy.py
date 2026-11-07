@@ -11,7 +11,7 @@ from app.models.musician_profile import MusicianProfile
 from app.models.payment import Payment, PaymentStatus
 from app.models.user import User, UserRole
 from app.services.cancellation_policy import (
-    execute_cancellation_refund,
+    complete_manual_cancellation_refund,
     quote_cancellation,
     record_cancellation,
 )
@@ -111,8 +111,8 @@ def test_cancellation_settlement_conserves_money(db_session, cancelled_by, days,
     record_cancellation(booking, quote_cancellation(db_session, booking, cancelled_by), approved=True)
     db_session.commit()
 
-    with patch("app.services.mercadopago_service.issue_refund", return_value={"id": 1}):
-        execute_cancellation_refund(db_session, booking)
+    if expected_refund > 0:
+        complete_manual_cancellation_refund(db_session, booking, reference="TRF-0001")
 
     refunded = sum(
         (p.amount for p in db_session.query(Payment).filter(Payment.payment_type == "refund")),
@@ -144,17 +144,23 @@ def test_partial_refund_splits_payment_and_keeps_rest_for_musician(db_session):
     record_cancellation(booking, quote, approved=True)
     db_session.commit()
 
-    with patch("app.services.mercadopago_service.issue_refund", return_value={"id": 1}) as refund:
-        execute_cancellation_refund(db_session, booking)
+    amount = complete_manual_cancellation_refund(
+        db_session, booking, reference="TRF-0002", evidence_url=None, notes="Yape al 999111222"
+    )
 
-    refund.assert_called_once()
-    assert refund.call_args.args[0] == "mp-123"
+    assert amount == quote.refund_amount
     assert booking.cancellation_refund_status == "completed"
+    assert booking.cancellation_refunded_at is not None
 
     retained = db_session.query(Payment).filter(Payment.status == PaymentStatus.retained).one()
     refund_row = db_session.query(Payment).filter(Payment.payment_type == "refund").one()
     assert refund_row.amount == quote.refund_amount
     assert retained.amount + refund_row.amount == paid
+    # Mercado Pago solo cobra: el reembolso queda como operación manual con su referencia.
+    assert refund_row.gateway_provider == "manual"
+    assert refund_row.gateway_payment_id is None
+    assert refund_row.payout_reference == "TRF-0002"
+    assert refund_row.payout_notes == "Yape al 999111222"
 
 
 def test_refund_calculated_with_old_rule_is_capped_to_the_fee(db_session):
@@ -170,30 +176,39 @@ def test_refund_calculated_with_old_rule_is_capped_to_the_fee(db_session):
     db_session.commit()
     assert old_rule_amount > PRICE and old_rule_amount < paid
 
-    with patch("app.services.mercadopago_service.issue_refund", return_value={"id": 5}) as refund:
-        approve_cancellation_refund(db_session, booking, None)
+    approve_cancellation_refund(db_session, booking, None)
+    # Aprobar solo deja el reembolso pendiente de transferir: no mueve dinero.
+    assert booking.cancellation_refund_status == "processing"
+    assert db_session.query(Payment).filter(Payment.payment_type == "refund").count() == 0
 
-    assert refund.call_args.args[1] == float(PRICE)
+    complete_manual_cancellation_refund(db_session, booking, reference="TRF-0003")
     refund_row = db_session.query(Payment).filter(Payment.payment_type == "refund").one()
     assert refund_row.amount == PRICE
     assert booking.cancellation_refund_amount == PRICE
 
 
-def test_failed_refund_is_retryable_without_double_refund(db_session):
+def test_manual_refund_needs_a_reference_and_cannot_be_registered_twice(db_session):
     booking = _booking(db_session, days_before=30)
     record_cancellation(booking, quote_cancellation(db_session, booking, "contractor"), approved=True)
     db_session.commit()
 
-    with patch("app.services.mercadopago_service.issue_refund", side_effect=ValueError("MP caído")):
-        execute_cancellation_refund(db_session, booking)
-    assert booking.cancellation_refund_status == "failed"
+    with pytest.raises(ValueError, match="referencia"):
+        complete_manual_cancellation_refund(db_session, booking, reference="  ")
     assert db_session.query(Payment).filter(Payment.payment_type == "refund").count() == 0
 
-    with patch("app.services.mercadopago_service.issue_refund", return_value={"id": 2}) as refund:
-        execute_cancellation_refund(db_session, booking)
-        execute_cancellation_refund(db_session, booking)  # segundo intento: nada pendiente
-    assert refund.call_count == 1
+    complete_manual_cancellation_refund(db_session, booking, reference="TRF-0004")
+    with pytest.raises(ValueError, match="ya fue registrado"):
+        complete_manual_cancellation_refund(db_session, booking, reference="TRF-0004")
+    assert db_session.query(Payment).filter(Payment.payment_type == "refund").count() == 1
     assert booking.cancellation_refund_status == "completed"
+
+
+def test_manual_refund_without_amount_is_rejected(db_session):
+    booking = _booking(db_session, days_before=3)  # menos de 7 días: 0 %
+    record_cancellation(booking, quote_cancellation(db_session, booking, "contractor"))
+    db_session.commit()
+    with pytest.raises(ValueError, match="monto"):
+        complete_manual_cancellation_refund(db_session, booking, reference="TRF-0005")
 
 
 def test_cancel_endpoint_applies_policy_and_refunds(client, db_session):
@@ -212,8 +227,7 @@ def test_cancel_endpoint_applies_policy_and_refunds(client, db_session):
     assert quote["can_cancel"] is True
     assert quote["refund_percent"] == 50
 
-    with patch("app.services.mercadopago_service.issue_refund") as refund:
-        res = client.post(f"/api/v1/bookings/{booking.id}/cancel", json={"rejection_reason": "Cambio de planes"})
+    res = client.post(f"/api/v1/bookings/{booking.id}/cancel", json={"rejection_reason": "Cambio de planes"})
 
     assert res.status_code == 200, res.text
     body = res.json()
@@ -222,14 +236,41 @@ def test_cancel_endpoint_applies_policy_and_refunds(client, db_session):
     # Ningún reembolso sale sin aprobación del admin.
     assert body["cancellation_refund_status"] == "pending_approval"
     assert Decimal(str(body["cancellation_refund_amount"])) == Decimal(str(quote["refund_amount"]))
-    refund.assert_not_called()
 
     _login_admin(client, db_session)
-    with patch("app.services.mercadopago_service.issue_refund", return_value={"id": 9}) as refund:
-        res = client.post(f"/api/v1/admin/bookings/{booking.id}/approve-refund", json={})
+    res = client.post(f"/api/v1/admin/bookings/{booking.id}/approve-refund", json={})
+    assert res.status_code == 200, res.text
+    # Aprobado: falta que el admin transfiera y lo registre. No hay ninguna llamada a Mercado Pago.
+    assert res.json()["cancellation_refund_status"] == "processing"
+    assert db_session.query(Payment).filter(Payment.payment_type == "refund").count() == 0
+
+    # Sin referencia no se puede registrar.
+    res = client.post(f"/api/v1/admin/bookings/{booking.id}/refund-sent", json={"reference": ""})
+    assert res.status_code == 422
+
+    with patch("app.services.email.service.send_templated_email") as mock_send:
+        res = client.post(
+            f"/api/v1/admin/bookings/{booking.id}/refund-sent",
+            json={"reference": "OP-445566", "notes": "Yape"},
+        )
     assert res.status_code == 200, res.text
     assert res.json()["cancellation_refund_status"] == "completed"
-    refund.assert_called_once()
+    refund_row = db_session.query(Payment).filter(Payment.payment_type == "refund").one()
+    assert refund_row.payout_reference == "OP-445566"
+    assert refund_row.amount == Decimal(str(quote["refund_amount"]))
+
+    # El contratante recibe aviso en la app y correo con la referencia.
+    from app.models.notification import Notification
+
+    types = {n.type for n in db_session.query(Notification).filter(Notification.user_id == contractor.user_id)}
+    assert {"booking_refund_decision", "booking_refund_sent"} <= types
+    sent = [c.kwargs for c in mock_send.call_args_list if c.kwargs.get("slug") == "booking_refund_sent"]
+    assert len(sent) == 1
+    assert sent[0]["context"]["reference"] == "OP-445566"
+
+    # No se puede registrar dos veces.
+    again = client.post(f"/api/v1/admin/bookings/{booking.id}/refund-sent", json={"reference": "OP-445566"})
+    assert again.status_code == 400
 
 
 def _login_admin(client, db_session):
@@ -256,11 +297,10 @@ def test_admin_can_adjust_or_reject_refund(client, db_session):
     res = client.post(f"/api/v1/admin/bookings/{booking.id}/approve-refund", json={"amount": str(PRICE + 1)})
     assert res.status_code == 400
 
-    with patch("app.services.mercadopago_service.issue_refund") as refund:
-        res = client.post(f"/api/v1/admin/bookings/{booking.id}/approve-refund", json={"amount": "0"})
+    res = client.post(f"/api/v1/admin/bookings/{booking.id}/approve-refund", json={"amount": "0"})
     assert res.status_code == 200, res.text
     assert res.json()["cancellation_refund_status"] == "rejected"
-    refund.assert_not_called()
+    assert db_session.query(Payment).filter(Payment.payment_type == "refund").count() == 0
 
 
 def test_duplicate_webhook_registers_payment_once_and_checks_amount(db_session):

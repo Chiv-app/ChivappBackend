@@ -196,8 +196,18 @@ class AdminPayoutRequestAction(BaseModel):
 
 
 class AdminManualRefundAction(BaseModel):
+    """Reembolso manual de un pago marcado: `manual_reason` es la referencia de la transferencia."""
+
     manual_override: bool = False
     manual_reason: str | None = Field(default=None, max_length=1000)
+
+
+class AdminCancellationRefundSent(BaseModel):
+    """El admin ya transfirió el reembolso de una cancelación y lo registra."""
+
+    reference: str = Field(min_length=3, max_length=200)
+    evidence_url: str | None = Field(default=None, max_length=500)
+    notes: str | None = Field(default=None, max_length=1000)
 
 
 class AdminAuditLogOut(BaseModel):

@@ -503,10 +503,8 @@ def checkout_booking_link(
         )
         db.add(user)
         db.flush()
-        try:
-            send_email_verification(db, user)
-        except Exception:
-            pass
+        # No se envía correo de verificación aquí: si la persona nunca paga, el correo ingresado no
+        # recibe nada. Al confirmarse el pago, el correo de confirmación trae el enlace que verifica.
 
         # SEC4-08: una cuenta recién creada sin verificar correo no bloquea el DNI
         # en el índice único de contractor_profile (se guarda en el snapshot del contrato).
@@ -604,10 +602,9 @@ def checkout_booking_link(
     from app.services.platform_payment import sync_booking_platform_fee
     from app.services.uploads import assert_private_upload_owned, save_data_url_upload
 
-    # S-05: la firma solo se acepta si el correo ya está verificado. Una cuenta nueva (o sin
-    # verificar) crea la reserva con el contrato pendiente y debe verificar el correo antes de firmar y pagar.
-    email_verification_required = not deps.user_has_verified_email(user)
-    saved_sig_url = None if email_verification_required else payload.signature_image_url
+    # Enlace de pago: se firma y se paga primero. El correo se verifica después, con el enlace de
+    # acceso que trae el correo de confirmación del pago (así no hay una pausa para buscar un código).
+    saved_sig_url = payload.signature_image_url
     if saved_sig_url and saved_sig_url.startswith("data:image/"):
         try:
             saved_sig_url = save_data_url_upload(
@@ -707,7 +704,6 @@ def checkout_booking_link(
     return {
         "message": "Reserva creada exitosamente",
         "booking_id": booking.id,
-        "email_verification_required": email_verification_required,
         "signature_image_url": saved_sig_url,
         "contract_body_sha256": (contract.context or {}).get("__signed_body_sha256__"),
     }

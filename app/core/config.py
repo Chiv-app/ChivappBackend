@@ -76,7 +76,6 @@ class Settings(BaseSettings):
     # Ventana máxima de antigüedad del timestamp en x-signature (24 h para tolerar reintentos diferidos de MP).
     MERCADO_PAGO_WEBHOOK_MAX_AGE_SECONDS: int = 86400
     # Reembolsa automáticamente pagos marcados con needs_refund (duplicados, tardíos o con monto inválido).
-    MP_AUTO_REFUND_NEEDS_REFUND: bool = False
     # Parámetros de costo de pasarela Mercado Pago Perú (WP-06: centralizados en configuración).
     GATEWAY_FEE_RATE: float = 0.0412
     GATEWAY_FIXED_FEE_PEN: float = 1.18

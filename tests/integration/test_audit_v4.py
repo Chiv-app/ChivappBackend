@@ -498,9 +498,6 @@ def test_sec4_06_admin_refund_flagged_payment_and_force_complete(
     client, db_session, monkeypatch
 ):
     """SEC4-06 y BUG4-08: reembolso admin para needs_refund y cierre admin force-complete."""
-    from app.core.config import settings
-
-    monkeypatch.setattr(settings, "MERCADO_PAGO_ACCESS_TOKEN", "TEST-sec4-06-token")
     admin, _, musician, _, contractor = _setup_users(db_session)
     future_date = (now_peru() + timedelta(days=3)).date()
     past_date = (now_peru() - timedelta(days=3)).date()
@@ -534,12 +531,14 @@ def test_sec4_06_admin_refund_flagged_payment_and_force_complete(
     db_session.commit()
 
     _auth_cookie(client, admin)
-    with patch(
-        "app.services.mercadopago_service.issue_refund", return_value={"id": "REF-999"}
-    ) as mock_issue_refund:
-        res_ref = client.post(f"/api/v1/admin/payments/{flagged_payment.id}/refund")
+    # Mercado Pago solo cobra: sin la referencia de la transferencia manual no se registra.
+    res_sin_ref = client.post(f"/api/v1/admin/payments/{flagged_payment.id}/refund")
+    assert res_sin_ref.status_code == 400
+    res_ref = client.post(
+        f"/api/v1/admin/payments/{flagged_payment.id}/refund",
+        json={"manual_reason": "Yape OP-123456"},
+    )
     assert res_ref.status_code == 200
-    assert mock_issue_refund.call_count == 1
     db_session.refresh(flagged_payment)
     assert flagged_payment.status == PaymentStatus.refunded
     assert flagged_payment.gateway_metadata.get("needs_refund") is False
@@ -557,7 +556,10 @@ def test_sec4_06_admin_refund_flagged_payment_and_force_complete(
     assert booking.status == BookingStatus.completed
 
     # Reembolso idempotente: intentar reembolsar el mismo pago por segunda vez devuelve 400
-    res_ref_dup = client.post(f"/api/v1/admin/payments/{flagged_payment.id}/refund")
+    res_ref_dup = client.post(
+        f"/api/v1/admin/payments/{flagged_payment.id}/refund",
+        json={"manual_reason": "Yape OP-123456"},
+    )
     assert res_ref_dup.status_code == 400
 
 

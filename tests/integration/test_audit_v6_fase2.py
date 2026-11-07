@@ -481,27 +481,25 @@ def test_bug5_06_admin_refund_requires_gateway_or_manual_override(
     monkeypatch.setattr(settings, "MERCADO_PAGO_ACCESS_TOKEN", "")
     headers = _auth_headers(admin)
 
-    # Sin manual_override -> 409
-    r_conflict = client.post(
+    # Mercado Pago solo cobra: sin la referencia de la transferencia manual -> 400
+    r_sin_ref = client.post(
         f"/api/v1/admin/payments/{payment.id}/refund",
         headers=headers,
     )
-    assert r_conflict.status_code == 409
-    assert "panel de Mercado Pago" in r_conflict.json()["detail"]
+    assert r_sin_ref.status_code == 400
+    assert "referencia" in r_sin_ref.json()["detail"]
 
-    # Con manual_override=True y razón explícita -> 200
+    # Con la referencia de la transferencia -> 200
     r_ok = client.post(
         f"/api/v1/admin/payments/{payment.id}/refund",
         headers=headers,
-        json={
-            "manual_override": True,
-            "manual_reason": "Reembolsado manualmente en el panel MP #OP-999",
-        },
+        json={"manual_reason": "Transferencia manual OP-999"},
     )
     assert r_ok.status_code == 200
     db_session.refresh(payment)
     assert payment.status == PaymentStatus.refunded
-    assert payment.gateway_metadata.get("manual_override") is True
+    assert payment.gateway_metadata.get("manual_refund") is True
+    assert payment.gateway_metadata.get("manual_reason") == "Transferencia manual OP-999"
 
 
 # ---------------------------------------------------------------------------

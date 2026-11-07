@@ -659,6 +659,22 @@ def get_mercadopago_public_key():
     }
 
 
+def _assert_email_verified_or_link_booking(db: Session, booking: Booking, user: User) -> None:
+    """Pagar exige correo verificado, salvo en reservas creadas desde un enlace de pago.
+
+    El enlace de pago lo comparte el propio músico y es secreto; para quien lo recibe (poco
+    familiarizado con apps) se paga primero y el correo se verifica después con el enlace de
+    acceso del correo de confirmación. En cualquier otra reserva la verificación sigue siendo previa.
+    """
+    if deps.user_has_verified_email(user):
+        return
+    from app.models.booking_link import BookingLink
+
+    if db.query(BookingLink.id).filter(BookingLink.booking_id == booking.id).first():
+        return
+    raise HTTPException(403, detail=deps.EMAIL_NOT_VERIFIED_MESSAGE)
+
+
 @router.post("/mercadopago/preference", response_model=MercadoPagoPreferenceResponse)
 @limiter.limit(settings.RATE_LIMIT_PAYMENT)
 def create_mercadopago_preference(
@@ -677,7 +693,7 @@ def create_mercadopago_preference(
     if not booking:
         raise HTTPException(404, detail="Reserva no encontrada")
     assert_booking_contractor_owner(db, booking, current_user)
-    deps.assert_verified_email(current_user)
+    _assert_email_verified_or_link_booking(db, booking, current_user)
     if booking.musician_id:
         db.query(MusicianProfile).filter(
             MusicianProfile.id == booking.musician_id
@@ -849,7 +865,7 @@ def process_mercadopago_direct_payment(
     if not booking:
         raise HTTPException(404, detail="Reserva no encontrada")
     assert_booking_contractor_owner(db, booking, current_user)
-    deps.assert_verified_email(current_user)
+    _assert_email_verified_or_link_booking(db, booking, current_user)
     if booking.musician_id:
         db.query(MusicianProfile).filter(
             MusicianProfile.id == booking.musician_id

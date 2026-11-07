@@ -976,6 +976,17 @@ def validate_booking_refund(
         if payment:
             payment.status = PaymentStatus.refunded
             payment.released_at = datetime.utcnow()
+            from app.services.ledger import record_ledger_entry
+
+            record_ledger_entry(
+                db,
+                entry_type="refund",
+                amount=amount,
+                booking_id=booking.id,
+                payment_id=payment.id,
+                description=f"Reembolso manual por queja #{complaint.id}",
+                meta={"complaint_id": str(complaint.id), "source": "complaint_settlement"},
+            )
 
     complaint.refund_status = REFUND_STATUS_COMPLETED
     complaint.refund_validated_at = datetime.utcnow()

@@ -1102,6 +1102,93 @@ def notify_settlement_completed(
         )
 
 
+def notify_cancellation_refund_decision(
+    db: Session,
+    *,
+    contractor_user: User,
+    booking_id: str,
+    amount: float,
+) -> None:
+    """Avisa al contratante la decisión del admin sobre el reembolso de su cancelación."""
+    if amount > 0:
+        notify_user(
+            db,
+            user=contractor_user,
+            type="booking_refund_decision",
+            title="Reembolso aprobado",
+            message=(
+                f"Aprobamos tu reembolso de S/ {amount:.2f}. Te lo transferiremos "
+                f"y te avisaremos cuando salga."
+            ),
+            booking_id=booking_id,
+        )
+    else:
+        notify_user(
+            db,
+            user=contractor_user,
+            type="booking_refund_decision",
+            title="Sin reembolso",
+            message="Revisamos tu cancelación y no corresponde un reembolso.",
+            booking_id=booking_id,
+        )
+
+
+def notify_cancellation_refund_sent(
+    db: Session,
+    *,
+    contractor_user: User,
+    booking_id: str,
+    amount: float,
+    reference: str,
+) -> None:
+    """Avisa (en la app y por correo) que el reembolso de la cancelación ya fue transferido."""
+    notify_user(
+        db,
+        user=contractor_user,
+        type="booking_refund_sent",
+        title="Reembolso enviado",
+        message=f"Te transferimos S/ {amount:.2f}. Referencia de la operación: {reference}.",
+        booking_id=booking_id,
+    )
+    try:
+        from app.core.config import settings
+        from app.models.booking import Booking
+        from app.services.email.defaults import APP_NAME
+        from app.services.email.service import send_templated_email
+
+        booking = db.query(Booking).filter(Booking.id == booking_id).first()
+        if booking and contractor_user.email and not contractor_user.email.endswith("@guest.local"):
+            action_url = f"{settings.FRONTEND_URL.rstrip('/')}/contractor/bookings/{booking_id}"
+            if not contractor_user.password_hash:
+                from app.core.jwt import create_magic_token
+
+                magic_token = create_magic_token(
+                    subject=str(contractor_user.id),
+                    redirect_to=f"/contractor/bookings/{booking_id}",
+                    version=contractor_user.token_version or 0,
+                )
+                action_url = f"{settings.FRONTEND_URL.rstrip('/')}/api/v1/auth/magic-link/login?token={magic_token}"
+            send_templated_email(
+                db,
+                slug="booking_refund_sent",
+                to=contractor_user.email,
+                context={
+                    "user_name": contractor_user.fullname or "Usuario",
+                    "amount": f"{amount:.2f}",
+                    "reference": reference,
+                    "event_type": booking.event_type or "Presentación",
+                    "action_url": action_url,
+                    "app_name": APP_NAME,
+                },
+                user_id=contractor_user.id,
+                meta={"booking_id": booking_id},
+            )
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).warning("Error email booking_refund_sent: %s", exc)
+
+
 def notify_refund_transfer_sent(
     db: Session,
     *,

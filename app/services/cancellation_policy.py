@@ -226,8 +226,10 @@ def record_cancellation(booking: Booking, quote: CancellationQuote, *, approved:
 
 
 def approve_cancellation_refund(db: Session, booking: Booking, amount: Decimal | None) -> None:
-    """El admin aprueba el reembolso (opcionalmente ajustando el monto) y se ejecuta.
+    """El admin aprueba el reembolso (opcionalmente ajustando el monto).
 
+    Mercado Pago solo cobra: aprobar deja el reembolso en `processing` (aprobado, falta que el
+    admin transfiera y lo registre con `complete_manual_cancellation_refund`).
     `amount=0` rechaza el reembolso: todo lo retenido queda para liquidar al músico.
     """
     paid = sum((Decimal(str(p.amount)) for p in _retained_payments(db, booking)), Decimal("0"))
@@ -250,48 +252,48 @@ def approve_cancellation_refund(db: Session, booking: Booking, amount: Decimal |
 
     booking.cancellation_refund_status = REFUND_PROCESSING
     db.commit()
-    execute_cancellation_refund(db, booking)
 
 
-def execute_cancellation_refund(db: Session, booking: Booking) -> None:
-    """Reembolsa por Mercado Pago lo pendiente de `cancellation_refund_amount`.
+def complete_manual_cancellation_refund(
+    db: Session,
+    booking: Booking,
+    *,
+    reference: str,
+    evidence_url: str | None = None,
+    notes: str | None = None,
+) -> Decimal:
+    """Registra que el admin ya transfirió el reembolso de una cancelación.
 
-    Se llama DESPUÉS de hacer commit de la cancelación, para que un fallo de la
-    pasarela deje un registro reintentable. Las claves de idempotencia son
-    deterministas: un reintento no reembolsa dos veces. No lanza excepciones.
+    Mercado Pago solo cobra: no se llama a ninguna pasarela. Aquí solo se deja la contabilidad
+    (filas `refund`, asientos y estado) y la referencia de la operación. Todo ocurre en una sola
+    transacción: si algo falla no queda nada a medias. Devuelve el monto registrado.
     """
-    from app.services.mercadopago_service import issue_refund
+    from app.services.ledger import record_ledger_entry
+
+    reference = (reference or "").strip()
+    if not reference:
+        raise ValueError("Indica la referencia de la transferencia.")
 
     target = Decimal(str(booking.cancellation_refund_amount or 0))
     if booking.price_agreed is not None:
-        # Reservas canceladas antes de la regla actual guardaron un monto que incluía la
-        # comisión: nunca se reembolsa más que la tarifa del músico.
+        # Nunca se reembolsa más que la tarifa del músico (reservas anteriores a la regla actual).
         cap = Decimal(str(booking.price_agreed))
         if target > cap:
             target = cap.quantize(CENT, rounding=ROUND_HALF_UP)
             booking.cancellation_refund_amount = target
+    if target <= 0:
+        raise ValueError("Esta cancelación no tiene un monto por reembolsar.")
+
     pending = target - _already_refunded(db, booking)
     if pending <= 0:
-        booking.cancellation_refund_status = REFUND_COMPLETED if target > 0 else REFUND_NONE
-        db.commit()
-        return
+        raise ValueError("Este reembolso ya fue registrado.")
 
+    registered = Decimal("0")
     try:
         for payment in _retained_payments(db, booking):
             if pending <= 0:
                 break
-            if not payment.gateway_payment_id:
-                raise ValueError(
-                    "Hay un pago sin Mercado Pago (comprobante manual): el reembolso debe hacerse por transferencia."
-                )
             portion = min(pending, Decimal(str(payment.amount))).quantize(CENT, rounding=ROUND_HALF_UP)
-            is_retry = bool(booking.cancellation_refund_error)
-            response = issue_refund(
-                payment.gateway_payment_id,
-                float(portion),
-                idempotency_key=f"cancel-{booking.id}-{payment.id}-{portion}",
-                check_existing=is_retry,
-            )
             remaining = Decimal(str(payment.amount)) - portion
             if remaining <= 0:
                 payment.status = PaymentStatus.refunded
@@ -303,14 +305,14 @@ def execute_cancellation_refund(db: Session, booking: Booking) -> None:
                 currency=payment.currency or "PEN",
                 payment_type="refund",
                 status=PaymentStatus.refunded,
-                gateway_provider="mercadopago",
-                gateway_payment_id=payment.gateway_payment_id,
-                gateway_metadata={"refund": response, "original_payment_id": str(payment.id)},
+                gateway_provider="manual",
+                payout_reference=reference,
+                payout_evidence_url=(evidence_url or None),
+                payout_notes=(notes or None),
+                gateway_metadata={"manual": True, "original_payment_id": str(payment.id)},
             )
             db.add(refund_row)
             db.flush()
-            from app.services.ledger import record_ledger_entry
-
             record_ledger_entry(
                 db,
                 entry_type="refund",
@@ -318,21 +320,19 @@ def execute_cancellation_refund(db: Session, booking: Booking) -> None:
                 booking_id=booking.id,
                 payment_id=refund_row.id,
                 currency=payment.currency or "PEN",
-                description="Reembolso por cancelación de reserva",
-                meta={"original_payment_id": str(payment.id)},
+                description="Reembolso manual por cancelación de reserva",
+                meta={"original_payment_id": str(payment.id), "reference": reference},
             )
-            # Commit por pago: si el siguiente falla, este ya quedó registrado.
-            db.commit()
             pending -= portion
+            registered += portion
 
         if pending > 0:
             raise ValueError("No hay pagos retenidos suficientes para completar el reembolso.")
         booking.cancellation_refund_status = REFUND_COMPLETED
         booking.cancellation_refunded_at = datetime.utcnow()
         booking.cancellation_refund_error = None
-    except Exception as exc:  # noqa: BLE001 - se registra y se reintenta desde admin
+        db.commit()
+    except Exception:
         db.rollback()
-        logger.error("Reembolso de cancelación fallido para reserva %s: %s", booking.id, exc)
-        booking.cancellation_refund_status = REFUND_FAILED
-        booking.cancellation_refund_error = str(exc)[:500]
-    db.commit()
+        raise
+    return registered

@@ -23,6 +23,7 @@ from app.schemas.admin import (
     AdminBookingCancel,
     AdminBookingDetailOut,
     AdminBookingOut,
+    AdminCancellationRefundSent,
     AdminManualRefundAction,
     AdminPaymentOut,
     AdminPayoutRequestAction,
@@ -53,6 +54,8 @@ from app.schemas.profiles import (
     ProfileReviewAction,
 )
 from app.services.booking_notifications import (
+    notify_cancellation_refund_decision,
+    notify_cancellation_refund_sent,
     notify_profile_approved,
     notify_profile_needs_resubmit,
     notify_profile_rejected,
@@ -60,7 +63,7 @@ from app.services.booking_notifications import (
 )
 from app.services.cancellation_policy import (
     approve_cancellation_refund,
-    execute_cancellation_refund,
+    complete_manual_cancellation_refund,
     quote_cancellation,
     record_cancellation,
 )
@@ -1032,9 +1035,15 @@ def cancel_booking_admin(
             "reason": payload.reason,
         },
     )
+    if booking.cancellation_refund_status == "processing" and booking.contractor and booking.contractor.user:
+        # La decisión del admin ya es la aprobación: queda pendiente que transfiera y lo registre.
+        notify_cancellation_refund_decision(
+            db,
+            contractor_user=booking.contractor.user,
+            booking_id=str(booking.id),
+            amount=float(booking.cancellation_refund_amount or 0),
+        )
     db.commit()
-    if booking.cancellation_refund_status == "processing":
-        execute_cancellation_refund(db, booking)
     db.refresh(booking)
     return _booking_admin_out(booking)
 
@@ -1107,8 +1116,8 @@ def approve_refund(
     current_admin: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
 ):
-    """Aprueba (y ejecuta en Mercado Pago) el reembolso de una cancelación.
-    `amount` permite ajustar el monto; 0 rechaza el reembolso."""
+    """Aprueba el reembolso de una cancelación. Mercado Pago solo cobra: el admin transfiere
+    por su cuenta y luego lo registra en `/refund-sent`. `amount` ajusta el monto; 0 lo rechaza."""
     booking = _load_booking_with_parties(db, booking_id, for_update=True)
     if booking.status != BookingStatus.cancelled or booking.cancellation_refund_status != "pending_approval":
         raise HTTPException(400, "Esta reserva no tiene un reembolso pendiente de aprobación")
@@ -1117,6 +1126,15 @@ def approve_refund(
         approve_cancellation_refund(db, booking, payload.amount)
     except ValueError as exc:
         raise HTTPException(400, detail=str(exc)) from exc
+    if booking.contractor and booking.contractor.user:
+        notify_cancellation_refund_decision(
+            db,
+            contractor_user=booking.contractor.user,
+            booking_id=str(booking.id),
+            amount=float(booking.cancellation_refund_amount or 0)
+            if booking.cancellation_refund_status == "processing"
+            else 0.0,
+        )
     record_admin_audit(
         db,
         admin_user=current_admin,
@@ -1134,26 +1152,56 @@ def approve_refund(
     return _booking_admin_out(booking)
 
 
-@router.post("/bookings/{booking_id}/retry-refund", response_model=AdminBookingOut)
-def retry_cancellation_refund(
+@router.post("/bookings/{booking_id}/refund-sent", response_model=AdminBookingOut)
+def register_cancellation_refund_sent(
     booking_id: str,
+    payload: AdminCancellationRefundSent,
     current_admin: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
 ):
-    """Reintenta un reembolso de cancelación que falló en Mercado Pago."""
+    """Registra que el admin ya transfirió el reembolso aprobado de una cancelación.
+
+    Mercado Pago solo cobra: no se llama a ninguna pasarela. Se guarda la referencia de la
+    operación (y el comprobante si lo hay), se cierra la contabilidad y se avisa al contratante.
+    """
     booking = _load_booking_with_parties(db, booking_id, for_update=True)
-    if booking.status != BookingStatus.cancelled or booking.cancellation_refund_status not in {"failed", "processing"}:
-        raise HTTPException(400, "Esta reserva no tiene un reembolso pendiente")
+    if booking.status != BookingStatus.cancelled or booking.cancellation_refund_status not in {"processing", "failed"}:
+        raise HTTPException(400, "Esta reserva no tiene un reembolso aprobado pendiente de transferir")
+    if payload.evidence_url:
+        from app.services.uploads import assert_private_upload_owned
+
+        assert_private_upload_owned(db, payload.evidence_url, current_admin.id, label="comprobante de devolución")
     prev_refund_status = booking.cancellation_refund_status
-    execute_cancellation_refund(db, booking)
+    try:
+        amount = complete_manual_cancellation_refund(
+            db,
+            booking,
+            reference=payload.reference,
+            evidence_url=payload.evidence_url,
+            notes=payload.notes,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, detail=str(exc)) from exc
+    if booking.contractor and booking.contractor.user:
+        notify_cancellation_refund_sent(
+            db,
+            contractor_user=booking.contractor.user,
+            booking_id=str(booking.id),
+            amount=float(amount),
+            reference=payload.reference.strip(),
+        )
     record_admin_audit(
         db,
         admin_user=current_admin,
-        action="booking.retry_refund",
+        action="booking.refund_sent",
         target_type="booking",
         target_id=str(booking.id),
         before_state={"cancellation_refund_status": prev_refund_status},
-        after_state={"cancellation_refund_status": booking.cancellation_refund_status},
+        after_state={
+            "cancellation_refund_status": booking.cancellation_refund_status,
+            "amount": float(amount),
+            "reference": payload.reference.strip(),
+        },
     )
     db.commit()
     db.refresh(booking)
@@ -1279,9 +1327,11 @@ def refund_flagged_payment_admin(
     current_admin: User = Depends(deps.get_current_admin),
     db: Session = Depends(deps.get_db),
 ):
-    """Reembolsa en Mercado Pago un pago marcado con needs_refund (SEC4-06 / BUG5-06)."""
-    from app.services import mercadopago_service
+    """Registra el reembolso manual de un pago marcado con needs_refund (SEC4-06 / BUG5-06).
 
+    Mercado Pago solo cobra: el admin devuelve el dinero por su cuenta y aquí deja la referencia
+    de la transferencia en `manual_reason`.
+    """
     payment_uuid = parse_uuid(payment_id, "payment_id")
     payment = db.get(Payment, payment_uuid, with_for_update=True)
     if not payment:
@@ -1292,28 +1342,16 @@ def refund_flagged_payment_admin(
     if not meta.get("needs_refund"):
         raise HTTPException(400, "Este pago no está marcado para reembolso directo")
 
-    prev_status = payment.status.value
-    can_auto_refund = bool(payment.gateway_payment_id and settings.MERCADO_PAGO_ACCESS_TOKEN.strip())
-    if can_auto_refund:
-        try:
-            refund_resp = mercadopago_service.issue_refund(
-                payment.gateway_payment_id,
-                float(payment.amount),
-                idempotency_key=f"needs-refund-{payment.id}",
-            )
-            meta["mp_refund_id"] = str(refund_resp.get("id") or "")
-        except ValueError as exc:
-            raise HTTPException(502, detail=str(exc)) from exc
-    else:
-        manual_reason = (payload.manual_reason or "").strip() if payload else ""
-        if not (payload and payload.manual_override and manual_reason):
-            raise HTTPException(
-                409,
-                "No se puede reembolsar automáticamente: hazlo en el panel de Mercado Pago",
-            )
-        meta["manual_override"] = True
-        meta["manual_reason"] = manual_reason
+    reference = (payload.manual_reason or "").strip() if payload else ""
+    if not reference:
+        raise HTTPException(
+            400,
+            "Indica la referencia de la transferencia con la que devolviste el dinero.",
+        )
 
+    prev_status = payment.status.value
+    meta["manual_refund"] = True
+    meta["manual_reason"] = reference
     payment.status = PaymentStatus.refunded
     payment.released_at = datetime.utcnow()
     meta["needs_refund"] = False
@@ -1327,7 +1365,7 @@ def refund_flagged_payment_admin(
         target_type="payment",
         target_id=str(payment.id),
         before_state={"status": prev_status},
-        after_state={"status": payment.status.value, "amount": float(payment.amount)},
+        after_state={"status": payment.status.value, "amount": float(payment.amount), "reference": reference},
     )
     db.commit()
     db.refresh(payment)
@@ -1786,7 +1824,6 @@ def settle_admin_booking(
             f"(S/ {musician_pool:.2f}). La comisión de plataforma no se reparte.",
         )
 
-    refund_already_executed = False
     if complaint:
         # El admin puede resolver la queja aunque el músico no haya respondido (decisión de negocio).
         if (
@@ -1795,114 +1832,16 @@ def settle_admin_booking(
         ):
             raise HTTPException(400, "La queja ya fue liquidada")
 
-        previous_complaint_status = (
-            BookingComplaintStatus.musician_responded
-            if complaint.status == BookingComplaintStatus.settled
-            else complaint.status
-        )
         complaint.admin_musician_amount = body.musician_amount
         complaint.admin_contractor_refund = body.contractor_refund
         complaint.admin_notes = body.notes
         complaint.settled_by_admin_id = current_user.id
 
         if body.contractor_refund > 0:
-            from app.models.payment import Payment, PaymentStatus
-            from app.services.mercadopago_service import issue_refund
-
-            original_payment = (
-                db.query(Payment)
-                .filter(
-                    Payment.booking_id == booking.id,
-                    Payment.gateway_payment_id.isnot(None),
-                    Payment.payment_type != "refund",
-                    Payment.status == PaymentStatus.retained,
-                )
-                .order_by(Payment.created_at.desc())
-                .first()
-            )
-
-            if not original_payment:
-                raise HTTPException(
-                    400,
-                    "No se encontró el pago original en Mercado Pago para reembolsar automáticamente",
-                )
-
-            existing_refund_payment = (
-                db.get(Payment, complaint.refund_payment_id, with_for_update=True)
-                if complaint.refund_payment_id
-                else None
-            )
-            if existing_refund_payment and existing_refund_payment.status in (
-                PaymentStatus.released,
-                PaymentStatus.refunded,
-            ):
-                # El reembolso ya se ejecutó en un intento previo que quedó en needs_attention.
-                refund_payment = existing_refund_payment
-                refund_already_executed = True
-                complaint.refund_status = REFUND_STATUS_COMPLETED
-            else:
-                is_retry = existing_refund_payment is not None
-                if existing_refund_payment is None:
-                    refund_payment = Payment(
-                        booking_id=booking.id,
-                        amount=Decimal(str(round(body.contractor_refund, 2))),
-                        currency="PEN",
-                        payment_type="refund",
-                        status=PaymentStatus.initiated,
-                        gateway_provider="mercadopago",
-                        payout_notes=f"Reembolso por reclamo #{complaint.id}",
-                    )
-                    db.add(refund_payment)
-                    db.flush()
-                    complaint.refund_payment_id = refund_payment.id
-                else:
-                    refund_payment = existing_refund_payment
-                    refund_payment.amount = Decimal(str(round(body.contractor_refund, 2)))
-
-                complaint.refund_status = REFUND_STATUS_PROCESSING
-                # P-03: Persistir el intento en estado 'processing' antes de llamar a Mercado Pago
-                db.commit()
-                db.refresh(booking)
-                db.refresh(complaint)
-                db.refresh(refund_payment)
-
-                try:
-                    mp_refund = issue_refund(
-                        original_payment.gateway_payment_id,
-                        float(body.contractor_refund),
-                        idempotency_key=f"complaint-refund-{complaint.id}",
-                        check_existing=is_retry,
-                    )
-                    refund_payment.status = PaymentStatus.released
-                    refund_payment.released_at = datetime.utcnow()
-                    refund_payment.gateway_payment_id = str(mp_refund.get("id") or "") or None
-                    refund_payment.gateway_metadata = mp_refund if isinstance(mp_refund, dict) else None
-                    complaint.refund_status = REFUND_STATUS_COMPLETED
-                    complaint.refund_validated_at = datetime.utcnow()
-                    complaint.refund_rejection_reason = None
-                    complaint.refund_evidence_url = "Reembolso automático de Mercado Pago"
-                    complaint.refund_sent_at = datetime.utcnow()
-                    refund_already_executed = True
-                    from app.services.ledger import record_ledger_entry
-
-                    record_ledger_entry(
-                        db,
-                        entry_type="refund",
-                        amount=body.contractor_refund,
-                        booking_id=booking.id,
-                        payment_id=refund_payment.id,
-                        actor_user_id=current_user.id,
-                        description=f"Reembolso por queja #{complaint.id}",
-                        meta={"complaint_id": str(complaint.id), "source": "complaint_settlement"},
-                    )
-                    db.commit()
-                    db.refresh(booking)
-                    db.refresh(complaint)
-                except Exception as e:
-                    db.rollback()
-                    raise HTTPException(
-                        502, f"Error al ejecutar reembolso en Mercado Pago: {str(e)}"
-                    ) from e
+            # Mercado Pago solo cobra: la devolución al contratante la transfiere el admin a mano
+            # (`/settlements/{id}/refund-transfer`) y el contratante la confirma.
+            complaint.refund_status = REFUND_STATUS_AWAITING_TRANSFER
+            complaint.refund_rejection_reason = None
         else:
             complaint.refund_status = REFUND_STATUS_NONE
     elif body.contractor_refund > 0:
@@ -1911,7 +1850,6 @@ def settle_admin_booking(
             "Sin queja no aplica reembolso al contratista. Desembolsa el total al músico.",
         )
 
-    release_failed_after_refund = False
     try:
         release_retained_payments(
             db,
@@ -1926,47 +1864,11 @@ def settle_admin_booking(
             complaint.settled_at = datetime.utcnow()
             complaint.status = BookingComplaintStatus.settled
     except ValueError as exc:
-        if not refund_already_executed:
-            db.rollback()
-            raise HTTPException(400, str(exc)) from exc
-        release_failed_after_refund = True
-        release_error_msg = str(exc)
-    except Exception as exc:
-        if not refund_already_executed:
-            db.rollback()
-            raise
-        release_failed_after_refund = True
-        release_error_msg = str(exc)
-
-    if release_failed_after_refund and complaint:
         db.rollback()
-        complaint = db.get(BookingComplaint, complaint.id, with_for_update=True)
-        booking = db.get(Booking, booking.id)
-        if complaint:
-            complaint.status = previous_complaint_status
-            complaint.refund_status = REFUND_STATUS_NEEDS_ATTENTION
-            complaint.refund_rejection_reason = (
-                f"Reembolso ejecutado en MP, pero falló la liberación del saldo: {release_error_msg}"
-            )
-            try:
-                notify_admins(
-                    db,
-                    type="payment_alert",
-                    title="Liquidación requiere atención tras reembolso en Mercado Pago",
-                    message=(
-                        f"El reembolso por queja de la reserva #{str(booking.id)[:8]} se ejecutó en Mercado Pago, "
-                        f"pero la liberación posterior falló ({release_error_msg}). Reintenta desde liquidaciones."
-                    ),
-                    meta={
-                        "booking_id": str(booking.id),
-                        "complaint_id": str(complaint.id),
-                        "settlement_state": "needs_attention",
-                    },
-                )
-            except Exception as notify_exc:
-                logger.warning("No se pudo alertar needs_attention en liquidación %s: %s", booking.id, notify_exc)
-            db.commit()
-            db.refresh(complaint)
+        raise HTTPException(400, str(exc)) from exc
+    except Exception:
+        db.rollback()
+        raise
 
     musician = (
         db.query(MusicianProfile)
@@ -1980,7 +1882,7 @@ def settle_admin_booking(
         .filter(ContractorProfile.id == booking.contractor_id)
         .first()
     )
-    if not release_failed_after_refund and musician and musician.user and contractor and contractor.user:
+    if musician and musician.user and contractor and contractor.user:
         notify_settlement_completed(
             db,
             musician_user=musician.user,

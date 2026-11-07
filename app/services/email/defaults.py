@@ -699,4 +699,31 @@ Se modificaron los datos con los que recibes tus pagos en {{app_name}}: {{change
 Si fuiste tú, no tienes que hacer nada. Si no reconoces este cambio, cambia tu contraseña de inmediato y escríbenos a {{support_email}} para que revisemos tu cuenta antes de enviar un pago.
 """
     },
+    {
+        "slug": "booking_refund_sent",
+        "name": "Reembolso enviado",
+        "description": "Se envía al contratante cuando Chivapp le transfirió el reembolso de una reserva cancelada.",
+        "subject": "Te enviamos tu reembolso de S/ {{amount}}",
+        "available_variables": ["user_name", "amount", "reference", "event_type", "app_name", "action_url"],
+        "html_body": build_email_layout(
+            category_badge="Reembolso",
+            badge_bg="#ECFDF5",
+            badge_color="#065F46",
+            title="Tu reembolso fue enviado",
+            greeting="Hola {{user_name}},",
+            lead_text="Te transferimos <strong>S/ {{amount}}</strong> por la reserva cancelada de {{event_type}}. Referencia de la operación: <strong>{{reference}}</strong>.",
+            body_extra_html="<p>Según tu banco o billetera, puede tardar unas horas en verse reflejado. Si no lo ves en 48 horas, escríbenos a soporte@chiv.app con la referencia.</p>",
+            cta_label="Ver la reserva",
+            cta_url="{{action_url}}",
+        ),
+        "text_body": """Hola {{user_name}},
+
+Te transferimos S/ {{amount}} por la reserva cancelada de {{event_type}}.
+Referencia de la operación: {{reference}}
+
+Según tu banco o billetera, puede tardar unas horas en verse reflejado. Si no lo ves en 48 horas, escríbenos a soporte@chiv.app con la referencia.
+
+Ver la reserva:
+{{action_url}}"""
+    },
 ]
