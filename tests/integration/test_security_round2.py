@@ -162,17 +162,15 @@ def test_login_flow_answers_are_identical_for_real_missing_inactive_and_admin_ac
     assert blocked_missing.status_code == blocked_real.status_code == 429
 
 
-def test_payment_link_checkout_signs_and_pays_first_and_email_is_verified_later(
-    client: TestClient, db_session: Session
+def test_payment_link_checkout_signs_and_can_pay_without_a_verified_email(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
 ):
-    """Enlace de pago: se firma y se paga primero, sin código. El correo se verifica después."""
+    """Enlace de pago: se firma y se paga sin código ni correo verificado. El correo se confirma después."""
     from datetime import datetime, timedelta
     from decimal import Decimal
     from unittest.mock import patch
 
-    from fastapi import HTTPException
-
-    from app.api.v1.endpoints.payments import _assert_email_verified_or_link_booking
+    from app.core.config import settings
     from app.models.booking import Booking, BookingStatus
     from app.models.booking_link import BookingLink, BookingLinkStatus
     from app.models.contract import Contract
@@ -232,7 +230,7 @@ def test_payment_link_checkout_signs_and_pays_first_and_email_is_verified_later(
     assert "email_verification_required" not in body
     assert body["signature_image_url"]
     # Quien escribe un correo y nunca paga no hace que le llegue ningún correo.
-    assert not [c for c in mock_send.call_args_list if c.kwargs.get("slug") == "email_verification"]
+    assert mock_send.call_count == 0
 
     db_session.expire_all()
     contract = db_session.query(Contract).filter(Contract.booking_id == body["booking_id"]).first()
@@ -242,62 +240,12 @@ def test_payment_link_checkout_signs_and_pays_first_and_email_is_verified_later(
     user = db_session.query(User).filter(User.email == email).first()
     assert user.email_verified_at is None
 
-    # La reserva viene de un enlace de pago: puede pagar con el correo sin verificar.
-    _assert_email_verified_or_link_booking(db_session, booking, user)
-
-    # Una reserva que NO viene de un enlace de pago sigue exigiendo el correo verificado.
-    other = Booking(
-        musician_id=musician.id,
-        contractor_id=booking.contractor_id,
-        event_date=booking.event_date,
-        start_time=booking.start_time,
-        location_address="Av. Otra 200",
-        event_type="Boda",
-        status=BookingStatus.accepted,
-        price_agreed=Decimal("300.00"),
-    )
-    db_session.add(other)
-    db_session.commit()
-    with pytest.raises(HTTPException) as exc:
-        _assert_email_verified_or_link_booking(db_session, other, user)
-    assert exc.value.status_code == 403
-    assert "verificar tu correo" in exc.value.detail
-
-
-def test_logged_in_user_can_verify_the_email_with_a_code(client: TestClient, db_session: Session):
-    """Para quien no viene de un enlace de pago: verificar el correo con un código, con la sesión abierta."""
-    from unittest.mock import patch
-
-    suffix = uuid.uuid4().hex[:8]
-    user = User(
-        email=f"sinverificar_{suffix}@test.com",
-        password_hash=hash_password("ClaveSegura123!"),
-        role=UserRole.contractor,
-        fullname="Sin Verificar",
-        is_active=True,
-    )
-    db_session.add(user)
-    db_session.commit()
-    token = create_access_token(subject=str(user.id), role="contractor", version=user.token_version or 0)
-    client.cookies.set("access_token", token)
-
-    with patch("secrets.randbelow", return_value=123456), patch(
-        "app.services.email.service.send_templated_email"
-    ):
-        sent = client.post("/api/v1/auth/email-verification/send-code")
-    assert sent.status_code == 200 and sent.json()["email_verified"] is False
-
-    bad = client.post("/api/v1/auth/email-verification/confirm", json={"otp": "000000"})
-    assert bad.status_code == 401
-
-    ok = client.post("/api/v1/auth/email-verification/confirm", json={"otp": "123456"})
-    assert ok.status_code == 200, ok.text
-    assert ok.json()["email_verified"] is True
-
-    db_session.refresh(user)
-    assert user.email_verified_at is not None
-    # La sesión sigue activa después de verificar.
-    assert client.get("/api/v1/auth/me").status_code == 200
+    # Pagar no exige correo verificado. Sin credenciales de Mercado Pago el cobro falla por
+    # otro motivo, pero nunca por un 403 de verificación.
+    monkeypatch.setattr(settings, "MERCADO_PAGO_ACCESS_TOKEN", "")
+    pay = client.post("/api/v1/payments/mercadopago/preference", json={"booking_id": str(body["booking_id"])})
+    assert pay.status_code != 403, pay.text
+    assert "verificar tu correo" not in pay.text
 
 
 def test_s09_booking_inputs_and_search_filters_have_size_limits(client: TestClient):

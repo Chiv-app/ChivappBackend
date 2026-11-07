@@ -45,7 +45,6 @@ from app.schemas.auth import (
     PasswordSetupPreviewOut,
     RegisterRequest,
     SetPasswordRequest,
-    EmailVerificationCodeRequest,
     TokenOut,
     VerifyEmailRequest,
 )
@@ -1482,45 +1481,6 @@ def resend_verification(
     return EmailVerificationResult(
         message="Si el correo existe y está pendiente de verificación, te enviamos un nuevo enlace.",
         email_verified=False,
-    )
-
-
-@router.post("/email-verification/send-code", response_model=EmailVerificationResult)
-@limiter.limit(settings.RATE_LIMIT_OTP)
-def send_email_verification_code(
-    request: Request,
-    current_user: User = Depends(deps.get_current_user),
-    db: Session = Depends(deps.get_db),
-):
-    """Envía un código de 6 dígitos al correo de la cuenta con sesión iniciada (S-05)."""
-    if deps.user_has_verified_email(current_user):
-        return EmailVerificationResult(message="Tu correo ya está verificado.", email_verified=True)
-    generate_and_send_login_otp(db, current_user)
-    return EmailVerificationResult(
-        message="Te enviamos un código de verificación a tu correo.",
-        email_verified=False,
-    )
-
-
-@router.post("/email-verification/confirm", response_model=EmailVerificationResult)
-@limiter.limit(settings.RATE_LIMIT_LOGIN)
-def confirm_email_verification_code(
-    payload: EmailVerificationCodeRequest,
-    request: Request,
-    response: Response,
-    current_user: User = Depends(deps.get_current_user),
-    db: Session = Depends(deps.get_db),
-):
-    """Confirma el código recibido por correo y deja el correo verificado (S-05)."""
-    if deps.user_has_verified_email(current_user):
-        return EmailVerificationResult(message="Tu correo ya está verificado.", email_verified=True)
-    verify_login_otp_or_raise(db, current_user, payload.otp, client_ip=_client_ip(request))
-    # Verificar el correo rota token_version: se emite una sesión nueva para no cerrarle la sesión al usuario.
-    _issue_login(response, current_user)
-    db.commit()
-    return EmailVerificationResult(
-        message=f"Correo {current_user.email} verificado correctamente.",
-        email_verified=True,
     )
 
 

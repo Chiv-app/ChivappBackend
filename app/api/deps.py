@@ -119,17 +119,3 @@ async def get_current_admin(
     # Debe ser `async`: una dependencia síncrona corre en otro hilo y su contexto no llega al endpoint.
     set_audit_request_ip(get_client_ip(request))
     return current_user
-
-
-
-EMAIL_NOT_VERIFIED_MESSAGE = "Debes verificar tu correo electrónico para firmar el contrato y pagar."
-
-
-def user_has_verified_email(user: User) -> bool:
-    return bool(user.email_verified_at is not None or user.is_verified)
-
-
-def assert_verified_email(user: User) -> None:
-    """Firmar el contrato y pagar exige haber demostrado que el correo es del usuario (S-05)."""
-    if not user_has_verified_email(user):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=EMAIL_NOT_VERIFIED_MESSAGE)
