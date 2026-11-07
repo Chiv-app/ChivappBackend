@@ -36,3 +36,36 @@ def is_musician_listed_publicly(db: Session, profile: MusicianProfile) -> bool:
     """
     return is_profile_public(profile) and musician_has_city_and_price(profile)
 
+
+
+def musician_listed_sql_filters() -> list:
+    """Equivalente en SQL de `musician_has_city_and_price` para paginar en la base de datos.
+
+    `is_musician_listed_publicly` se sigue aplicando en Python como red de seguridad.
+    """
+    from sqlalchemy import and_, func, or_
+
+    has_city = func.length(func.btrim(func.coalesce(MusicianProfile.location_city, ""))) > 0
+    has_price = or_(
+        and_(
+            MusicianProfile.availability_type == AvailabilityType.hourly,
+            MusicianProfile.price_per_hour.isnot(None),
+        ),
+        and_(
+            MusicianProfile.availability_type == AvailabilityType.per_event,
+            MusicianProfile.price_per_event.isnot(None),
+        ),
+        and_(
+            or_(
+                MusicianProfile.availability_type.is_(None),
+                MusicianProfile.availability_type.notin_(
+                    [AvailabilityType.hourly, AvailabilityType.per_event]
+                ),
+            ),
+            or_(
+                MusicianProfile.price_per_hour.isnot(None),
+                MusicianProfile.price_per_event.isnot(None),
+            ),
+        ),
+    )
+    return [has_city, has_price]

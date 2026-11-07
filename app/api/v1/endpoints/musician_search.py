@@ -12,9 +12,15 @@ from app.schemas.musician_search import (
     MusicianSearchResult,
 )
 from app.services.availability_match import matching_slots
-from app.services.profile_visibility import is_musician_listed_publicly
+from app.services.profile_visibility import (
+    is_musician_listed_publicly,
+    musician_listed_sql_filters,
+)
 
 router = APIRouter(prefix="/musicians", tags=["Musician Search"])
+
+# Con filtro por fecha hay que cruzar horarios en Python; se acota cuántos candidatos se revisan.
+MAX_DATE_FILTER_SCAN = 500
 
 
 def _escape_like(val: str) -> str:
@@ -68,6 +74,15 @@ def search_musicians(
 
     if filters.max_price_per_event is not None:
         query = query.filter(MusicianProfile.price_per_event <= filters.max_price_per_event)
+
+    skip = max(filters.skip, 0)
+    limit = max(min(filters.limit, 50), 1)
+    query = query.filter(*musician_listed_sql_filters())
+    if filters.available_date is None:
+        # Sin filtro de fecha la página se corta en la base de datos (no se carga todo el catálogo).
+        query = query.offset(skip).limit(limit)
+    else:
+        query = query.limit(MAX_DATE_FILTER_SCAN)
 
     musicians = [m for m in query.all() if is_musician_listed_publicly(db, m)]
     if not musicians:
@@ -126,6 +141,6 @@ def search_musicians(
             )
         )
 
-    skip = max(filters.skip, 0)
-    limit = max(min(filters.limit, 50), 1)
+    if filters.available_date is None:
+        return results
     return results[skip : skip + limit]

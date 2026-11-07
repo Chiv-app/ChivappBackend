@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 import uuid
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
@@ -117,12 +118,21 @@ def test_wp07_payout_info_change_notifies_musician(client: TestClient, db_sessio
     db_session.add(musician)
     db_session.commit()
 
-    res = client.put(
-        "/api/v1/profiles/musician",
-        headers=_auth_headers(musician_user),
-        json={"payout_phone": "999888777"},
-    )
+    with patch("app.services.email.auth_emails.send_templated_email") as mock_send:
+        res = client.put(
+            "/api/v1/profiles/musician",
+            headers=_auth_headers(musician_user),
+            json={"payout_phone": "999888777"},
+        )
     assert res.status_code == 200
+    # S-07: además de la notificación interna, el dueño recibe un correo que nombra el campo
+    # modificado pero nunca el dato nuevo.
+    assert mock_send.call_count == 1
+    kwargs = mock_send.call_args.kwargs
+    assert kwargs["slug"] == "payout_data_changed"
+    assert kwargs["to"] == musician_user.email
+    assert kwargs["context"]["changed_fields"] == "celular de cobro"
+    assert "999888777" not in str(kwargs["context"])
     notif = (
         db_session.query(Notification)
         .filter(
@@ -246,6 +256,29 @@ def test_wp08_privacy_redaction_and_signature_restriction(client: TestClient, db
         headers=_auth_headers(contractor_user),
     )
     assert sig_res.status_code in (403, 404)
+
+    # S-03 (PDF): el contratista no recibe la firma del músico en el PDF antes de firmar él.
+    from unittest.mock import patch
+
+    captured: list[str | None] = []
+
+    def _fake_render(**kwargs):
+        captured.append(kwargs.get("musician_signature_url"))
+        return b"%PDF-1.4 prueba"
+
+    with patch("app.api.v1.endpoints.contracts.render_contract_pdf_bytes", side_effect=_fake_render):
+        by_contractor = client.get(
+            f"/api/v1/contracts/booking/{booking.id}/pdf",
+            headers=_auth_headers(contractor_user),
+        )
+        by_musician = client.get(
+            f"/api/v1/contracts/booking/{booking.id}/pdf",
+            headers=_auth_headers(musician_user),
+        )
+    assert by_contractor.status_code == 200, by_contractor.text
+    assert by_musician.status_code == 200, by_musician.text
+    assert captured[0] is None  # contratista sin firmar: sin la firma del músico
+    assert captured[1]  # el propio músico sí la ve
 
 
 def test_wp09_jti_revocation_on_logout_and_wp10_limits(client: TestClient, db_session: Session):

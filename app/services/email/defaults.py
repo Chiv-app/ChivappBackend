@@ -675,4 +675,28 @@ Tu código de verificación para acceder a {{app_name}} es:
 Este código expira en 10 minutos.
 """
     },
+    {
+        "slug": "payout_data_changed",
+        "name": "Cambio de datos de cobro",
+        "description": "Aviso de seguridad al músico cuando se modifican sus datos de cobro.",
+        "subject": "Cambiaron tus datos de cobro en {{app_name}}",
+        "available_variables": ["user_name", "app_name", "changed_fields", "support_email"],
+        "html_body": build_email_layout(
+            category_badge="Seguridad",
+            badge_bg="#FEF2F2",
+            badge_color="#991B1B",
+            title="Cambiaron tus datos de cobro",
+            greeting="Hola {{user_name}},",
+            lead_text="Se modificaron los datos con los que recibes tus pagos: {{changed_fields}}.",
+            body_extra_html="<p>Si fuiste tú, no tienes que hacer nada. Si no reconoces este cambio, cambia tu contraseña de inmediato y escríbenos a {{support_email}} para que revisemos tu cuenta antes de enviar un pago.</p>",
+            cta_label=None,
+            cta_url=None,
+        ),
+        "text_body": """Hola {{user_name}},
+
+Se modificaron los datos con los que recibes tus pagos en {{app_name}}: {{changed_fields}}.
+
+Si fuiste tú, no tienes que hacer nada. Si no reconoces este cambio, cambia tu contraseña de inmediato y escríbenos a {{support_email}} para que revisemos tu cuenta antes de enviar un pago.
+"""
+    },
 ]

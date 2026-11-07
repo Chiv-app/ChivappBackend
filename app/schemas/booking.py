@@ -13,11 +13,11 @@ class BookingCreate(BaseModel):
     event_date: date
     start_time: time
     end_time: time | None = None
-    location_address: str | None = None
-    location_city: str | None = None
-    location_reference: str | None = None
-    event_type: str
-    event_description: str | None = None
+    location_address: str | None = Field(default=None, max_length=255)
+    location_city: str | None = Field(default=None, max_length=120)
+    location_reference: str | None = Field(default=None, max_length=255)
+    event_type: str = Field(max_length=120)
+    event_description: str | None = Field(default=None, max_length=2000)
     # WP-21: Campos opcionales para enriquecer la solicitud y hacer opcional el pin exacto
     guests_count: int | None = Field(default=None, ge=1, le=50000)
     duration_hours: Decimal | None = Field(default=None, gt=0, le=24)
@@ -49,11 +49,11 @@ class BookingBatchCreate(BaseModel):
     event_date: date
     start_time: time
     end_time: time | None = None
-    location_address: str | None = None
-    location_city: str | None = None
-    location_reference: str | None = None
-    event_type: str
-    event_description: str | None = None
+    location_address: str | None = Field(default=None, max_length=255)
+    location_city: str | None = Field(default=None, max_length=120)
+    location_reference: str | None = Field(default=None, max_length=255)
+    event_type: str = Field(max_length=120)
+    event_description: str | None = Field(default=None, max_length=2000)
     guests_count: int | None = Field(default=None, ge=1, le=50000)
     duration_hours: Decimal | None = Field(default=None, gt=0, le=24)
     estimated_budget: Decimal | None = Field(default=None, gt=0, le=1000000)
@@ -161,11 +161,11 @@ class BookingUpdate(BaseModel):
     event_date: date | None = None
     start_time: time | None = None
     end_time: time | None = None
-    location_address: str | None = None
-    location_city: str | None = None
-    location_reference: str | None = None
-    event_type: str | None = None
-    event_description: str | None = None
+    location_address: str | None = Field(default=None, max_length=255)
+    location_city: str | None = Field(default=None, max_length=120)
+    location_reference: str | None = Field(default=None, max_length=255)
+    event_type: str | None = Field(default=None, max_length=120)
+    event_description: str | None = Field(default=None, max_length=2000)
 
     @model_validator(mode="after")
     def reject_explicit_null_required_fields(self):
@@ -200,11 +200,11 @@ class BookingReopenQuote(BaseModel):
     event_date: date | None = None
     start_time: time | None = None
     end_time: time | None = None
-    location_address: str | None = None
-    location_city: str | None = None
-    location_reference: str | None = None
-    event_type: str | None = None
-    event_description: str | None = None
+    location_address: str | None = Field(default=None, max_length=255)
+    location_city: str | None = Field(default=None, max_length=120)
+    location_reference: str | None = Field(default=None, max_length=255)
+    event_type: str | None = Field(default=None, max_length=120)
+    event_description: str | None = Field(default=None, max_length=2000)
     requested_repertoire: list[str] | None = None
 
     @field_validator("requested_repertoire")
@@ -233,14 +233,14 @@ class BookingReopenQuote(BaseModel):
 class BookingQuote(BaseModel):
     """Respuesta del músico con cotización y detalle solicitado."""
     price_agreed: Decimal = Field(ge=Decimal("10.00"), le=Decimal("50000.00"), decimal_places=2)
-    musician_quote_notes: str | None = None
-    location_address: str | None = None
-    location_city: str | None = None
-    location_reference: str | None = None
+    musician_quote_notes: str | None = Field(default=None, max_length=2000)
+    location_address: str | None = Field(default=None, max_length=255)
+    location_city: str | None = Field(default=None, max_length=120)
+    location_reference: str | None = Field(default=None, max_length=255)
 
 
 class BookingReject(BaseModel):
-    rejection_reason: str | None = None
+    rejection_reason: str | None = Field(default=None, max_length=2000)
 
 
 class BookingAcceptQuote(BaseModel):
@@ -262,11 +262,11 @@ class CancellationQuoteOut(BaseModel):
 
 
 class BookingEventChangeRequest(BaseModel):
-    location_address: str | None = None
-    location_city: str | None = None
-    location_reference: str | None = None
-    event_description: str | None = None
-    change_notes: str | None = None
+    location_address: str | None = Field(default=None, max_length=255)
+    location_city: str | None = Field(default=None, max_length=120)
+    location_reference: str | None = Field(default=None, max_length=255)
+    event_description: str | None = Field(default=None, max_length=2000)
+    change_notes: str | None = Field(default=None, max_length=2000)
     # Pago único (100%): tras el pago el precio no cambia; si se envía debe
     # coincidir con el actual.
     price_agreed: Decimal | None = Field(default=None, gt=0)

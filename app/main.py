@@ -98,6 +98,63 @@ MAX_JSON_BODY_BYTES = 2 * 1024 * 1024  # 2 MB
 MAX_MULTIPART_BODY_BYTES = 16 * 1024 * 1024  # 16 MB
 
 
+_BODY_TOO_LARGE_DETAIL = "El tamaño de la petición supera el máximo permitido."
+
+
+class StreamedBodyLimitMiddleware:
+    """Corta peticiones sin Content-Length (Transfer-Encoding: chunked) que superan el máximo.
+
+    El middleware de abajo solo ve el encabezado Content-Length, que una petición "chunked"
+    no envía; este cuenta los bytes reales que llegan (S-09).
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = {k.lower(): v for k, v in scope.get("headers", [])}
+        if b"content-length" in headers or b"transfer-encoding" not in headers:
+            await self.app(scope, receive, send)
+            return
+
+        content_type = headers.get(b"content-type", b"").decode("latin-1").lower()
+        limit = MAX_MULTIPART_BODY_BYTES if "multipart/form-data" in content_type else MAX_JSON_BODY_BYTES
+        received = 0
+        rejected = False
+
+        async def limited_receive():
+            nonlocal received, rejected
+            message = await receive()
+            if message["type"] != "http.request" or rejected:
+                return message
+            received += len(message.get("body", b""))
+            if received > limit:
+                # Se responde 413 desde aquí y se le avisa a la app que el cliente se fue:
+                # lanzar un error no sirve, porque FastAPI lo convertiría en un 400.
+                rejected = True
+                response = JSONResponse(status_code=413, content={"detail": _BODY_TOO_LARGE_DETAIL})
+                await response(scope, receive, send)
+                return {"type": "http.disconnect"}
+            return message
+
+        async def guarded_send(message):
+            if rejected:
+                return  # ya se respondió 413; se descarta lo que la app intente enviar después
+            await send(message)
+
+        try:
+            await self.app(scope, limited_receive, guarded_send)
+        except Exception:
+            if not rejected:
+                raise
+
+
+app.add_middleware(StreamedBodyLimitMiddleware)
+
+
 @app.middleware("http")
 async def request_id_and_body_size_limit(request, call_next):
     import uuid

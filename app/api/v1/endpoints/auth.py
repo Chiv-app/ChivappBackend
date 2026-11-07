@@ -45,6 +45,7 @@ from app.schemas.auth import (
     PasswordSetupPreviewOut,
     RegisterRequest,
     SetPasswordRequest,
+    EmailVerificationCodeRequest,
     TokenOut,
     VerifyEmailRequest,
 )
@@ -432,8 +433,11 @@ LOGIN_LOCKOUT_MAX_SECONDS = 900
 
 # Hash precomputado para igualar tiempos de verificación cuando la cuenta no existe (WP-09).
 _DUMMY_PASSWORD_HASH = hash_password("DummyTimingEqualizer!2026#Chivapp")
-# Estado en memoria para bloqueo por cuenta en /auth/login y por (cuenta, IP) en OTP (WP-07 / WP-09).
-_LOGIN_FAILURE_STATE: dict[str, tuple[int, float]] = {}
+# Estado en memoria para el bloqueo de /auth/login y por (cuenta, IP) en OTP (WP-07 / WP-09).
+# La clave incluye la IP de origen: quien falla contraseñas desde su IP solo se bloquea a sí
+# mismo y no puede dejar fuera al dueño real de la cuenta (por ejemplo, al admin) desde otra IP.
+_LOGIN_FAILURE_STATE: dict[tuple[str, str], tuple[int, float]] = {}
+_LOGIN_STATE_MAX_ENTRIES = 20000
 _OTP_IP_ATTEMPTS: dict[tuple[str, str], tuple[int, float]] = {}
 
 
@@ -442,8 +446,12 @@ def reset_login_failure_state() -> None:
     _OTP_IP_ATTEMPTS.clear()
 
 
-def _check_account_login_lockout(email: str) -> None:
-    entry = _LOGIN_FAILURE_STATE.get(email)
+def _login_key(email: str, ip: str) -> tuple[str, str]:
+    return (email, ip or "desconocida")
+
+
+def _check_account_login_lockout(email: str, ip: str = "") -> None:
+    entry = _LOGIN_FAILURE_STATE.get(_login_key(email, ip))
     if not entry:
         return
     failures, locked_until = entry
@@ -452,32 +460,43 @@ def _check_account_login_lockout(email: str) -> None:
         retry_after = max(1, int(locked_until - now))
         raise HTTPException(
             status_code=429,
-            detail="Demasiados intentos fallidos para esta cuenta. Intenta nuevamente en unos minutos.",
+            detail="Demasiados intentos fallidos. Intenta nuevamente en unos minutos.",
             headers={"Retry-After": str(retry_after)},
         )
 
 
-def _record_account_login_failure(email: str) -> None:
+def _evict_expired_login_state(now: float) -> None:
+    """Libera primero lo que ya venció; un atacante no puede borrar bloqueos vigentes inundando de claves."""
+    expired = [key for key, (_, locked_until) in _LOGIN_FAILURE_STATE.items() if locked_until and locked_until <= now]
+    for key in expired[: _LOGIN_STATE_MAX_ENTRIES // 4]:
+        _LOGIN_FAILURE_STATE.pop(key, None)
+
+
+def _record_account_login_failure(email: str, ip: str = "") -> None:
     if not email:
         return
     now = time.monotonic()
-    failures, locked_until = _LOGIN_FAILURE_STATE.get(email, (0, 0.0))
-    if locked_until and locked_until <= now and failures >= LOGIN_LOCKOUT_THRESHOLD:
-        # Mantener la cuenta de fallos previos para escalar el backoff si persiste.
-        pass
+    key = _login_key(email, ip)
+    failures, _ = _LOGIN_FAILURE_STATE.get(key, (0, 0.0))
     failures += 1
     new_locked_until = 0.0
     if failures >= LOGIN_LOCKOUT_THRESHOLD:
         exponent = min(failures - LOGIN_LOCKOUT_THRESHOLD, 4)
         backoff = min(LOGIN_LOCKOUT_BASE_SECONDS * (2 ** exponent), LOGIN_LOCKOUT_MAX_SECONDS)
         new_locked_until = now + backoff
-    if len(_LOGIN_FAILURE_STATE) > 4096:
-        _LOGIN_FAILURE_STATE.pop(next(iter(_LOGIN_FAILURE_STATE)), None)
-    _LOGIN_FAILURE_STATE[email] = (failures, new_locked_until)
+    if len(_LOGIN_FAILURE_STATE) >= _LOGIN_STATE_MAX_ENTRIES:
+        _evict_expired_login_state(now)
+    if len(_LOGIN_FAILURE_STATE) >= _LOGIN_STATE_MAX_ENTRIES:
+        # Sin nada vencido: se descarta el intento más antiguo sin bloqueo vigente.
+        for old_key, (_, old_locked) in list(_LOGIN_FAILURE_STATE.items()):
+            if not old_locked or old_locked <= now:
+                _LOGIN_FAILURE_STATE.pop(old_key, None)
+                break
+    _LOGIN_FAILURE_STATE[key] = (failures, new_locked_until)
 
 
-def _clear_account_login_failures(email: str) -> None:
-    _LOGIN_FAILURE_STATE.pop(email, None)
+def _clear_account_login_failures(email: str, ip: str = "") -> None:
+    _LOGIN_FAILURE_STATE.pop(_login_key(email, ip), None)
 
 
 def _otp_hmac_key(*, legacy: bool = False) -> bytes:
@@ -607,14 +626,14 @@ def verify_login_otp_or_raise(
 
     stored_hash = getattr(user, "login_otp_hash", None)
     if not stored_hash or not expires_at:
-        raise HTTPException(status_code=401, detail="Código inválido o expirado")
+        raise HTTPException(status_code=401, detail=GENERIC_OTP_ERROR)
 
     if expires_at < now:
         user.login_otp_hash = None
         user.login_otp_expires_at = None
         user.login_otp_attempts = 0
         db.commit()
-        raise HTTPException(status_code=401, detail="El código ha expirado")
+        raise HTTPException(status_code=401, detail=GENERIC_OTP_ERROR)
 
     clean_otp = (otp or "").strip()
     expected_hmac = _compute_otp_hmac(user.id, clean_otp, legacy=False)
@@ -651,7 +670,7 @@ def verify_login_otp_or_raise(
                 detail="Demasiados intentos. Solicita un código nuevo.",
             )
         db.commit()
-        raise HTTPException(status_code=401, detail="Código incorrecto")
+        raise HTTPException(status_code=401, detail=GENERIC_OTP_ERROR)
 
     if ip_key is not None:
         _OTP_IP_ATTEMPTS.pop(ip_key, None)
@@ -663,28 +682,34 @@ def verify_login_otp_or_raise(
         mark_email_verified(user)
 
 
+GENERIC_OTP_ERROR = "Código inválido o expirado"
+
+
 @router.post("/login-step-one", response_model=LoginStepOneResponse)
 @limiter.limit(settings.RATE_LIMIT_LOGIN)
 def login_step_one(payload: LoginStepOneRequest, request: Request, db: Session = Depends(deps.get_db)):
+    """Primer paso del acceso sin contraseña.
+
+    S-04: la respuesta es idéntica exista o no la cuenta, esté activa o sea de admin; así no se
+    puede averiguar qué correos tienen cuenta. El código solo se envía a cuentas reales, activas
+    y que no sean de admin (el admin entra con contraseña en /auth/login).
+    """
     from sqlalchemy import func
 
     email = payload.email.lower().strip()
+    uniform = LoginStepOneResponse(status="otp_sent")
     user = db.query(User).filter(func.lower(User.email) == email).first()
 
-    if not user:
-        return LoginStepOneResponse(status="not_found")
+    if not user or getattr(user, "is_active", True) is False or user.role == UserRole.admin:
+        return uniform
 
-    if getattr(user, "is_active", True) is False:
-        raise HTTPException(status_code=403, detail="Tu cuenta está desactivada")
-
-    if user.role == UserRole.admin:
-        return LoginStepOneResponse(status="requires_password")
-
-    if not user.is_verified and not user.email_verified_at and user.password_hash:
-        return LoginStepOneResponse(status="requires_password")
-
-    generate_and_send_login_otp(db, user)
-    return LoginStepOneResponse(status="otp_sent")
+    try:
+        generate_and_send_login_otp(db, user)
+    except HTTPException as exc:
+        # Cooldown o tope por hora: ya hay un código vigente; se responde igual.
+        if exc.status_code != 429:
+            raise
+    return uniform
 
 
 @router.post("/login-otp", response_model=TokenOut)
@@ -693,18 +718,21 @@ def login_otp(payload: LoginOtpRequest, request: Request, response: Response, db
     from sqlalchemy import func
 
     email = payload.email.lower().strip()
+    client_ip = get_client_ip(request)
+    # El contador por (correo, IP) corre igual exista o no la cuenta, para que el bloqueo no delate cuentas.
+    otp_key = f"otp:{email}"
+    _check_account_login_lockout(otp_key, client_ip)
+
     user = db.query(User).filter(func.lower(User.email) == email).first()
-
-    if not user:
-        raise HTTPException(status_code=401, detail="Credenciales inválidas")
-
-    if getattr(user, "is_active", True) is False:
-        raise HTTPException(status_code=403, detail="Tu cuenta está desactivada")
-
-    if user.role == UserRole.admin:
-        raise HTTPException(status_code=403, detail="El acceso de administrador requiere contraseña")
-
-    verify_login_otp_or_raise(db, user, payload.otp, client_ip=_client_ip(request))
+    try:
+        if not user or getattr(user, "is_active", True) is False or user.role == UserRole.admin:
+            raise HTTPException(status_code=401, detail=GENERIC_OTP_ERROR)
+        verify_login_otp_or_raise(db, user, payload.otp, client_ip=_client_ip(request))
+    except HTTPException as exc:
+        if exc.status_code == 401:
+            _record_account_login_failure(otp_key, client_ip)
+        raise
+    _clear_account_login_failures(otp_key, client_ip)
 
     _issue_login(response, user)
     db.commit()
@@ -718,19 +746,20 @@ def login(payload: LoginRequest, request: Request, response: Response, db: Sessi
     from sqlalchemy import func
 
     email = (payload.email or "").strip().lower()
-    _check_account_login_lockout(email)
+    client_ip = get_client_ip(request)
+    _check_account_login_lockout(email, client_ip)
     user = db.query(User).filter(func.lower(User.email) == email).first()
 
     if not user or not user.password_hash:
         verify_password(payload.password or "", _DUMMY_PASSWORD_HASH)
-        _record_account_login_failure(email)
+        _record_account_login_failure(email, client_ip)
         raise HTTPException(status_code=401, detail="Credenciales inválidas")
 
     if not verify_password(payload.password, user.password_hash):
-        _record_account_login_failure(email)
+        _record_account_login_failure(email, client_ip)
         raise HTTPException(status_code=401, detail="Credenciales inválidas")
 
-    _clear_account_login_failures(email)
+    _clear_account_login_failures(email, client_ip)
 
     if getattr(user, "is_active", True) is False:
         raise HTTPException(status_code=403, detail="Tu cuenta está desactivada")
@@ -1453,6 +1482,45 @@ def resend_verification(
     return EmailVerificationResult(
         message="Si el correo existe y está pendiente de verificación, te enviamos un nuevo enlace.",
         email_verified=False,
+    )
+
+
+@router.post("/email-verification/send-code", response_model=EmailVerificationResult)
+@limiter.limit(settings.RATE_LIMIT_OTP)
+def send_email_verification_code(
+    request: Request,
+    current_user: User = Depends(deps.get_current_user),
+    db: Session = Depends(deps.get_db),
+):
+    """Envía un código de 6 dígitos al correo de la cuenta con sesión iniciada (S-05)."""
+    if deps.user_has_verified_email(current_user):
+        return EmailVerificationResult(message="Tu correo ya está verificado.", email_verified=True)
+    generate_and_send_login_otp(db, current_user)
+    return EmailVerificationResult(
+        message="Te enviamos un código de verificación a tu correo.",
+        email_verified=False,
+    )
+
+
+@router.post("/email-verification/confirm", response_model=EmailVerificationResult)
+@limiter.limit(settings.RATE_LIMIT_LOGIN)
+def confirm_email_verification_code(
+    payload: EmailVerificationCodeRequest,
+    request: Request,
+    response: Response,
+    current_user: User = Depends(deps.get_current_user),
+    db: Session = Depends(deps.get_db),
+):
+    """Confirma el código recibido por correo y deja el correo verificado (S-05)."""
+    if deps.user_has_verified_email(current_user):
+        return EmailVerificationResult(message="Tu correo ya está verificado.", email_verified=True)
+    verify_login_otp_or_raise(db, current_user, payload.otp, client_ip=_client_ip(request))
+    # Verificar el correo rota token_version: se emite una sesión nueva para no cerrarle la sesión al usuario.
+    _issue_login(response, current_user)
+    db.commit()
+    return EmailVerificationResult(
+        message=f"Correo {current_user.email} verificado correctamente.",
+        email_verified=True,
     )
 
 

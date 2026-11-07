@@ -1,12 +1,15 @@
 from datetime import date
-from pydantic import BaseModel
-from typing import List
+from pydantic import BaseModel, Field
+from typing import Annotated, List
+
+# Topes para que una sola búsqueda no arme cientos de condiciones LIKE sobre toda la tabla (S-09).
+SearchTerm = Annotated[str, Field(max_length=60)]
 
 
 class MusicianSearchFilters(BaseModel):
-    city: str | None = None
-    genres: List[str] | None = None
-    instruments: List[str] | None = None
+    city: str | None = Field(default=None, max_length=120)
+    genres: List[SearchTerm] | None = Field(default=None, max_length=15)
+    instruments: List[SearchTerm] | None = Field(default=None, max_length=15)
     min_price_per_event: float | None = None
     max_price_per_event: float | None = None
     available_date: date | None = None

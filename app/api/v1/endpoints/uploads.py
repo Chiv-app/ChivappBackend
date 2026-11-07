@@ -14,9 +14,10 @@ router = APIRouter(prefix="/uploads", tags=["Uploads"])
 async def upload_file(
     request: Request,
     file: UploadFile = File(...),
-    # private=true para documentos sensibles (DNI, firmas, comprobantes): no se
-    # publican y solo los descargan el dueño, el admin o su contraparte.
-    private: bool = Query(default=False),
+    # Por defecto el archivo es privado (DNI, firmas, comprobantes): no se publica y solo lo
+    # descargan el dueño, el admin o su contraparte. Para publicar (foto de perfil, galería)
+    # el cliente debe pedirlo de forma explícita con private=false.
+    private: bool = Query(default=True),
     current_user=Depends(deps.get_current_user),
     db: Session = Depends(deps.get_db),
 ):

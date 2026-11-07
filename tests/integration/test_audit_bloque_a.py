@@ -129,10 +129,11 @@ def test_send_otp_sends_email_and_locks_out_after_5_attempts_and_blocks_admin(cl
     db_session.add_all([link, contractor, admin])
     db_session.commit()
 
-    # Admin cannot request OTP
+    # El admin no puede pedir OTP, pero la respuesta es idéntica a la de cualquier otro correo
+    # (S-04: no se revela qué cuentas son de admin ni cuáles existen).
     res_admin = client.post("/api/v1/auth/login-step-one", json={"email": "boss@test.com"})
     assert res_admin.status_code == 200
-    assert res_admin.json()["status"] == "requires_password"
+    assert res_admin.json()["status"] == "otp_sent"
     db_session.refresh(admin)
     assert admin.login_otp_hash is None
 

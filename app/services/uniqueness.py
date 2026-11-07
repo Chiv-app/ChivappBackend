@@ -244,14 +244,15 @@ def assert_phone_unique(
     norm = normalize_phone(phone)
     if not norm:
         return None
-    candidates = db.query(User).filter(
+    # Solo se lee la columna del teléfono y en bloques: no se cargan los usuarios completos en memoria.
+    candidates = db.query(User.phone).filter(
         User.phone.isnot(None),
         ~User.email.like("%@guest.local"),
     )
     if exclude_user_id is not None:
         candidates = candidates.filter(User.id != exclude_user_id)
-    for row in candidates.all():
-        if normalize_phone(row.phone) == norm:
+    for (stored_phone,) in candidates.yield_per(1000):
+        if normalize_phone(stored_phone) == norm:
             raise HTTPException(400, "Ya existe una cuenta con ese número de teléfono")
     return norm
 

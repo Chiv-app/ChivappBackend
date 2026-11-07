@@ -104,6 +104,10 @@ class LoginOtpRequest(BaseModel):
     otp: str = Field(..., min_length=4, max_length=12)
 
 
+class EmailVerificationCodeRequest(BaseModel):
+    otp: str = Field(..., min_length=4, max_length=12)
+
+
 class VerifyEmailRequest(BaseModel):
     password: str | None = Field(default=None, max_length=128)
 

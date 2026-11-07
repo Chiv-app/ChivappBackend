@@ -8,6 +8,7 @@ from app.api import deps
 from app.models.email_log import EmailLog
 from app.models.email_template import EmailTemplate
 from app.models.user import User
+from app.services.admin_audit import record_admin_audit
 from app.schemas.email import (
     EmailLogOut,
     EmailTemplateOut,
@@ -52,7 +53,7 @@ def update_email_template(
     slug: str,
     payload: EmailTemplateUpdate,
     db: Session = Depends(deps.get_db),
-    _: User = Depends(deps.get_current_admin),
+    admin: User = Depends(deps.get_current_admin),
 ):
     template = get_template(db, slug)
     if not template:
@@ -62,6 +63,15 @@ def update_email_template(
     for field, value in data.items():
         setattr(template, field, value)
     template.updated_at = datetime.utcnow()
+    # Se registra qué campos cambiaron, no el contenido completo de la plantilla.
+    record_admin_audit(
+        db,
+        admin_user=admin,
+        action="email_template.update",
+        target_type="email_template",
+        target_id=slug,
+        after_state={"fields_changed": sorted(data.keys())},
+    )
     db.commit()
     db.refresh(template)
     return template
@@ -82,6 +92,14 @@ def preview_email_template(
     sample_context.update(payload.context)
 
     recipient = str(payload.to or current_user.email)
+    record_admin_audit(
+        db,
+        admin_user=current_user,
+        action="email_template.preview_send",
+        target_type="email_template",
+        target_id=slug,
+        after_state={"recipient": recipient},
+    )
     log = send_templated_email(
         db,
         slug=slug,

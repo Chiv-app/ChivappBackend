@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime
 from typing import List
 from uuid import UUID
@@ -55,6 +56,8 @@ from app.services.uniqueness import (
     next_available_musician_slug,
     normalize_username,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/profiles", tags=["Profiles"])
 
@@ -622,6 +625,14 @@ def update_musician_profile(
             ),
             meta={"changed_fields": sorted(changed_payout_fields)},
         )
+        # S-07: aviso también por correo (nunca incluye números de cuenta); si el cambio no lo hizo
+        # el dueño, es la señal para frenar un pago antes de que salga.
+        try:
+            from app.services.email.auth_emails import send_payout_data_changed_email
+
+            send_payout_data_changed_email(db, current_user, changed_payout_fields)
+        except Exception as exc:  # el aviso nunca debe impedir guardar el perfil
+            logger.warning("No se pudo enviar el aviso de cambio de datos de cobro: %s", exc)
 
     videos = profile.videos or []
     showreel = getattr(profile, "showreel_video_url", None)

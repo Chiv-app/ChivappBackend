@@ -225,6 +225,14 @@ def render_booking_contract_pdf_response(
         raise HTTPException(404, "Contrato no encontrado para esta reserva")
 
     musician_signature_url = _resolve_musician_signature_url(db, booking, contract)
+    # S-03: el contratista no recibe la firma manuscrita del músico mientras no haya firmado él
+    # también; de lo contrario podría extraerla del PDF sin comprometerse (el músico y el admin sí).
+    if (
+        viewer is not None
+        and viewer.role == UserRole.contractor
+        and not contract.contractor_signed
+    ):
+        musician_signature_url = None
     effective_body = contract.body
     effective_context = dict(contract.context or {})
     if viewer is not None and viewer.role != UserRole.admin:

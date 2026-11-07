@@ -677,6 +677,7 @@ def create_mercadopago_preference(
     if not booking:
         raise HTTPException(404, detail="Reserva no encontrada")
     assert_booking_contractor_owner(db, booking, current_user)
+    deps.assert_verified_email(current_user)
     if booking.musician_id:
         db.query(MusicianProfile).filter(
             MusicianProfile.id == booking.musician_id
@@ -848,6 +849,7 @@ def process_mercadopago_direct_payment(
     if not booking:
         raise HTTPException(404, detail="Reserva no encontrada")
     assert_booking_contractor_owner(db, booking, current_user)
+    deps.assert_verified_email(current_user)
     if booking.musician_id:
         db.query(MusicianProfile).filter(
             MusicianProfile.id == booking.musician_id

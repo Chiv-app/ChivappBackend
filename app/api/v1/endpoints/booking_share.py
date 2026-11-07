@@ -275,8 +275,13 @@ def create_public_share_review(
     return serialize_review(review, public=True)
 
 
+def _share_token_key(request: Request) -> str:
+    return f"share-upload:{request.path_params.get('token', '')}"
+
+
 @router.post("/public/share/{token}/upload")
 @limiter.limit("20/hour")
+@limiter.limit("60/day", key_func=_share_token_key)
 async def upload_public_share_file(
     request: Request,
     token: str,
@@ -291,17 +296,14 @@ async def upload_public_share_file(
     )
     if existing_count >= MAX_PUBLIC_SHARE_REVIEWS_PER_BOOKING:
         raise HTTPException(status_code=400, detail="Se alcanzó el límite de reacciones para este evento.")
-    contractor = (
-        db.query(ContractorProfile)
-        .filter(ContractorProfile.id == booking.contractor_id)
-        .first()
-    )
-    owner_user_id = contractor.user_id if contractor else None
+    # S-08: quien abre el enlace es anónimo; el archivo NO se atribuye al contratante, así
+    # nadie que tenga el enlace puede agotar la cuota de subidas del contratante. El límite
+    # lo ponen la IP (20/hora) y el propio enlace (60/día).
     try:
         url = await save_upload(
             file,
             private=False,
-            owner_id=owner_user_id,
+            owner_id=None,
             db=db,
             allow_pdf=False,
         )

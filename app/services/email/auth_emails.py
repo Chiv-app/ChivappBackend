@@ -61,6 +61,35 @@ def is_email_verified(user: User) -> bool:
     return user.email_verified_at is not None
 
 
+PAYOUT_FIELD_LABELS = {
+    "payout_method": "método de cobro",
+    "payout_bank_name": "banco",
+    "payout_account_number": "número de cuenta",
+    "payout_cci": "CCI",
+    "payout_phone": "celular de cobro",
+    "payout_beneficiary_name": "nombre del titular",
+    "payout_beneficiary_document": "documento del titular",
+    "payout_mp_email": "correo de Mercado Pago",
+}
+
+
+def send_payout_data_changed_email(db: Session, user: User, changed_fields: list[str]) -> None:
+    """Avisa al dueño de la cuenta que cambiaron sus datos de cobro (sin revelar los datos)."""
+    labels = [PAYOUT_FIELD_LABELS.get(field, field) for field in sorted(changed_fields)]
+    send_templated_email(
+        db,
+        slug="payout_data_changed",
+        to=user.email,
+        context={
+            "user_name": user.fullname or "Usuario",
+            "app_name": APP_NAME,
+            "changed_fields": ", ".join(labels),
+            "support_email": "soporte@chiv.app",
+        },
+        user_id=user.id,
+    )
+
+
 def send_welcome_email(db: Session, user: User) -> None:
     send_templated_email(
         db,

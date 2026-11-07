@@ -408,3 +408,50 @@ def test_sec_09_bug_34_public_share_masks_pii_and_validates_media_urls(client, d
         },
     )
     assert bad_post.status_code in (400, 422), bad_post.text
+
+
+def test_s08_public_share_upload_does_not_consume_the_contractor_quota(client, db_session):
+    """S-08: quien abre un enlace compartido no agota la cuota de subidas del contratante,
+    y /uploads es privado por defecto."""
+    import uuid as _uuid
+
+    from app.models.uploaded_file import UploadedFile
+
+    _, _, musician, contractor_user, contractor = _setup_users(db_session)
+    booking = Booking(
+        musician_id=musician.id,
+        contractor_id=contractor.id,
+        event_date=now_peru().date(),
+        start_time=time(18, 0),
+        end_time=time(20, 0),
+        location_address="Plaza Mayor",
+        event_type="Serenata",
+        price_agreed=Decimal("500.00"),
+        status=BookingStatus.in_progress,
+        share_token="share-s08-upload",
+        share_enabled=True,
+    )
+    db_session.add(booking)
+    db_session.commit()
+
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+    before = db_session.query(UploadedFile).filter(UploadedFile.owner_user_id == contractor_user.id).count()
+    res = client.post(
+        "/api/v1/public/share/share-s08-upload/upload",
+        files={"file": (f"{_uuid.uuid4().hex}.png", png, "image/png")},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["url"].startswith("/uploads/")
+    after = db_session.query(UploadedFile).filter(UploadedFile.owner_user_id == contractor_user.id).count()
+    assert after == before  # no se atribuye al contratante
+
+    # POST /uploads sin parámetro guarda el archivo como privado.
+    client.cookies.set(
+        "access_token", create_access_token(subject=str(contractor_user.id), role="contractor")
+    )
+    default_res = client.post("/api/v1/uploads/", files={"file": ("a.png", png, "image/png")})
+    assert default_res.status_code == 200, default_res.text
+    assert default_res.json()["url"].startswith("/uploads/private/")
+    public_res = client.post("/api/v1/uploads/?private=false", files={"file": ("b.png", png, "image/png")})
+    assert public_res.status_code == 200, public_res.text
+    assert not public_res.json()["url"].startswith("/uploads/private/")
