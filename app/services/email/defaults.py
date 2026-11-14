@@ -726,4 +726,31 @@ Según tu banco o billetera, puede tardar unas horas en verse reflejado. Si no l
 Ver la reserva:
 {{action_url}}"""
     },
+    {
+        "slug": "musician_payout_completed",
+        "name": "Pago al músico realizado",
+        "description": "Se envía al músico cuando Chivapp le transfirió el pago de una reserva o un retiro.",
+        "subject": "Te pagamos S/ {{amount}}",
+        "available_variables": ["user_name", "amount", "paid_date", "booking_id", "app_name", "action_url"],
+        "html_body": build_email_layout(
+            category_badge="Pago",
+            badge_bg="#ECFDF5",
+            badge_color="#065F46",
+            title="Tu pago fue enviado",
+            greeting="Hola {{user_name}},",
+            lead_text="Te transferimos <strong>S/ {{amount}}</strong> el {{paid_date}}. Referencia de la reserva: <strong>{{booking_id}}</strong>.",
+            body_extra_html="<p>Según tu banco o billetera, puede tardar unas horas en verse reflejado. Si no lo ves en 48 horas, escríbenos a soporte@chiv.app.</p>",
+            cta_label="Ver mis ingresos",
+            cta_url="{{action_url}}",
+        ),
+        "text_body": """Hola {{user_name}},
+
+Te transferimos S/ {{amount}} el {{paid_date}}.
+Referencia de la reserva: {{booking_id}}
+
+Según tu banco o billetera, puede tardar unas horas en verse reflejado. Si no lo ves en 48 horas, escríbenos a soporte@chiv.app.
+
+Ver mis ingresos:
+{{action_url}}"""
+    },
 ]

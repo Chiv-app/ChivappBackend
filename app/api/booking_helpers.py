@@ -10,6 +10,7 @@ from app.models.ensemble_member import (
     BookingMemberInvite,
     BookingMemberInviteStatus,
     EnsembleMember,
+    EnsembleMemberStatus,
 )
 from app.models.musician_profile import MusicianProfile
 from app.models.profile_status import ProfileStatus
@@ -39,8 +40,27 @@ def serialize_booking_out(
     contractor = booking.contractor
     contractor_user = contractor.user if contractor else None
     complaint = getattr(booking, "complaint", None)
+    # Un integrante convocado ve el evento (fecha, lugar, estado) pero no el dinero ni las disputas
+    # entre el líder y el contratante.
+    private_money: dict = (
+        {
+            "price_agreed": None,
+            "platform_fee_percent": None,
+            "platform_fee_amount": None,
+            "musician_quote_notes": None,
+            "rejection_reason": None,
+            "cancellation_refund_percent": None,
+            "cancellation_refund_amount": None,
+            "cancellation_refund_status": None,
+            "pending_price_agreed": None,
+        }
+        if viewer_role == "member"
+        else {}
+    )
+    complaint = None if viewer_role == "member" else complaint
     return base.model_copy(
         update={
+            **private_money,
             "musician_name": musician.stage_name if musician else None,
             "musician_image_url": (
                 musician.profile_image_url if musician else None
@@ -177,6 +197,8 @@ def get_booking_member_invite(
         .filter(
             BookingMemberInvite.booking_id == booking.id,
             EnsembleMember.member_user_id == user.id,
+            # Un integrante dado de baja pierde el acceso a las reservas a las que estaba convocado.
+            EnsembleMember.status != EnsembleMemberStatus.inactive,
             BookingMemberInvite.status.in_(allowed),
         )
         .first()
@@ -227,6 +249,7 @@ def list_member_booking_ids(db: Session, user: User) -> list[UUID]:
         )
         .filter(
             EnsembleMember.member_user_id == user.id,
+            EnsembleMember.status != EnsembleMemberStatus.inactive,
             BookingMemberInvite.status.in_(
                 [
                     BookingMemberInviteStatus.pending,

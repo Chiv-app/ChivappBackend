@@ -640,11 +640,11 @@ def generate_signed_booking_contract_pdf(
 
 def _write_private_pdf_bytes(filename_prefix: str, pdf_bytes: bytes, *, owner_id=None, db=None) -> str:
     from app.models.uploaded_file import UploadedFile
-    from app.services.uploads import PRIVATE_URL_PREFIX, ensure_private_upload_dir
+    from app.services.uploads import PRIVATE_URL_PREFIX, _store_private
 
     filename = f"{filename_prefix}-{now_peru().strftime('%Y%m%d%H%M%S')}.pdf"
-    destination = ensure_private_upload_dir() / filename
-    destination.write_bytes(pdf_bytes)
+    # Va al bucket privado en producción (el disco de Cloud Run es efímero y por instancia).
+    _store_private(filename, pdf_bytes, "application/pdf")
     if db is not None and owner_id is not None:
         existing = db.query(UploadedFile).filter(UploadedFile.filename == filename).first()
         if not existing:

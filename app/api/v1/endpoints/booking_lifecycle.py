@@ -960,9 +960,11 @@ def validate_booking_refund(
     booking = get_booking_or_404(db, booking_id)
     assert_booking_contractor_owner(db, booking, current_user)
 
+    # Bloqueo de fila: validar dos veces no duplica el asiento de reembolso en el ledger.
     complaint = (
         db.query(BookingComplaint)
         .filter(BookingComplaint.booking_id == booking.id)
+        .with_for_update()
         .first()
     )
     if not complaint or complaint.status != BookingComplaintStatus.settled:

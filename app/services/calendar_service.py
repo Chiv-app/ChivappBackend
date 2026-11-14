@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import html
 import logging
 import os
 import json
@@ -14,6 +15,9 @@ from googleapiclient.errors import HttpError
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+# Estados de la reserva en los que tiene sentido agendarla (pago retenido o más adelante, sin cancelar).
+CALENDAR_SYNC_STATUS_NAMES = ("payment_retained", "change_pending", "in_progress", "payment_released")
 
 SCOPES = ['https://www.googleapis.com/auth/calendar.events']
 _ENC_PREFIX = "enc:v1:"
@@ -174,10 +178,10 @@ def create_booking_event(
     description_lines = [
         f"<b>Reserva confirmada en Chivapp</b> (#{str(booking_id)[:8]})",
         "<br>",
-        f"<b>Músico:</b> {musician_name} ({musician_phone or 'Sin teléfono'})",
-        f"<b>Contratista:</b> {contractor_name} ({contractor_phone or 'Sin teléfono'})",
+        f"<b>Músico:</b> {_h(musician_name)} ({_h(musician_phone) or 'Sin teléfono'})",
+        f"<b>Contratista:</b> {_h(contractor_name)} ({_h(contractor_phone) or 'Sin teléfono'})",
         "<br>",
-        f"<b>Lugar:</b> {location_address}, {location_zone}, {location_city}",
+        f"<b>Lugar:</b> {_h(location_address)}, {_h(location_zone)}, {_h(location_city)}",
         "<br>",
         "<b>Nota:</b> Este evento fue agendado automáticamente por Chivapp porque el pago fue confirmado y está protegido."
     ]
@@ -320,6 +324,17 @@ def remove_attendee_from_booking_event(event_id: str, attendee_email: str) -> bo
 
 
 
+def _h(value: Any) -> str:
+    """Escapa texto que va dentro del HTML de un evento de Google Calendar."""
+    return html.escape(str(value)) if value else ""
+
+
+def _is_revoked_token_error(exc: Exception) -> bool:
+    """Google rechazó el refresh token (revocado o vencido): hay que volver a conectar."""
+    text = f"{type(exc).__name__} {exc}".lower()
+    return "refresherror" in text or "invalid_grant" in text
+
+
 def sync_booking_calendar(db, booking_id: str, include_contractor: bool, ensemble_member_ids: list[str]) -> str | None:
     from app.models.booking import Booking, BookingStatus
     from app.models.user import User
@@ -329,9 +344,9 @@ def sync_booking_calendar(db, booking_id: str, include_contractor: bool, ensembl
     if not booking:
         return None
 
-    # Only sync if paid (or in progress etc)
-    if booking.status not in (BookingStatus.payment_retained, BookingStatus.in_progress):
-        pass # Well, let's allow it anyway if the user wants it, or maybe limit it. Let's just create it.
+    # Solo se agenda una reserva ya pagada y vigente: antes del pago o tras cancelar, no hay nada que agendar.
+    if getattr(booking.status, "value", booking.status) not in CALENDAR_SYNC_STATUS_NAMES:
+        return None
 
     musician_user = db.query(User).filter(User.id == booking.musician.user_id).first()
     contractor_user = db.query(User).filter(User.id == booking.contractor.user_id).first()
@@ -387,16 +402,20 @@ def sync_booking_calendar(db, booking_id: str, include_contractor: bool, ensembl
     musician_phone = musician_user.phone if musician_user else ""
     contractor_name = contractor_user.fullname if contractor_user else "Cliente"
     contractor_phone = contractor_user.phone if contractor_user else ""
+    # Los integrantes invitados no reciben el teléfono del contratante: ese dato queda entre el líder y él.
+    contractor_contact = (
+        "" if ensemble_member_ids else f" ({_h(contractor_phone) or 'Sin teléfono'})"
+    )
     
     event_summary = f"Chivapp: {booking.event_type} - {musician_name}"
     
     description_lines = [
         f"<b>Reserva confirmada en Chivapp</b> (#{str(booking.id)[:8]})",
         "<br>",
-        f"<b>Músico:</b> {musician_name} ({musician_phone or 'Sin teléfono'})",
-        f"<b>Contratista:</b> {contractor_name} ({contractor_phone or 'Sin teléfono'})",
+        f"<b>Músico:</b> {_h(musician_name)} ({_h(musician_phone) or 'Sin teléfono'})",
+        f"<b>Contratista:</b> {_h(contractor_name)}{contractor_contact}",
         "<br>",
-        f"<b>Lugar:</b> {booking.location_address}, {booking.location_reference or ''}, {booking.location_city or ''}",
+        f"<b>Lugar:</b> {_h(booking.location_address)}, {_h(booking.location_reference)}, {_h(booking.location_city)}",
         "<br>",
         "<b>Nota:</b> Evento de agenda sincronizado desde Chivapp."
     ]
@@ -460,6 +479,12 @@ def sync_booking_calendar(db, booking_id: str, include_contractor: bool, ensembl
             return event.get('id')
     except Exception as e:
         logger.error(f"Error sincronizando evento en Google Calendar: {e}")
+        if _is_revoked_token_error(e):
+            try:
+                musician_user.google_calendar_refresh_token = None
+                db.commit()
+            except Exception:  # noqa: BLE001
+                db.rollback()
         return None
 
 

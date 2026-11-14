@@ -370,6 +370,9 @@ def _serialize_booking_clean(
         viewer_role=viewer_role,
         member_invite_status=member_invite_status,
     )
+    if viewer_role == "member":
+        # El integrante no ve precios ni comisión: no se recalcula nada para él.
+        return out
     is_requested = getattr(booking, "status", None) == BookingStatus.requested
     if is_requested or out.platform_fee_percent is None:
         pct = (
@@ -1099,6 +1102,11 @@ def sync_booking_calendar_endpoint(
 
     if current_user.role != UserRole.musician:
         raise HTTPException(403, "Solo los m\u00fasicos pueden realizar esta acci\u00f3n.")
+
+    from app.services.calendar_service import CALENDAR_SYNC_STATUS_NAMES
+
+    if getattr(booking.status, "value", booking.status) not in CALENDAR_SYNC_STATUS_NAMES:
+        raise HTTPException(400, "Solo puedes agendar una reserva que ya tiene el pago confirmado y sigue vigente.")
 
     str_member_ids = [str(uid) for uid in payload.ensemble_member_ids]
     new_event_id = sync_booking_calendar(db, str(booking.id), payload.include_contractor, str_member_ids)

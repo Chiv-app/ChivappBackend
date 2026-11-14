@@ -128,8 +128,8 @@ class MusicianProfileBase(BaseModel):
     instruments: list[str] = Field(default_factory=list)
     songs: list[str] = Field(default_factory=list)
     repertoire: list[RepertoireItem] = Field(default_factory=list)
-    price_per_hour: float | None = None
-    price_per_event: float | None = None
+    price_per_hour: float | None = Field(default=None, gt=0, le=1_000_000)
+    price_per_event: float | None = Field(default=None, gt=0, le=1_000_000)
     portfolio_description: str | None = None
     location_city: str | None = None
     location_zone: str | None = None
@@ -261,8 +261,8 @@ class MusicianProfileUpdate(BaseModel):
     instruments: list[str] | None = None
     songs: list[str] | None = None
     repertoire: list[RepertoireItem] | None = None
-    price_per_hour: float | None = None
-    price_per_event: float | None = None
+    price_per_hour: float | None = Field(default=None, gt=0, le=1_000_000)
+    price_per_event: float | None = Field(default=None, gt=0, le=1_000_000)
     portfolio_description: str | None = Field(default=None, max_length=5000)
     location_city: str | None = Field(default=None, max_length=120)
     location_zone: str | None = Field(default=None, max_length=120)

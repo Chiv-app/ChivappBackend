@@ -824,7 +824,10 @@ def get_me(
 ):
     is_member = (
         db.query(EnsembleMember.id)
-        .filter(EnsembleMember.member_user_id == current_user.id)
+        .filter(
+            EnsembleMember.member_user_id == current_user.id,
+            EnsembleMember.status != EnsembleMemberStatus.inactive,
+        )
         .first()
         is not None
     )
@@ -928,7 +931,10 @@ def set_password(
     db.refresh(user)
     is_member = (
         db.query(EnsembleMember.id)
-        .filter(EnsembleMember.member_user_id == user.id)
+        .filter(
+            EnsembleMember.member_user_id == user.id,
+            EnsembleMember.status != EnsembleMemberStatus.inactive,
+        )
         .first()
         is not None
     )

@@ -2188,9 +2188,11 @@ def send_admin_refund_transfer(
     if not booking:
         raise HTTPException(404, "Reserva no encontrada")
 
+    # Bloqueo de fila: un doble clic no registra dos devoluciones (el segundo espera y ve el estado nuevo).
     complaint = (
         db.query(BookingComplaint)
         .filter(BookingComplaint.booking_id == booking.id)
+        .with_for_update()
         .first()
     )
     if not complaint or complaint.status != BookingComplaintStatus.settled:
@@ -2572,6 +2574,35 @@ def list_admin_payout_requests(
     return [_serialize_admin_payout_request(r, musician_by_id.get(r.musician_id)) for r in rows]
 
 
+def _email_payout_processed(db: Session, user: User, req) -> None:
+    """Correo al músico cuando se procesa su retiro. Un fallo de envío nunca bloquea el retiro."""
+    try:
+        from app.core.config import settings
+        from app.core.timezone import now_peru_naive
+        from app.services.email.defaults import APP_NAME
+        from app.services.email.service import send_templated_email
+
+        if not user.email or user.email.endswith("@guest.local") or float(req.amount or 0) <= 0:
+            return
+        send_templated_email(
+            db,
+            slug="musician_payout_completed",
+            to=user.email,
+            context={
+                "user_name": user.fullname or "Músico",
+                "amount": f"{float(req.amount):.2f}",
+                "paid_date": now_peru_naive().strftime("%d/%m/%Y"),
+                "booking_id": str(req.id)[:8],
+                "action_url": f"{settings.FRONTEND_URL.rstrip('/')}/musician/earnings",
+                "app_name": APP_NAME,
+            },
+            user_id=user.id,
+            meta={"payout_request_id": str(req.id), "amount": float(req.amount)},
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Error enviando correo de retiro procesado: %s", exc)
+
+
 @router.post("/payout-requests/{request_id}/process")
 def process_admin_payout_request(
     request_id: str,
@@ -2720,6 +2751,7 @@ def process_admin_payout_request(
             message=f"Tu solicitud de retiro por S/ {float(req.amount):.2f} ha sido procesada.",
             meta={"payout_request_id": str(req.id), "status": "processed"},
         )
+        _email_payout_processed(db, musician.user, req)
 
     record_admin_audit(
         db,

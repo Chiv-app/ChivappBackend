@@ -15,6 +15,25 @@ from app.models.musician_profile import MusicianProfile
 from app.models.user import User
 
 
+# Identificadores que nadie puede tomar como usuario o enlace de perfil: evitan suplantar a la
+# marca, al soporte o a rutas de la aplicación.
+RESERVED_HANDLES = frozenset(
+    {
+        "admin", "administrador", "administrator", "root", "soporte", "support", "ayuda", "help",
+        "chivapp", "chiv", "chiv-app", "chivapp-oficial", "equipo", "team", "staff", "oficial",
+        "api", "app", "www", "login", "logout", "registro", "register", "signup", "signin",
+        "musicians", "musicos", "musician", "contractor", "contratante", "pay", "invite",
+        "perfil", "profile", "dashboard", "uploads", "static", "terminos", "privacidad",
+        "mercadopago", "mercado-pago", "yape", "plin", "null", "undefined", "none",
+    }
+)
+
+
+def is_reserved_handle(value: str | None) -> bool:
+    norm = (value or "").strip().lower()
+    return norm in RESERVED_HANDLES
+
+
 def normalize_email(value: str | None) -> str | None:
     cleaned = (value or "").strip().lower()
     return cleaned or None
@@ -77,6 +96,8 @@ def assert_username_unique(
             400,
             "El nombre de usuario debe tener al menos 3 caracteres y contener solo letras, números o guiones.",
         )
+    if is_reserved_handle(norm):
+        raise HTTPException(400, "Ese nombre de usuario no está disponible. Elige otro.")
 
     # 1. Verificar si ya existe en User.username
     user_query = db.query(User.id).filter(
@@ -124,7 +145,7 @@ def _username_taken(
     exclude_user_id: UUID | None = None,
 ) -> bool:
     norm = normalize_username(username)
-    if not norm:
+    if not norm or is_reserved_handle(norm):
         return True
     user_query = db.query(User.id).filter(
         func.lower(func.btrim(User.username)) == norm
@@ -205,6 +226,8 @@ def assert_musician_slug_unique(
     norm = normalize_username(slug)
     if not norm:
         raise HTTPException(400, "El slug del perfil es inválido o está vacío")
+    if is_reserved_handle(norm):
+        raise HTTPException(400, "Ese enlace de perfil no está disponible. Elige otro.")
     if _musician_slug_taken(db, norm, exclude_profile_id=exclude_profile_id):
         raise HTTPException(
             400,

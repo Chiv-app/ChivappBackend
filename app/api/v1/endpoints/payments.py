@@ -609,6 +609,28 @@ PAYABLE_STATUSES = {
 }
 
 
+IN_FLIGHT_DIRECT_TTL_MINUTES = 10
+
+
+def _is_live_in_flight_direct(payment: Payment) -> bool:
+    """Un cobro directo sin respuesta de Mercado Pago deja de bloquear la reserva a los 10 minutos.
+
+    Si la instancia cae entre guardar la fila y recibir la respuesta no llega ningún webhook; sin
+    vencimiento la reserva quedaría bloqueada para siempre. Si el pago sí llegó a aprobarse, el webhook
+    lo concilia después (y un duplicado queda marcado para reembolso manual).
+    """
+    meta = payment.gateway_metadata
+    if not (isinstance(meta, dict) and meta.get("in_flight_direct")):
+        return False
+    created = payment.created_at
+    if created is None:
+        return True
+    if created.tzinfo is not None:
+        created = created.astimezone(timezone.utc).replace(tzinfo=None)
+    age = datetime.utcnow() - created
+    return age.total_seconds() < IN_FLIGHT_DIRECT_TTL_MINUTES * 60
+
+
 def _server_amount(db: Session, booking: Booking, payment_type: str, client_amount) -> float:
     """Calcula el monto en el servidor. El monto del cliente solo se usa para
     detectar que la pantalla quedó desactualizada, nunca para cobrar."""
@@ -698,7 +720,7 @@ def create_mercadopago_preference(
             if not (isinstance(p.gateway_metadata, dict) and p.gateway_metadata.get("needs_refund"))
             and (
                 p.gateway_payment_id is not None
-                or (isinstance(p.gateway_metadata, dict) and p.gateway_metadata.get("in_flight_direct"))
+                or _is_live_in_flight_direct(p)
             )
         ),
         None,
@@ -869,7 +891,7 @@ def process_mercadopago_direct_payment(
             if not (isinstance(p.gateway_metadata, dict) and p.gateway_metadata.get("needs_refund"))
             and (
                 p.gateway_payment_id is not None
-                or (isinstance(p.gateway_metadata, dict) and p.gateway_metadata.get("in_flight_direct"))
+                or _is_live_in_flight_direct(p)
             )
         ),
         None,

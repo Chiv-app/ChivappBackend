@@ -111,9 +111,11 @@ def _generate_ics_attachment(booking, leader_name: str) -> dict | None:
         uid = f"{booking.id}@chiv.app"
         dtstamp = dt.datetime.now(dt.timezone.utc).strftime(fmt)
         
-        location = f"{booking.location_address}, {booking.location_city or ''}"
+        location = _ics_text(f"{booking.location_address}, {booking.location_city or ''}")
+        event_type_ics = _ics_text(booking.event_type)
+        leader_name_ics = _ics_text(leader_name)
         
-        ics = f"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Chivapp//NONSGML v1.0//EN\r\nCALSCALE:GREGORIAN\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:{uid}\r\nDTSTAMP:{dtstamp}\r\nDTSTART:{start_utc.strftime(fmt)}\r\nDTEND:{end_utc.strftime(fmt)}\r\nSUMMARY:Chivapp: {booking.event_type} - {leader_name}\r\nLOCATION:{location}\r\nDESCRIPTION:Reserva confirmada en Chivapp.\r\nSTATUS:CONFIRMED\r\nBEGIN:VALARM\r\nTRIGGER:-PT120M\r\nACTION:DISPLAY\r\nDESCRIPTION:Reminder\r\nEND:VALARM\r\nEND:VEVENT\r\nEND:VCALENDAR"
+        ics = f"BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Chivapp//NONSGML v1.0//EN\r\nCALSCALE:GREGORIAN\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:{uid}\r\nDTSTAMP:{dtstamp}\r\nDTSTART:{start_utc.strftime(fmt)}\r\nDTEND:{end_utc.strftime(fmt)}\r\nSUMMARY:Chivapp: {event_type_ics} - {leader_name_ics}\r\nLOCATION:{location}\r\nDESCRIPTION:Reserva confirmada en Chivapp.\r\nSTATUS:CONFIRMED\r\nBEGIN:VALARM\r\nTRIGGER:-PT120M\r\nACTION:DISPLAY\r\nDESCRIPTION:Reminder\r\nEND:VALARM\r\nEND:VEVENT\r\nEND:VCALENDAR"
         
         return {
             "name": "invitacion.ics",
@@ -123,6 +125,12 @@ def _generate_ics_attachment(booking, leader_name: str) -> dict | None:
         import logging
         logging.getLogger(__name__).error(f"Error generando ICS: {e}")
         return None
+
+def _ics_text(value) -> str:
+    """Escapa un valor para un campo TEXT de iCalendar (sin saltos de línea que inyecten propiedades)."""
+    text = str(value or "").replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,")
+    return " ".join(text.replace("\r", " ").replace("\n", " ").split())
+
 
 def _has_musician_contractor_review(db: Session, booking: Booking) -> bool:
     return (
@@ -478,6 +486,16 @@ def deactivate_member(
     )
     member.status = EnsembleMemberStatus.inactive
     member.updated_at = datetime.utcnow()
+    # Las convocatorias aún sin responder dejan de ser válidas (el token ya no abre la reserva).
+    for pending in (
+        db.query(BookingMemberInvite)
+        .filter(
+            BookingMemberInvite.ensemble_member_id == member.id,
+            BookingMemberInvite.status == BookingMemberInviteStatus.pending,
+        )
+        .all()
+    ):
+        pending.status = BookingMemberInviteStatus.declined
     db.commit()
     db.refresh(member)
     return serialize_member(member, include_invite_url=False)
@@ -1367,7 +1385,10 @@ def list_my_calls(
     member_ids = [
         row.id
         for row in db.query(EnsembleMember.id)
-        .filter(EnsembleMember.member_user_id == current_user.id)
+        .filter(
+            EnsembleMember.member_user_id == current_user.id,
+            EnsembleMember.status != EnsembleMemberStatus.inactive,
+        )
         .all()
     ]
     if not member_ids:

@@ -20,6 +20,7 @@ from app.models.ensemble_member import (
     BookingMemberInvite,
     BookingMemberInviteStatus,
     EnsembleMember,
+    EnsembleMemberStatus,
 )
 from app.models.musician_profile import MusicianProfile
 from app.models.user import User, UserRole
@@ -129,6 +130,7 @@ def _collaborator_specs(
             BookingMemberInvite.booking_id == booking.id,
             BookingMemberInvite.status == BookingMemberInviteStatus.accepted,
             EnsembleMember.member_user_id.isnot(None),
+            EnsembleMember.status != EnsembleMemberStatus.inactive,
         )
         .all()
     )
