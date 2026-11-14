@@ -78,6 +78,9 @@ class EnsembleMember(Base):
     password_setup_expires_at = Column(UTCDateTime, nullable=True)
     invited_at = Column(UTCDateTime, default=datetime.utcnow)
     joined_at = Column(UTCDateTime, nullable=True)
+    # Quién terminó la relación: 'leader' (lo dio de baja) o 'member' (rechazó o se salió).
+    ended_by = Column(String(16), nullable=True)
+    ended_at = Column(UTCDateTime, nullable=True)
 
     created_at = Column(UTCDateTime, default=datetime.utcnow)
     updated_at = Column(UTCDateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

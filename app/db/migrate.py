@@ -199,6 +199,8 @@ MIGRATION_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS ix_ensemble_member_member_user_id ON ensemble_member (member_user_id)",
     "CREATE INDEX IF NOT EXISTS ix_ensemble_member_email ON ensemble_member (email)",
     "CREATE INDEX IF NOT EXISTS ix_ensemble_member_password_setup_token ON ensemble_member (password_setup_token)",
+    "ALTER TABLE ensemble_member ADD COLUMN IF NOT EXISTS ended_by VARCHAR(16)",
+    "ALTER TABLE ensemble_member ADD COLUMN IF NOT EXISTS ended_at TIMESTAMPTZ",
     """
     CREATE TABLE IF NOT EXISTS booking_member_invite (
         id UUID PRIMARY KEY,

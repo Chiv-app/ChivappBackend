@@ -269,7 +269,7 @@ def test_sec6_06_bug6_01_three_database_migration_scenarios():
                 ).scalar()
                 assert reg == required_table
             rev = conn.execute(sa.text("SELECT version_num FROM alembic_version")).scalar()
-            assert rev == "b2c3d4e5f6a8"
+            assert rev == "c3d4e5f6a7b9"
             assert BASELINE_REVISION == "c7a3bc7f5426"
 
         # Escenario 4: Base ya estampada en d8e9f0a1b2c3 (versión previa a Audit v6 sin columnas nuevas ni payout_request_booking)

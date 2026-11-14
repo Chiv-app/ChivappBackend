@@ -99,6 +99,8 @@ class EnsembleMemberOut(BaseModel):
     leader_name: str | None = None
     invited_at: datetime | None
     joined_at: datetime | None
+    ended_by: str | None = None
+    ended_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 

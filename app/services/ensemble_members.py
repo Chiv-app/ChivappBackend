@@ -133,14 +133,17 @@ def serialize_member(member: EnsembleMember, *, include_invite_url: bool = False
         "specialties": list(member.specialties or []),
         "notes": member.notes,
         "status": member.status.value if hasattr(member.status, "value") else member.status,
-        "has_password": has_password,
+        # No se expone: revelaría al líder si el correo ya tiene una cuenta en Chivapp.
+        "has_password": False,
         "invite_url": invite_url,
         "invite_expires_at": invite_expires_at,
         "invite_expired": invite_expired,
-        "member_user_id": member.member_user_id,
+        "member_user_id": None,
         "leader_name": leader.fullname if leader else None,
         "invited_at": member.invited_at,
         "joined_at": member.joined_at,
+        "ended_by": member.ended_by,
+        "ended_at": member.ended_at,
         "created_at": member.created_at,
         "updated_at": member.updated_at,
     }
@@ -154,7 +157,7 @@ def create_or_link_member_user(
     fullname: str,
     phone: str | None,
     specialties: list[str],
-) -> User:
+) -> User | None:
     from app.services.uniqueness import normalize_email
 
     email_norm = normalize_email(email)
@@ -170,10 +173,9 @@ def create_or_link_member_user(
         if existing.id == leader.id:
             raise HTTPException(400, "No puedes agregarte a ti mismo como integrante")
         if existing.role != UserRole.musician:
-            raise HTTPException(
-                400,
-                "No se puede utilizar este correo porque ya está en uso.",
-            )
+            # Cuenta de contratante o admin: no se vincula ni se avisa a nadie, y el líder ve lo mismo que
+            # con cualquier otro correo (así no puede averiguar qué correos existen).
+            return None
         return existing
 
     phone_norm = assert_phone_unique(db, phone)

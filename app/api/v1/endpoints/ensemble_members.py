@@ -3,7 +3,7 @@ from app.core.limiter import limiter
 from app.core.hashing import validate_password_strength
 from app.services.email.auth_emails import send_welcome_email
 from app.core.hashing import hash_password
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from uuid import UUID
 
@@ -186,14 +186,31 @@ def list_members(
     return [serialize_member(m, include_invite_url=True) for m in members]
 
 
+MAX_ENSEMBLE_MEMBERS = 60
+REINVITE_COOLDOWN_DAYS = 30
+
+
 @router.post("/musician/members", response_model=EnsembleMemberOut, status_code=201)
+@limiter.limit("40/hour")
 def create_member(
+    request: Request,
     payload: EnsembleMemberCreate,
     db: Session = Depends(deps.get_db),
     current_user: User = Depends(deps.get_current_user),
 ):
     get_leader_musician_or_403(db, current_user)
     email = str(payload.email).lower().strip()
+
+    current_count = (
+        db.query(EnsembleMember.id)
+        .filter(
+            EnsembleMember.leader_user_id == current_user.id,
+            EnsembleMember.status != EnsembleMemberStatus.inactive,
+        )
+        .count()
+    )
+    if current_count >= MAX_ENSEMBLE_MEMBERS:
+        raise HTTPException(400, f"Llegaste al máximo de {MAX_ENSEMBLE_MEMBERS} integrantes.")
 
     existing = (
         db.query(EnsembleMember)
@@ -205,6 +222,16 @@ def create_member(
     )
     if existing and existing.status != EnsembleMemberStatus.inactive:
         raise HTTPException(400, "Ese integrante ya está en tu agrupación")
+    if existing and existing.ended_by == "member" and existing.ended_at is not None:
+        # Si la persona rechazó o se salió, no se le puede volver a pedir enseguida.
+        wait = existing.ended_at + timedelta(days=REINVITE_COOLDOWN_DAYS) - datetime.utcnow()
+        if wait.total_seconds() > 0:
+            days = max(1, -(-int(wait.total_seconds()) // 86400))
+            raise HTTPException(
+                400,
+                f"Esa persona rechazó o dejó tu agrupación hace poco. "
+                f"Podrás volver a invitarla en {days} día{'s' if days != 1 else ''}.",
+            )
 
     member_user = create_or_link_member_user(
         db,
@@ -215,22 +242,28 @@ def create_member(
         specialties=payload.specialties,
     )
 
-    has_password = bool(member_user.password_hash)
+    # member_user es None cuando el correo es de una cuenta que no puede ser integrante (contratante o
+    # admin): la invitación queda registrada igual, sin vincular ni avisar a nadie.
+    managed = member_user is not None and is_leader_managed_account(member_user)
+    has_password = bool(member_user and member_user.password_hash)
+    linked_id = member_user.id if member_user else None
     if existing:
         member = existing
         member.fullname = payload.fullname
         member.phone = payload.phone
         member.specialties = payload.specialties
         member.notes = payload.notes
-        member.member_user_id = member_user.id
+        member.member_user_id = linked_id
         # Nadie queda activo sin aceptar: el líder invita, la persona acepta o rechaza.
         member.status = EnsembleMemberStatus.invited
         member.joined_at = None
+        member.ended_by = None
+        member.ended_at = None
         member.invited_at = datetime.utcnow()
     else:
         member = EnsembleMember(
             leader_user_id=current_user.id,
-            member_user_id=member_user.id,
+            member_user_id=linked_id,
             email=email,
             fullname=payload.fullname,
             phone=payload.phone,
@@ -245,11 +278,11 @@ def create_member(
     db.flush()
 
     invite_url = None
-    if not has_password:
+    if managed:
         token = issue_password_setup_token(member)
         invite_url = password_setup_url(token)
 
-    if member_user.id != current_user.id:
+    if member_user is not None and member_user.id != current_user.id:
         notify_user(
             db,
             user=member_user,
@@ -259,7 +292,7 @@ def create_member(
                 f"{current_user.fullname} te agregó como integrante. "
                 + (
                     "Crea tu contraseña con el enlace de invitación para continuar."
-                    if not has_password
+                    if managed
                     else "Entra a tu panel para aceptar o rechazar la invitación."
                 )
             ),
@@ -278,7 +311,7 @@ def create_member(
                 user_id=member_user.id,
                 expires_days=PASSWORD_SETUP_TTL_DAYS,
             )
-        elif has_password:
+        else:
             _email_join_request(db, member, member_user, current_user)
 
     db.commit()
@@ -444,11 +477,29 @@ def resend_invite(
     member = get_member_for_leader(
         db, leader_id=current_user.id, member_id=member_id
     )
-    if not member.member_user_id:
-        raise HTTPException(400, "El integrante no tiene cuenta vinculada")
-    user = db.get(User, member.member_user_id)
-    if user and user.password_hash:
-        raise HTTPException(400, "Este integrante ya creó su contraseña")
+    user = db.get(User, member.member_user_id) if member.member_user_id else None
+    if user is None:
+        # Sin cuenta vinculada (correo que no puede ser integrante): se responde igual que siempre.
+        member.invited_at = datetime.utcnow()
+        db.commit()
+        db.refresh(member)
+        return serialize_member(member, include_invite_url=True)
+    if not is_leader_managed_account(user):
+        if member.status != EnsembleMemberStatus.invited:
+            raise HTTPException(400, "Esta persona ya respondió la invitación")
+        member.invited_at = datetime.utcnow()
+        notify_user(
+            db,
+            user=user,
+            type="ensemble_invite",
+            title="Recordatorio de invitación",
+            message=f"{current_user.fullname} te recuerda su invitación a la agrupación. Responde desde tu panel.",
+            meta={"ensemble_member_id": str(member.id)},
+        )
+        _email_join_request(db, member, user, current_user)
+        db.commit()
+        db.refresh(member)
+        return serialize_member(member, include_invite_url=False)
 
     token = issue_password_setup_token(member)
     member.status = EnsembleMemberStatus.invited
@@ -480,10 +531,12 @@ def resend_invite(
     return serialize_member(member, include_invite_url=True)
 
 
-def _deactivate_member_record(db: Session, member: EnsembleMember) -> None:
+def _deactivate_member_record(db: Session, member: EnsembleMember, *, ended_by: str = "leader") -> None:
     """Da de baja a un integrante: pierde el acceso y sus convocatorias sin responder se anulan."""
     member.status = EnsembleMemberStatus.inactive
     member.updated_at = datetime.utcnow()
+    member.ended_by = ended_by
+    member.ended_at = datetime.utcnow()
     for pending in (
         db.query(BookingMemberInvite)
         .filter(
@@ -591,10 +644,8 @@ def create_booking_invites(
         if member.status == EnsembleMemberStatus.inactive:
             continue
         linked_user = db.get(User, member.member_user_id) if member.member_user_id else None
-        if (
-            member.status == EnsembleMemberStatus.invited
-            and linked_user is not None
-            and not is_leader_managed_account(linked_user)
+        if member.status == EnsembleMemberStatus.invited and (
+            linked_user is None or not is_leader_managed_account(linked_user)
         ):
             raise HTTPException(
                 400,
@@ -1322,7 +1373,7 @@ def respond_ensemble_invite(
         from app.services.ensemble_members import notify_leader_member_joined
         notify_leader_member_joined(db, member)
     else:
-        member.status = EnsembleMemberStatus.inactive
+        _deactivate_member_record(db, member, ended_by="member")
         member.joined_at = None
         
     db.commit()
@@ -1367,7 +1418,7 @@ def leave_ensemble(
     )
     if not member or member.status != EnsembleMemberStatus.active:
         raise HTTPException(404, "No perteneces a esa agrupación")
-    _deactivate_member_record(db, member)
+    _deactivate_member_record(db, member, ended_by="member")
     member.joined_at = None
     leader = db.get(User, member.leader_user_id)
     if leader:
