@@ -172,6 +172,30 @@ def next_available_username(
     return f"{base}-{uuid4().hex[:6]}"
 
 
+def next_available_handle(
+    db: Session,
+    preferred: str | None,
+    *,
+    exclude_user_id: UUID | None = None,
+    exclude_profile_id: UUID | None = None,
+) -> str:
+    """Genera un identificador libre a la vez como nombre de usuario y como slug del perfil.
+
+    Se usa en el alta guiada del músico: la persona no elige un usuario, se arma solo a partir
+    de su nombre artístico (con un sufijo numérico si ya está tomado).
+    """
+    base = normalize_username(preferred) or "musico"
+    if len(base) < 3:
+        base = f"{base}-1" if len(base) >= 1 else "musico"
+    for suffix in range(1, 1000):
+        candidate = base if suffix == 1 else f"{base}-{suffix}"
+        if not _username_taken(db, candidate, exclude_user_id=exclude_user_id) and not _musician_slug_taken(
+            db, candidate, exclude_profile_id=exclude_profile_id
+        ):
+            return candidate
+    return f"{base}-{uuid4().hex[:6]}"
+
+
 def assert_musician_slug_unique(
     db: Session,
     slug: str | None,

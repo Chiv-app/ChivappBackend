@@ -37,7 +37,12 @@ from app.schemas.profiles import (
     ContractorContractGenerateOut,
     PlatformStatsOut,
 )
-from app.services.contract_pdf import contract_html_text_length, generate_musician_contract_pdf
+from app.services.contract_pdf import (
+    DEFAULT_CONTRACT_TEMPLATE_TITLE,
+    build_default_contract_template_body,
+    contract_html_text_length,
+    generate_musician_contract_pdf,
+)
 from app.services.booking_notifications import (
     notify_profile_needs_resubmit,
     notify_profile_submitted,
@@ -53,6 +58,7 @@ from app.services.uniqueness import (
     assert_phone_unique,
     assert_stage_name_unique,
     assert_username_unique,
+    next_available_handle,
     next_available_musician_slug,
     normalize_username,
 )
@@ -396,6 +402,10 @@ def submit_musician_profile(
         raise HTTPException(status_code=403, detail="Solo los músicos pueden enviar su perfil")
 
     profile = _get_musician_profile_or_404(db, current_user)
+    # Quien no personalizó su contrato usa el contrato por defecto de Chivapp: no tiene que escribirlo.
+    if contract_html_text_length(profile.contract_template_body) < 50:
+        profile.contract_template_title = profile.contract_template_title or DEFAULT_CONTRACT_TEMPLATE_TITLE
+        profile.contract_template_body = build_default_contract_template_body()
     validation = validate_musician_profile(db, profile)
     if not validation.can_submit:
         raise HTTPException(
@@ -582,9 +592,16 @@ def update_musician_profile(
             elif current_user.username:
                 updates["slug"] = current_user.username
             else:
-                updates["slug"] = next_available_musician_slug(
-                    db, stage_name, exclude_profile_id=profile.id,
+                # Alta guiada: la persona no elige un usuario; se genera uno libre a partir de su
+                # nombre artístico y el perfil usa el mismo identificador como slug.
+                handle = next_available_handle(
+                    db,
+                    stage_name,
+                    exclude_user_id=current_user.id,
+                    exclude_profile_id=profile.id,
                 )
+                current_user.username = handle
+                updates["slug"] = handle
         else:
             if profile.status == ProfileStatus.draft:
                 updates["stage_name"] = None

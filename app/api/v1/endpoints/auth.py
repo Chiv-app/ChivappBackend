@@ -322,6 +322,8 @@ def _link_oauth_account(
 
 def _create_role_profile(db: Session, user: User, oauth_verified: bool = False) -> None:
     if user.role == UserRole.musician:
+        from app.services.contract_pdf import DEFAULT_CONTRACT_TEMPLATE_TITLE, build_default_contract_template_body
+
         stage_name = next_available_stage_name(db, user.fullname) if user.fullname else None
         slug = user.username or (next_available_musician_slug(db, stage_name) if stage_name else None)
         db.add(
@@ -331,6 +333,9 @@ def _create_role_profile(db: Session, user: User, oauth_verified: bool = False) 
                 slug=slug,
                 status=ProfileStatus.draft,
                 availability_type=AvailabilityType.both,
+                # El músico no escribe su contrato: parte del contrato por defecto de Chivapp.
+                contract_template_title=DEFAULT_CONTRACT_TEMPLATE_TITLE,
+                contract_template_body=build_default_contract_template_body(),
             )
         )
     elif user.role == UserRole.contractor:
