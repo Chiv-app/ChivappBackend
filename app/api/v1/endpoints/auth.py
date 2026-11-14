@@ -91,6 +91,10 @@ from app.services.uniqueness import (
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
 OAUTH_PENDING_COOKIE = "oauth_pending"
+# Marca del dispositivo donde se creó la cuenta con su contraseña (ver `_has_registration_proof`).
+REGISTRATION_PROOF_COOKIE = "reg_proof"
+REGISTRATION_PROOF_TYP = "reg_proof"
+REGISTRATION_PROOF_MINUTES = 30 * 24 * 60
 OAUTH_STATE_COOKIE = "oauth_state"
 
 
@@ -181,6 +185,43 @@ def _clear_oauth_pending_cookie(response: Response) -> None:
         domain=_get_cookie_domain(),
         path="/",
     )
+
+
+def _set_registration_proof_cookie(response: Response, user: User) -> None:
+    """Deja en el dispositivo que registró la cuenta una marca firmada (30 días, solo para esa cuenta)."""
+    response.set_cookie(
+        key=REGISTRATION_PROOF_COOKIE,
+        value=create_signed_state(REGISTRATION_PROOF_TYP, {"sub": str(user.id)}, minutes=REGISTRATION_PROOF_MINUTES),
+        httponly=True,
+        secure=_is_secure_cookie(),
+        samesite="lax",
+        domain=_get_cookie_domain(),
+        path="/",
+        max_age=REGISTRATION_PROOF_MINUTES * 60,
+    )
+
+
+def _clear_registration_proof_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key=REGISTRATION_PROOF_COOKIE,
+        httponly=True,
+        samesite="lax",
+        secure=_is_secure_cookie(),
+        domain=_get_cookie_domain(),
+        path="/",
+    )
+
+
+def _has_registration_proof(request: Request, user: User) -> bool:
+    """True si esta petición viene del dispositivo donde se creó ESTA cuenta con su contraseña.
+
+    Quien registró la cuenta y ahora demuestra que también controla el correo (código o enlace) es la
+    misma persona: no hace falta anular su contraseña ni pedirle que cree otra. Un tercero que pre-registró
+    un correo ajeno desde otro dispositivo no tiene esta marca en el dispositivo del dueño, así que su
+    contraseña se sigue anulando (SEC6-03).
+    """
+    payload = decode_signed_state(request.cookies.get(REGISTRATION_PROOF_COOKIE), REGISTRATION_PROOF_TYP)
+    return bool(payload and payload.get("sub") == str(user.id))
 
 
 def _frontend_redirect(path: str, params: dict | None = None) -> RedirectResponse:
@@ -415,6 +456,7 @@ def register_user(
     send_welcome_email(db, user)
     send_email_verification(db, user)
     _issue_login(response, user)
+    _set_registration_proof_cookie(response, user)
     db.commit()
     db.refresh(user)
     return user
@@ -601,8 +643,12 @@ def verify_login_otp_or_raise(
     otp: str,
     *,
     client_ip: str | None = None,
+    registration_proof: bool = False,
 ) -> None:
-    """Verifica el OTP con límite de intentos atómico e invalidación automática."""
+    """Verifica el OTP con límite de intentos atómico e invalidación automática.
+
+    `registration_proof`: la petición viene del dispositivo donde se creó la cuenta con su contraseña.
+    """
     from sqlalchemy import text
 
     db.refresh(user, with_for_update=True)
@@ -682,7 +728,7 @@ def verify_login_otp_or_raise(
     user.login_otp_hash = None
     user.login_otp_expires_at = None
     user.login_otp_attempts = 0
-    claim_email_ownership(db, user, proof_was_password=False)
+    claim_email_ownership(db, user, proof_was_password=registration_proof)
     if user.email_verified_at is None:
         mark_email_verified(user)
 
@@ -732,7 +778,13 @@ def login_otp(payload: LoginOtpRequest, request: Request, response: Response, db
     try:
         if not user or getattr(user, "is_active", True) is False or user.role == UserRole.admin:
             raise HTTPException(status_code=401, detail=GENERIC_OTP_ERROR)
-        verify_login_otp_or_raise(db, user, payload.otp, client_ip=_client_ip(request))
+        verify_login_otp_or_raise(
+            db,
+            user,
+            payload.otp,
+            client_ip=_client_ip(request),
+            registration_proof=_has_registration_proof(request, user),
+        )
     except HTTPException as exc:
         if exc.status_code == 401:
             _record_account_login_failure(otp_key, client_ip)
@@ -740,6 +792,7 @@ def login_otp(payload: LoginOtpRequest, request: Request, response: Response, db
     _clear_account_login_failures(otp_key, client_ip)
 
     _issue_login(response, user)
+    _clear_registration_proof_cookie(response)  # el correo ya quedó verificado: la marca no hace falta
     db.commit()
 
     return TokenOut()
@@ -1694,7 +1747,8 @@ def magic_link_consume(
     if session_version(decoded) != (user.token_version or 0):
         raise HTTPException(status_code=401, detail="Este enlace ya fue utilizado o expiró.")
 
-    claim_email_ownership(db, user, proof_was_password=False)
+    claim_email_ownership(db, user, proof_was_password=_has_registration_proof(request, user))
+    _clear_registration_proof_cookie(response)
     if user.email_verified_at is None:
         mark_email_verified(user)
     _revoke_sessions(user)
