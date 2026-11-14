@@ -727,6 +727,39 @@ Ver la reserva:
 {{action_url}}"""
     },
     {
+        "slug": "ensemble_join_request",
+        "name": "Invitación a una agrupación (músico con cuenta)",
+        "description": "Se envía a un músico que ya tiene cuenta cuando un líder lo invita a su agrupación. Debe aceptar o rechazar.",
+        "subject": "{{leader_name}} te invitó a su agrupación en {{app_name}}",
+        "available_variables": ["member_name", "leader_name", "app_name", "action_url", "specialties"],
+        "html_body": build_email_layout(
+            category_badge="Agrupación",
+            badge_bg="#EDE9FE",
+            badge_color="#5B21B6",
+            title="Te invitaron a una agrupación",
+            greeting="Hola {{member_name}},",
+            lead_text="<strong>{{leader_name}}</strong> quiere sumarte como integrante en {{app_name}}. No pasa nada hasta que tú aceptes: entra a tu panel y elige si te unes o no.",
+            info_items=[
+                ("Líder / Grupo", "{{leader_name}}"),
+                ("Especialidades", "{{specialties}}"),
+            ],
+            cta_label="Responder la invitación",
+            cta_url="{{action_url}}",
+            secondary_note="Si no conoces a esta persona, puedes rechazar la invitación o ignorar este correo.",
+        ),
+        "text_body": """Hola {{member_name}},
+
+{{leader_name}} quiere sumarte como integrante en {{app_name}}.
+No pasa nada hasta que tú aceptes: entra a tu panel y elige si te unes o no.
+
+Especialidades: {{specialties}}
+
+Responder la invitación:
+{{action_url}}
+
+Si no conoces a esta persona, puedes rechazar la invitación o ignorar este correo."""
+    },
+    {
         "slug": "musician_payout_completed",
         "name": "Pago al músico realizado",
         "description": "Se envía al músico cuando Chivapp le transfirió el pago de una reserva o un retiro.",

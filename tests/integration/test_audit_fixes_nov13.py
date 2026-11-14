@@ -185,7 +185,8 @@ def test_the_leader_still_sees_the_money(client: TestClient, db_session: Session
 
 def test_a_removed_member_no_longer_counts_as_ensemble_member(client: TestClient, db_session: Session):
     leader, _ = _musician(db_session)
-    member_user, _ = _musician(db_session)
+    member_user, member_profile = _musician(db_session)
+    member_profile.is_ensemble_only = True  # cuenta que solo existe como integrante
     member = EnsembleMember(
         leader_user_id=leader.id,
         member_user_id=member_user.id,

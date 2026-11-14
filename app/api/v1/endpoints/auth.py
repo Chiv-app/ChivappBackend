@@ -66,6 +66,7 @@ from app.services.email.auth_emails import (
 )
 from app.services.ensemble_members import (
     activate_member_after_password,
+    is_ensemble_member_account,
     find_password_setup_member,
 )
 from app.services.oauth import (
@@ -822,15 +823,7 @@ def get_me(
     current_user: User = Depends(deps.get_current_user),
     db: Session = Depends(deps.get_db),
 ):
-    is_member = (
-        db.query(EnsembleMember.id)
-        .filter(
-            EnsembleMember.member_user_id == current_user.id,
-            EnsembleMember.status != EnsembleMemberStatus.inactive,
-        )
-        .first()
-        is not None
-    )
+    is_member = is_ensemble_member_account(db, current_user)
     base = UserOut.model_validate(current_user)
     return base.model_copy(update={"is_ensemble_member": is_member})
 
@@ -929,15 +922,7 @@ def set_password(
     _issue_login(response, user)
     db.commit()
     db.refresh(user)
-    is_member = (
-        db.query(EnsembleMember.id)
-        .filter(
-            EnsembleMember.member_user_id == user.id,
-            EnsembleMember.status != EnsembleMemberStatus.inactive,
-        )
-        .first()
-        is not None
-    )
+    is_member = is_ensemble_member_account(db, user)
     return UserOut.model_validate(user).model_copy(
         update={"is_ensemble_member": is_member}
     )

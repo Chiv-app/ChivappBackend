@@ -187,6 +187,32 @@ def send_ensemble_invite_email(
     )
 
 
+def send_ensemble_join_request_email(
+    db: Session,
+    *,
+    member_email: str,
+    member_name: str,
+    leader_name: str,
+    action_url: str,
+    specialties: list[str],
+    user_id: UUID | None,
+) -> None:
+    """Aviso a un músico que ya tiene cuenta: un líder lo invitó y debe aceptar o rechazar."""
+    send_templated_email(
+        db,
+        slug="ensemble_join_request",
+        to=member_email,
+        context={
+            "member_name": member_name,
+            "leader_name": leader_name,
+            "app_name": APP_NAME,
+            "action_url": action_url,
+            "specialties": ", ".join(specialties) if specialties else "—",
+        },
+        user_id=user_id,
+    )
+
+
 def send_booking_member_invite_email(
     db: Session,
     *,

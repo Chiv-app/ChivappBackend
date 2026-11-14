@@ -223,9 +223,10 @@ def create_member(
         member.specialties = payload.specialties
         member.notes = payload.notes
         member.member_user_id = member_user.id
-        member.status = (
-            EnsembleMemberStatus.active if has_password else EnsembleMemberStatus.invited
-        )
+        # Nadie queda activo sin aceptar: el líder invita, la persona acepta o rechaza.
+        member.status = EnsembleMemberStatus.invited
+        member.joined_at = None
+        member.invited_at = datetime.utcnow()
     else:
         member = EnsembleMember(
             leader_user_id=current_user.id,
@@ -235,13 +236,9 @@ def create_member(
             phone=payload.phone,
             specialties=payload.specialties,
             notes=payload.notes,
-            status=(
-                EnsembleMemberStatus.active
-                if has_password
-                else EnsembleMemberStatus.invited
-            ),
+            status=EnsembleMemberStatus.invited,
             invited_at=datetime.utcnow(),
-            joined_at=datetime.utcnow() if has_password else None,
+            joined_at=None,
         )
         db.add(member)
 
@@ -263,7 +260,7 @@ def create_member(
                 + (
                     "Crea tu contraseña con el enlace de invitación para continuar."
                     if not has_password
-                    else "Ya puedes ver las convocatorias de la agrupación."
+                    else "Entra a tu panel para aceptar o rechazar la invitación."
                 )
             ),
             meta={
@@ -281,6 +278,8 @@ def create_member(
                 user_id=member_user.id,
                 expires_days=PASSWORD_SETUP_TTL_DAYS,
             )
+        elif has_password:
+            _email_join_request(db, member, member_user, current_user)
 
     db.commit()
     db.refresh(member)
@@ -415,7 +414,14 @@ def update_member(
             new_status = EnsembleMemberStatus(data["status"])
         except ValueError as exc:
             raise HTTPException(400, "Estado inválido") from exc
-        member.status = new_status
+        if new_status == EnsembleMemberStatus.inactive:
+            _deactivate_member_record(db, member)
+        elif new_status != member.status:
+            # El líder invita; solo la persona puede pasar a «activo» aceptando la invitación.
+            raise HTTPException(
+                400,
+                "El integrante debe aceptar la invitación para unirse. Solo puedes darlo de baja.",
+            )
         del data["status"]
     for field, value in data.items():
         setattr(member, field, value)
@@ -474,6 +480,44 @@ def resend_invite(
     return serialize_member(member, include_invite_url=True)
 
 
+def _deactivate_member_record(db: Session, member: EnsembleMember) -> None:
+    """Da de baja a un integrante: pierde el acceso y sus convocatorias sin responder se anulan."""
+    member.status = EnsembleMemberStatus.inactive
+    member.updated_at = datetime.utcnow()
+    for pending in (
+        db.query(BookingMemberInvite)
+        .filter(
+            BookingMemberInvite.ensemble_member_id == member.id,
+            BookingMemberInvite.status == BookingMemberInviteStatus.pending,
+        )
+        .all()
+    ):
+        pending.status = BookingMemberInviteStatus.declined
+
+
+def _email_join_request(db: Session, member: EnsembleMember, member_user: User, leader: User) -> None:
+    """Correo a un músico con cuenta. Un fallo de envío no bloquea la invitación."""
+    try:
+        from app.core.config import settings as _settings
+        from app.services.email.auth_emails import send_ensemble_join_request_email
+
+        if not member_user.email or member_user.email.endswith("@guest.local"):
+            return
+        send_ensemble_join_request_email(
+            db,
+            member_email=member_user.email,
+            member_name=member.fullname,
+            leader_name=leader.fullname or "Un músico",
+            action_url=f"{_settings.FRONTEND_URL.rstrip('/')}/musician",
+            specialties=list(member.specialties or []),
+            user_id=member_user.id,
+        )
+    except Exception:  # noqa: BLE001
+        import logging
+
+        logging.getLogger(__name__).warning("No se pudo enviar el correo de invitación a la agrupación")
+
+
 @router.delete("/musician/members/{member_id}", response_model=EnsembleMemberOut)
 def deactivate_member(
     member_id: UUID,
@@ -484,18 +528,7 @@ def deactivate_member(
     member = get_member_for_leader(
         db, leader_id=current_user.id, member_id=member_id
     )
-    member.status = EnsembleMemberStatus.inactive
-    member.updated_at = datetime.utcnow()
-    # Las convocatorias aún sin responder dejan de ser válidas (el token ya no abre la reserva).
-    for pending in (
-        db.query(BookingMemberInvite)
-        .filter(
-            BookingMemberInvite.ensemble_member_id == member.id,
-            BookingMemberInvite.status == BookingMemberInviteStatus.pending,
-        )
-        .all()
-    ):
-        pending.status = BookingMemberInviteStatus.declined
+    _deactivate_member_record(db, member)
     db.commit()
     db.refresh(member)
     return serialize_member(member, include_invite_url=False)
@@ -557,6 +590,17 @@ def create_booking_invites(
         )
         if member.status == EnsembleMemberStatus.inactive:
             continue
+        linked_user = db.get(User, member.member_user_id) if member.member_user_id else None
+        if (
+            member.status == EnsembleMemberStatus.invited
+            and linked_user is not None
+            and not is_leader_managed_account(linked_user)
+        ):
+            raise HTTPException(
+                400,
+                f"{member.fullname} aún no aceptó tu invitación a la agrupación. "
+                "Podrás convocarlo cuando acepte.",
+            )
 
         invite = (
             db.query(BookingMemberInvite)
@@ -1284,6 +1328,61 @@ def respond_ensemble_invite(
     db.commit()
     db.refresh(member)
     return serialize_member(member, include_invite_url=False)
+
+@router.get("/musician/my-ensembles", response_model=list[EnsembleMemberOut])
+def list_my_ensembles(
+    db: Session = Depends(deps.get_db),
+    current_user: User = Depends(deps.get_current_user),
+):
+    """Agrupaciones a las que el músico pertenece (ya aceptó)."""
+    if current_user.role != UserRole.musician:
+        raise HTTPException(403, "No autorizado")
+    rows = (
+        db.query(EnsembleMember)
+        .filter(
+            EnsembleMember.member_user_id == current_user.id,
+            EnsembleMember.status == EnsembleMemberStatus.active,
+        )
+        .order_by(EnsembleMember.joined_at.desc())
+        .all()
+    )
+    return [serialize_member(m, include_invite_url=False) for m in rows]
+
+
+@router.post("/musician/my-ensembles/{member_id}/leave", response_model=EnsembleMemberOut)
+def leave_ensemble(
+    member_id: UUID,
+    db: Session = Depends(deps.get_db),
+    current_user: User = Depends(deps.get_current_user),
+):
+    """El integrante decide salirse de una agrupación. Pierde acceso a sus convocatorias."""
+    member = (
+        db.query(EnsembleMember)
+        .filter(
+            EnsembleMember.id == member_id,
+            EnsembleMember.member_user_id == current_user.id,
+        )
+        .with_for_update()
+        .first()
+    )
+    if not member or member.status != EnsembleMemberStatus.active:
+        raise HTTPException(404, "No perteneces a esa agrupación")
+    _deactivate_member_record(db, member)
+    member.joined_at = None
+    leader = db.get(User, member.leader_user_id)
+    if leader:
+        notify_user(
+            db,
+            user=leader,
+            type="ensemble_member_left",
+            title="Un integrante salió de tu agrupación",
+            message=f"{member.fullname} dejó tu agrupación.",
+            meta={"ensemble_member_id": str(member.id)},
+        )
+    db.commit()
+    db.refresh(member)
+    return serialize_member(member, include_invite_url=False)
+
 
 @router.get("/musician/my-income", response_model=MyMemberIncomeSummary)
 def list_my_member_income(

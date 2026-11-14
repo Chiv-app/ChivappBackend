@@ -74,6 +74,27 @@ def get_leader_musician_or_403(db: Session, user: User) -> MusicianProfile:
     return profile
 
 
+def is_ensemble_member_account(db, user: User) -> bool:
+    """True si la cuenta es de una persona que solo existe como integrante de una agrupación.
+
+    Un músico real (con su propio perfil) invitado por un líder no cuenta: sigue siendo músico y debe
+    completar su propia guía. Quien fue dado de baja tampoco cuenta.
+    """
+    has_membership = (
+        db.query(EnsembleMember.id)
+        .filter(
+            EnsembleMember.member_user_id == user.id,
+            EnsembleMember.status != EnsembleMemberStatus.inactive,
+        )
+        .first()
+        is not None
+    )
+    if not has_membership:
+        return False
+    profile = db.query(MusicianProfile.is_ensemble_only).filter(MusicianProfile.user_id == user.id).first()
+    return bool(profile and profile[0])
+
+
 def is_leader_managed_account(user: User | None) -> bool:
     """True solo si la cuenta es una cuenta sombra creada por la invitación del
     líder (sin contraseña, sin OAuth y con perfil solo de agrupación). Para
