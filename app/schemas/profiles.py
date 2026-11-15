@@ -471,6 +471,22 @@ class MusicianPublicReviewOut(BaseModel):
     created_at: datetime
 
 
+class PublicTeamMemberOut(BaseModel):
+    """Integrante activo de un grupo, tal como se muestra en su perfil público."""
+
+    name: str
+    specialties: list[str] = Field(default_factory=list)
+    # Perfil de solista publicado de ese integrante, si lo tiene.
+    profile_slug: str | None = None
+
+
+class PublicGroupLinkOut(BaseModel):
+    """Grupo publicado en el que toca esta persona."""
+
+    name: str
+    slug: str
+
+
 class MusicianProfilePublicOut(BaseModel):
     id: UUID
     stage_name: str | None = None
@@ -478,6 +494,9 @@ class MusicianProfilePublicOut(BaseModel):
     profile_type: str = "solo"
     group_size: str | None = None
     details: dict[str, Any] = Field(default_factory=dict)
+    # Integrantes activos (solo en grupos) y grupos en los que toca (solo en perfiles de solista).
+    members: list[PublicTeamMemberOut] = Field(default_factory=list)
+    plays_with: list[PublicGroupLinkOut] = Field(default_factory=list)
     bio: str | None
     genres: list[str]
     instruments: list[str]

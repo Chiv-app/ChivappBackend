@@ -48,7 +48,9 @@ from app.schemas.ensemble import (
     MyMemberIncomeItem,
     MyMemberIncomeSummary,
 )
+from app.models.musician_profile import MusicianProfile
 from app.services.booking_notifications import notify_user
+from app.services.musician_profiles import member_belongs_to_profile, members_of_profile_clause
 from app.services.email.auth_emails import (
     send_booking_member_invite_email,
     send_ensemble_invite_email,
@@ -166,9 +168,10 @@ def list_members(
     db: Session = Depends(deps.get_db),
     current_user: User = Depends(deps.get_current_user),
 ):
-    get_leader_musician_or_403(db, current_user)
+    profile = get_leader_musician_or_403(db, current_user)
     query = db.query(EnsembleMember).filter(
-        EnsembleMember.leader_user_id == current_user.id
+        EnsembleMember.leader_user_id == current_user.id,
+        members_of_profile_clause(profile),
     )
     if status:
         try:
@@ -198,13 +201,14 @@ def create_member(
     db: Session = Depends(deps.get_db),
     current_user: User = Depends(deps.get_current_user),
 ):
-    get_leader_musician_or_403(db, current_user)
+    profile = get_leader_musician_or_403(db, current_user, require_group=True)
     email = str(payload.email).lower().strip()
 
     current_count = (
         db.query(EnsembleMember.id)
         .filter(
             EnsembleMember.leader_user_id == current_user.id,
+            members_of_profile_clause(profile),
             EnsembleMember.status != EnsembleMemberStatus.inactive,
         )
         .count()
@@ -216,6 +220,7 @@ def create_member(
         db.query(EnsembleMember)
         .filter(
             EnsembleMember.leader_user_id == current_user.id,
+            members_of_profile_clause(profile),
             EnsembleMember.email == email,
         )
         .first()
@@ -263,6 +268,7 @@ def create_member(
     else:
         member = EnsembleMember(
             leader_user_id=current_user.id,
+            profile_id=profile.id,
             member_user_id=linked_id,
             email=email,
             fullname=payload.fullname,
@@ -641,6 +647,13 @@ def create_booking_invites(
         member = get_member_for_leader(
             db, leader_id=current_user.id, member_id=member_id
         )
+        # Solo se convoca a integrantes del perfil de la reserva.
+        booking_profile = db.get(MusicianProfile, booking.musician_id)
+        if booking_profile is None or not member_belongs_to_profile(member, booking_profile):
+            raise HTTPException(
+                400,
+                f"{member.fullname} no es integrante de este perfil. Elige solo integrantes de su equipo.",
+            )
         if member.status == EnsembleMemberStatus.inactive:
             continue
         linked_user = db.get(User, member.member_user_id) if member.member_user_id else None

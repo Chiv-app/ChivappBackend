@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
 from app.core.active_profile import active_profile_id
@@ -98,6 +98,102 @@ def user_has_other_published_profile(user: User, excluding: MusicianProfile | No
         p.status == ProfileStatus.published and (excluding is None or p.id != excluding.id)
         for p in getattr(user, "musician_profiles", [])
     )
+
+
+def members_of_profile_clause(profile: MusicianProfile):
+    """Condición SQL de los integrantes de un perfil (grupo).
+
+    Los integrantes anteriores a este dato no tienen perfil y cuentan para el principal de su líder.
+    """
+    from app.models.ensemble_member import EnsembleMember
+
+    clauses = [EnsembleMember.profile_id == profile.id]
+    if profile.is_primary:
+        clauses.append(
+            and_(EnsembleMember.profile_id.is_(None), EnsembleMember.leader_user_id == profile.user_id)
+        )
+    return or_(*clauses)
+
+
+def member_belongs_to_profile(member, profile: MusicianProfile) -> bool:
+    """Si el integrante pertenece a ese perfil (los de antes de este dato, al principal de su líder)."""
+    if member.profile_id is not None:
+        return member.profile_id == profile.id
+    return bool(profile.is_primary and member.leader_user_id == profile.user_id)
+
+
+def public_team(db: Session, profile: MusicianProfile) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Integrantes del grupo y grupos en los que toca la persona, para el perfil público.
+
+    Solo cuentan integrantes activos (los que aceptaron) y perfiles publicados y verificados. Nunca se
+    muestran correo, teléfono ni datos de cobro.
+    """
+    from app.models.ensemble_member import EnsembleMember, EnsembleMemberStatus
+
+    members: list[dict[str, Any]] = []
+    if (profile.profile_type or "solo") == "group":
+        rows = (
+            db.query(EnsembleMember)
+            .filter(members_of_profile_clause(profile), EnsembleMember.status == EnsembleMemberStatus.active)
+            .order_by(EnsembleMember.fullname.asc())
+            .all()
+        )
+        user_ids = [r.member_user_id for r in rows if r.member_user_id]
+        solo_slug: dict[UUID, str] = {}
+        if user_ids:
+            solos = (
+                db.query(MusicianProfile)
+                .join(User, User.id == MusicianProfile.user_id)
+                .filter(
+                    MusicianProfile.user_id.in_(user_ids),
+                    MusicianProfile.profile_type == "solo",
+                    MusicianProfile.is_ensemble_only.is_(False),
+                    MusicianProfile.status == ProfileStatus.published,
+                    MusicianProfile.slug.isnot(None),
+                    User.is_verified.is_(True),
+                )
+                .order_by(MusicianProfile.is_primary.desc(), MusicianProfile.created_at.asc())
+                .all()
+            )
+            for solo in solos:
+                solo_slug.setdefault(solo.user_id, solo.slug)
+        members = [
+            {"name": r.fullname, "specialties": list(r.specialties or []), "profile_slug": solo_slug.get(r.member_user_id)}
+            for r in rows
+        ]
+
+    plays_with: list[dict[str, Any]] = []
+    if (profile.profile_type or "solo") == "solo":
+        from sqlalchemy import and_, or_
+
+        groups = (
+            db.query(MusicianProfile)
+            .join(User, User.id == MusicianProfile.user_id)
+            .join(
+                EnsembleMember,
+                or_(
+                    EnsembleMember.profile_id == MusicianProfile.id,
+                    and_(
+                        EnsembleMember.profile_id.is_(None),
+                        EnsembleMember.leader_user_id == MusicianProfile.user_id,
+                        MusicianProfile.is_primary.is_(True),
+                    ),
+                ),
+            )
+            .filter(
+                EnsembleMember.member_user_id == profile.user_id,
+                EnsembleMember.status == EnsembleMemberStatus.active,
+                MusicianProfile.id != profile.id,
+                MusicianProfile.profile_type == "group",
+                MusicianProfile.status == ProfileStatus.published,
+                MusicianProfile.slug.isnot(None),
+                User.is_verified.is_(True),
+            )
+            .order_by(MusicianProfile.stage_name.asc())
+            .all()
+        )
+        plays_with = [{"name": g.stage_name or "", "slug": g.slug} for g in groups]
+    return members, plays_with
 
 
 def profile_summary(profile: MusicianProfile) -> dict[str, Any]:

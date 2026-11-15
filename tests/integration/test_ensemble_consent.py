@@ -32,6 +32,7 @@ def _musician(db: Session, *, published: bool = True) -> tuple[User, MusicianPro
     db.add(user)
     db.flush()
     profile = MusicianProfile(
+        profile_type="group",
         user_id=user.id,
         stage_name=f"Grupo {suffix}",
         slug=f"grupo-{suffix}",

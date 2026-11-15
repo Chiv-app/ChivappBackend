@@ -6,10 +6,12 @@ from sqlalchemy import (
     Column,
     Enum,
     ForeignKey,
+    Index,
     Numeric,
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import relationship
@@ -41,10 +43,13 @@ class EnsembleMember(Base):
 
     __tablename__ = "ensemble_member"
     __table_args__ = (
-        UniqueConstraint(
-            "leader_user_id",
+        # Un correo no se repite dentro de un mismo perfil (sí puede estar en dos grupos del mismo líder).
+        Index(
+            "uq_ensemble_member_profile_email",
+            "profile_id",
             "email",
-            name="uq_ensemble_member_leader_email",
+            unique=True,
+            postgresql_where=text("profile_id IS NOT NULL"),
         ),
     )
 
@@ -53,6 +58,14 @@ class EnsembleMember(Base):
         UUID(as_uuid=True),
         ForeignKey("user.id", ondelete="CASCADE"),
         nullable=False,
+        index=True,
+    )
+    # El perfil (grupo) al que pertenece. Los integrantes anteriores a este dato (NULL) cuentan para el
+    # perfil principal de su líder.
+    profile_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("musician_profile.id", ondelete="CASCADE"),
+        nullable=True,
         index=True,
     )
     member_user_id = Column(

@@ -14,6 +14,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.ensemble_member import EnsembleMember, EnsembleMemberStatus
+from app.models.musician_profile import MusicianProfile
 from app.models.user import User
 
 ProfileType = Literal["solo", "group"]
@@ -86,17 +87,17 @@ def clean_details(raw: dict[str, Any] | None) -> dict[str, Any]:
     return cleaned
 
 
-def count_open_members(db: Session, user: User) -> int:
-    """Integrantes que el músico tiene hoy (invitados o activos)."""
-    return (
-        db.query(func.count(EnsembleMember.id))
-        .filter(
-            EnsembleMember.leader_user_id == user.id,
-            EnsembleMember.status.in_([EnsembleMemberStatus.invited, EnsembleMemberStatus.active]),
-        )
-        .scalar()
-        or 0
+def count_open_members(db: Session, user: User, profile: MusicianProfile | None = None) -> int:
+    """Integrantes que tiene hoy el perfil (invitados o activos). Sin perfil, los de toda la persona."""
+    from app.services.musician_profiles import members_of_profile_clause
+
+    query = db.query(func.count(EnsembleMember.id)).filter(
+        EnsembleMember.leader_user_id == user.id,
+        EnsembleMember.status.in_([EnsembleMemberStatus.invited, EnsembleMemberStatus.active]),
     )
+    if profile is not None:
+        query = query.filter(members_of_profile_clause(profile))
+    return query.scalar() or 0
 
 
 def normalize_type_and_details(
@@ -107,6 +108,7 @@ def normalize_type_and_details(
     current_type: str = "solo",
     current_group_size: str | None = None,
     current_details: dict[str, Any] | None = None,
+    profile: MusicianProfile | None = None,
 ) -> dict[str, Any]:
     """Deja coherentes el tipo, el tamaño del grupo y los detalles antes de guardar.
 
@@ -123,7 +125,7 @@ def normalize_type_and_details(
         result["details"] = clean_details(result["details"])
 
     if effective_type == "solo":
-        if current_type == "group" and result.get("profile_type") == "solo" and count_open_members(db, user) > 0:
+        if current_type == "group" and result.get("profile_type") == "solo" and count_open_members(db, user, profile) > 0:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Tu perfil tiene integrantes. Quítalos antes de pasar a solista.",

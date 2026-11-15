@@ -18,6 +18,7 @@ from app.models.ensemble_member import (
     EnsembleMemberStatus,
 )
 from app.models.musician_profile import AvailabilityType, MusicianProfile
+from app.services.musician_profiles import resolve_active_profile
 from app.models.oauth_account import OAuthAccount
 from app.models.profile_status import ProfileStatus
 from app.models.user import User, UserRole
@@ -58,18 +59,22 @@ def issue_password_setup_token(member: EnsembleMember) -> str:
     return token
 
 
-def get_leader_musician_or_403(db: Session, user: User) -> MusicianProfile:
+def get_leader_musician_or_403(db: Session, user: User, *, require_group: bool = False) -> MusicianProfile:
+    """El perfil activo del líder. Con `require_group`, además debe ser un grupo (los solistas no tienen equipo)."""
     if user.role != UserRole.musician:
         raise HTTPException(403, "Solo músicos pueden gestionar integrantes")
-    profile = (
-        db.query(MusicianProfile).filter(MusicianProfile.user_id == user.id).first()
-    )
+    profile = resolve_active_profile(db, user)
     if not profile:
         raise HTTPException(400, "Completa tu perfil de músico primero")
     if profile.status != ProfileStatus.published or not user.is_verified:
         raise HTTPException(
             403,
             "Tu perfil de músico debe estar verificado para gestionar integrantes",
+        )
+    if require_group and (profile.profile_type or "solo") != "group":
+        raise HTTPException(
+            400,
+            "Solo los perfiles de grupo tienen integrantes. Cambia tu perfil a grupo en «Detalles de tu perfil».",
         )
     return profile
 

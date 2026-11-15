@@ -170,6 +170,7 @@ def test_sec14_ensemble_invite_hashes_token_and_hides_invite_url(client, db_sess
             stage_name="Mariachi Líder",
             slug="mariachi-lider",
             status=ProfileStatus.published,
+            profile_type="group",
         )
     )
     db_session.commit()

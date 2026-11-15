@@ -60,6 +60,7 @@ from app.services.musician_profiles import (
     count_user_profiles,
     list_user_profiles,
     profile_summary,
+    public_team,
     sibling_profiles,
 )
 from app.services.profile_details import normalize_type_and_details
@@ -243,7 +244,10 @@ def _to_musician_public_out(
     db: Session, profile: MusicianProfile
 ) -> MusicianProfilePublicOut:
     repertoire = repertoire_from_profile(profile)
+    team, plays_with = public_team(db, profile)
     return MusicianProfilePublicOut(
+        members=team,
+        plays_with=plays_with,
         id=profile.id,
         stage_name=profile.stage_name,
         slug=profile.slug,
@@ -633,6 +637,7 @@ def update_musician_profile(
         current_type=profile.profile_type or "solo",
         current_group_size=profile.group_size,
         current_details=profile.details,
+        profile=profile,
     )
     for priv_field, label in (("id_document_url", "documento de identidad"), ("signature_image_url", "firma")):
         val = updates.get(priv_field)

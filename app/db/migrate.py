@@ -538,6 +538,17 @@ MIGRATION_STATEMENTS = [
     """,
     "CREATE INDEX IF NOT EXISTS ix_musician_profile_user_id ON musician_profile (user_id)",
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_musician_profile_one_primary ON musician_profile (user_id) WHERE is_primary",
+    # Integrantes por perfil (grupo): los anteriores quedan en el perfil principal de su líder.
+    "ALTER TABLE ensemble_member ADD COLUMN IF NOT EXISTS profile_id UUID REFERENCES musician_profile(id) ON DELETE CASCADE",
+    "CREATE INDEX IF NOT EXISTS ix_ensemble_member_profile_id ON ensemble_member (profile_id)",
+    """
+    UPDATE ensemble_member AS em
+    SET profile_id = mp.id
+    FROM musician_profile AS mp
+    WHERE em.profile_id IS NULL AND mp.user_id = em.leader_user_id AND mp.is_primary
+    """,
+    "ALTER TABLE ensemble_member DROP CONSTRAINT IF EXISTS uq_ensemble_member_leader_email",
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_ensemble_member_profile_email ON ensemble_member (profile_id, email) WHERE profile_id IS NOT NULL",
 
     "ALTER TABLE \"user\" ADD COLUMN IF NOT EXISTS login_otp_hash VARCHAR",
     "ALTER TABLE \"user\" ADD COLUMN IF NOT EXISTS login_otp_expires_at TIMESTAMP",
