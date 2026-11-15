@@ -456,6 +456,17 @@ def _confirm_booking_notifications_and_calendar(db: Session, booking: Booking) -
 
     notify_booking_confirmed(db, musician_user, str(booking.id), contractor_user)
 
+    # Si el músico conectó su Google Calendar, la reserva confirmada se envía sola a su agenda.
+    if not booking.calendar_event_id and getattr(musician_user, "google_calendar_refresh_token", None):
+        try:
+            from app.services.calendar_service import sync_booking_calendar
+
+            event_id = sync_booking_calendar(db, str(booking.id), False, [])
+            if event_id:
+                booking.calendar_event_id = event_id
+        except Exception as exc:  # noqa: BLE001 - la agenda nunca debe frenar la confirmación del pago
+            logger.warning("No se pudo enviar la reserva a Google Calendar: %s", exc)
+
     if not booking.calendar_event_id and contractor_user and musician_user:
         from app.services.calendar_service import create_booking_event
 

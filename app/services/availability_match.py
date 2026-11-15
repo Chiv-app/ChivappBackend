@@ -108,6 +108,7 @@ def assert_no_booking_overlap(
     exclude_booking_id=None,
 ) -> None:
     profile_ids, user_id = _person_scope(db, musician_id)
+    convoked_ids: set = set()
     nearby_days = [
         event_date - timedelta(days=1),
         event_date,
@@ -141,7 +142,9 @@ def assert_no_booking_overlap(
         )
         if exclude_booking_id is not None:
             convoked = convoked.filter(Booking.id != exclude_booking_id)
-        existing_bookings = [*existing_bookings, *convoked.all()]
+        convoked_rows = convoked.all()
+        convoked_ids = {b.id for b in convoked_rows}
+        existing_bookings = [*existing_bookings, *convoked_rows]
 
     req_start, req_end = _interval_minutes(start_time, end_time)
     for other in existing_bookings:
@@ -156,7 +159,9 @@ def assert_no_booking_overlap(
         if req_start < other_end and other_start < req_end:
             raise HTTPException(
                 400,
-                "El músico ya tiene un compromiso activo en ese horario.",
+                "El músico ya tiene un compromiso como integrante en ese horario."
+                if getattr(other, "id", None) in convoked_ids
+                else "El músico ya tiene una reserva activa en ese horario.",
             )
 
 

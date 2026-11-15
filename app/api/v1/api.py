@@ -18,6 +18,7 @@ from app.api.v1.endpoints import (
     booking_location,
     support,
     calendar_auth,
+    calendar_events,
     booking_links,
 )
 
@@ -41,3 +42,4 @@ api_router.include_router(admin_email.router)
 api_router.include_router(ensemble_members.router)
 api_router.include_router(support.router)
 api_router.include_router(calendar_auth.router, prefix="/calendar-auth", tags=["calendar-auth"])
+api_router.include_router(calendar_events.router)

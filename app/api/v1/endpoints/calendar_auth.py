@@ -8,7 +8,7 @@ from app.api import deps
 from app.core.config import settings
 from app.core.jwt import create_signed_state, decode_signed_state
 from app.models.user import User
-from app.services.calendar_service import decrypt_refresh_token, encrypt_refresh_token
+from app.services.calendar_service import FREEBUSY_SCOPE, decrypt_refresh_token, encrypt_refresh_token
 
 router = APIRouter()
 
@@ -23,7 +23,8 @@ def get_auth_url(current_user: User = Depends(deps.get_current_user)):
         "client_id": settings.GOOGLE_CLIENT_ID,
         "redirect_uri": settings.GOOGLE_OAUTH_REDIRECT_URI,
         "response_type": "code",
-        "scope": "https://www.googleapis.com/auth/calendar.events",
+        # events: enviar las reservas; freebusy: leer solo las horas ocupadas (sin ver los eventos).
+        "scope": f"https://www.googleapis.com/auth/calendar.events {FREEBUSY_SCOPE}",
         "access_type": "offline",
         "prompt": "consent",
         # Ligado al usuario: un callback con el state de otra cuenta se rechaza.

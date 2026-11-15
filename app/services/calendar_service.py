@@ -1,3 +1,4 @@
+from dataclasses import dataclass, field
 import base64
 import hashlib
 import html
@@ -20,6 +21,8 @@ logger = logging.getLogger(__name__)
 CALENDAR_SYNC_STATUS_NAMES = ("payment_retained", "change_pending", "in_progress", "payment_released")
 
 SCOPES = ['https://www.googleapis.com/auth/calendar.events']
+# Permiso adicional para leer solo las horas ocupadas (sin ver el contenido de los eventos).
+FREEBUSY_SCOPE = 'https://www.googleapis.com/auth/calendar.freebusy'
 _ENC_PREFIX = "enc:v1:"
 
 
@@ -333,6 +336,53 @@ def _is_revoked_token_error(exc: Exception) -> bool:
     """Google rechazó el refresh token (revocado o vencido): hay que volver a conectar."""
     text = f"{type(exc).__name__} {exc}".lower()
     return "refresherror" in text or "invalid_grant" in text
+
+
+@dataclass
+class BusyResult:
+    connected: bool = False
+    needs_reconnect: bool = False
+    busy: list[dict[str, str]] = field(default_factory=list)
+
+
+def get_busy_blocks(user, start_dt, end_dt) -> BusyResult:
+    """Horas en que la persona ya está ocupada en su Google Calendar (solo inicio y fin, nunca el título).
+
+    Se consulta cuando se abre el calendario: no hay tareas programadas ni avisos de Google.
+    `needs_reconnect` indica que Google rechazó el permiso (conexión anterior sin el permiso de horas ocupadas
+    o acceso revocado): la persona debe volver a conectar.
+    """
+    token = getattr(user, "google_calendar_refresh_token", None)
+    if not token:
+        return BusyResult(connected=False)
+    plain = decrypt_refresh_token(token)
+    if not plain:
+        return BusyResult(connected=True, needs_reconnect=True)
+    service = _get_calendar_service_oauth(token)
+    if not service:
+        return BusyResult(connected=True, needs_reconnect=True)
+
+    from zoneinfo import ZoneInfo
+
+    lima = ZoneInfo("America/Lima")
+    body = {
+        "timeMin": start_dt.replace(tzinfo=lima).isoformat(),
+        "timeMax": end_dt.replace(tzinfo=lima).isoformat(),
+        "timeZone": "America/Lima",
+        "items": [{"id": "primary"}],
+    }
+    try:
+        response = service.freebusy().query(body=body).execute()
+    except Exception as exc:  # noqa: BLE001 - Google puede rechazar el permiso o estar caído
+        text = f"{type(exc).__name__} {exc}".lower()
+        if _is_revoked_token_error(exc) or "insufficient" in text or "403" in text or "forbidden" in text:
+            logger.info("Google Calendar rechazó la consulta de horas ocupadas: %s", type(exc).__name__)
+            return BusyResult(connected=True, needs_reconnect=True)
+        logger.warning("No se pudo consultar las horas ocupadas de Google: %s", type(exc).__name__)
+        return BusyResult(connected=True)
+
+    blocks = (response.get("calendars", {}).get("primary", {}) or {}).get("busy", []) or []
+    return BusyResult(connected=True, busy=[{"start": b["start"], "end": b["end"]} for b in blocks if "start" in b and "end" in b])
 
 
 def sync_booking_calendar(db, booking_id: str, include_contractor: bool, ensemble_member_ids: list[str]) -> str | None:
