@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, Column, Enum, ForeignKey, Integer, Numeric, String, Text, Boolean, text
+from sqlalchemy import CheckConstraint, Column, Enum, ForeignKey, Index, Integer, Numeric, String, Text, Boolean, text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import relationship
 
@@ -20,6 +20,8 @@ class AvailabilityType(str, enum.Enum):
 class MusicianProfile(Base):
     __tablename__ = "musician_profile"
     __table_args__ = (
+        # Una persona puede tener varios perfiles, pero solo uno principal.
+        Index("uq_musician_profile_one_primary", "user_id", unique=True, postgresql_where=text("is_primary")),
         CheckConstraint("profile_type IN ('solo', 'group')", name="ck_musician_profile_type"),
         CheckConstraint(
             "group_size IS NULL OR group_size IN ('2', '3', '4-5', '6-8', '9+')",
@@ -31,9 +33,11 @@ class MusicianProfile(Base):
     user_id = Column(
         UUID(as_uuid=True),
         ForeignKey("user.id", ondelete="CASCADE"),
-        unique=True,
+        index=True,
         nullable=False,
     )
+    # El perfil con el que nació la cuenta. Sus datos de cuenta (usuario y enlace) van de la mano.
+    is_primary = Column(Boolean, nullable=False, default=True, server_default=text("true"))
     is_ensemble_only = Column(Boolean, default=False, nullable=False)
 
     # Cómo trabaja el artista: «solo» (solista) o «group» (varias personas). Solo un grupo tiene equipo.
@@ -116,7 +120,7 @@ class MusicianProfile(Base):
     created_at = Column(UTCDateTime, default=datetime.utcnow)
     updated_at = Column(UTCDateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    user = relationship("User", back_populates="musician_profile")
+    user = relationship("User", back_populates="musician_profiles")
 
     @property
     def username(self) -> str | None:

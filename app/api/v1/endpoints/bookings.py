@@ -80,6 +80,7 @@ from app.services.booking_notifications import (
     notify_booking_updated,
 )
 from app.services.musician_booking import create_musician_booking
+from app.services.musician_profiles import user_profile_ids
 from app.services.uploads import upload_exists
 
 
@@ -427,11 +428,12 @@ def list_bookings(
         ]
 
     if current_user.role == UserRole.musician:
-        musician = get_musician_profile_or_400(db, current_user)
+        get_musician_profile_or_400(db, current_user)
+        # La lista reúne las reservas de todos los perfiles de la persona.
         owned = (
             db.query(Booking)
             .options(*booking_parties_load_options())
-            .filter(Booking.musician_id == musician.id)
+            .filter(Booking.musician_id.in_(user_profile_ids(db, current_user)))
             .all()
         )
         owned_ids = {b.id for b in owned}

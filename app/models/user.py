@@ -60,8 +60,20 @@ class User(Base):
     
     google_calendar_refresh_token = Column(String, nullable=True)
 
+    # Todos los perfiles artísticos de la persona (hasta el límite), el principal primero.
+    musician_profiles = relationship(
+        "MusicianProfile",
+        back_populates="user",
+        order_by="(MusicianProfile.is_primary.desc(), MusicianProfile.created_at.asc())",
+    )
+
+    # El perfil principal: el que usa el código que aún piensa en «el perfil de la persona».
     musician_profile = relationship(
-        "MusicianProfile", back_populates="user", uselist=False
+        "MusicianProfile",
+        primaryjoin="and_(User.id == MusicianProfile.user_id, MusicianProfile.is_primary.is_(True))",
+        foreign_keys="MusicianProfile.user_id",
+        uselist=False,
+        viewonly=True,
     )
 
     contractor_profile = relationship(

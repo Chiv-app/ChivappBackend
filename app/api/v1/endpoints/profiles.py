@@ -20,6 +20,7 @@ from app.models.musician_media import MusicianMedia, MediaType
 from app.models.contractor_profile import ContractorProfile
 from app.models.profile_status import ProfileStatus
 from app.schemas.profiles import (
+    MusicianProfileSummaryOut,
     MusicianProfileCreate,
     MusicianProfileUpdate,
     MusicianProfileOut,
@@ -52,6 +53,15 @@ from app.services.profile_validation import (
     validate_musician_profile,
 )
 from app.services.profile_visibility import is_musician_listed_publicly
+from app.services.musician_profiles import (
+    MAX_PROFILES_PER_USER,
+    PERSON_FIELDS,
+    copy_person_data,
+    count_user_profiles,
+    list_user_profiles,
+    profile_summary,
+    sibling_profiles,
+)
 from app.services.profile_details import normalize_type_and_details
 from app.services.repertoire import prepare_musician_updates, repertoire_from_profile
 from app.services.uniqueness import (
@@ -490,12 +500,7 @@ def create_musician_profile(
             detail="Solo usuarios con rol 'musician' pueden crear este perfil",
         )
 
-    existing = (
-        db.query(MusicianProfile)
-        .filter(MusicianProfile.user_id == current_user.id)
-        .first()
-    )
-    if existing:
+    if count_user_profiles(db, current_user) > 0:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="El perfil de músico ya existe. Debes actualizarlo.",
@@ -524,6 +529,7 @@ def create_musician_profile(
 
     profile = MusicianProfile(
         user_id=current_user.id,
+        is_primary=True,
         status=ProfileStatus.draft,
         **data,
     )
@@ -532,6 +538,70 @@ def create_musician_profile(
     db.commit()
     db.refresh(profile)
 
+    return profile
+
+
+@router.get("/musician/mine", response_model=list[MusicianProfileSummaryOut])
+def list_my_musician_profiles(
+    current_user: User = Depends(deps.get_current_user),
+    db: Session = Depends(deps.get_db),
+):
+    """Los perfiles artísticos de la persona, el principal primero (alimenta el selector de perfil)."""
+    if current_user.role != UserRole.musician:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Solo usuarios con rol 'musician' tienen perfiles de músico",
+        )
+    return [profile_summary(p) for p in list_user_profiles(db, current_user)]
+
+
+@router.post(
+    "/musician/additional",
+    response_model=MusicianProfileOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_additional_musician_profile(
+    current_user: User = Depends(deps.get_current_user),
+    db: Session = Depends(deps.get_db),
+):
+    """Crea un perfil artístico adicional en borrador. Reutiliza documento, firma y cobro de la persona."""
+    if current_user.role != UserRole.musician:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Solo usuarios con rol 'musician' pueden crear perfiles",
+        )
+    profiles = list_user_profiles(db, current_user)
+    if not profiles:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Primero crea tu perfil principal.",
+        )
+    if len(profiles) >= MAX_PROFILES_PER_USER:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Puedes tener hasta {MAX_PROFILES_PER_USER} perfiles.",
+        )
+    primary = profiles[0]
+    if primary.status == ProfileStatus.draft:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Termina y envía tu primer perfil antes de agregar otro.",
+        )
+    # Un solo borrador adicional a la vez: evita acumular perfiles vacíos.
+    for existing in profiles[1:]:
+        if existing.status == ProfileStatus.draft and not (existing.stage_name or "").strip():
+            return existing
+
+    profile = MusicianProfile(
+        user_id=current_user.id,
+        is_primary=False,
+        status=ProfileStatus.draft,
+        availability_type=AvailabilityType.both,
+    )
+    copy_person_data(primary, profile)
+    db.add(profile)
+    db.commit()
+    db.refresh(profile)
     return profile
 
 
@@ -572,6 +642,9 @@ def update_musician_profile(
     new_username_val: str | None = None
     if "username" in updates:
         raw_username = updates.pop("username")
+        # El usuario es de la cuenta y va de la mano del perfil principal: un perfil adicional no lo cambia.
+        if not profile.is_primary:
+            raw_username = None
         if raw_username is not None and raw_username.strip():
             new_username_val = assert_username_unique(
                 db,
@@ -602,7 +675,10 @@ def update_musician_profile(
             )
             updates["stage_name"] = stage_name
             # Keep profile slug aligned with username if defined; otherwise fallback to stage_name slug
-            if new_username_val:
+            if not profile.is_primary:
+                # Un perfil adicional tiene su propio enlace, derivado de su nombre artístico.
+                updates["slug"] = next_available_musician_slug(db, stage_name, exclude_profile_id=profile.id)
+            elif new_username_val:
                 updates["slug"] = new_username_val
             elif current_user.username:
                 updates["slug"] = current_user.username
@@ -665,6 +741,12 @@ def update_musician_profile(
             send_payout_data_changed_email(db, current_user, changed_payout_fields)
         except Exception as exc:  # el aviso nunca debe impedir guardar el perfil
             logger.warning("No se pudo enviar el aviso de cambio de datos de cobro: %s", exc)
+
+    # Documento, firma y cobro son de la persona: se copian a sus otros perfiles.
+    person_updates = {k: v for k, v in updates.items() if k in PERSON_FIELDS}
+    if person_updates:
+        for sibling in sibling_profiles(db, profile):
+            demote_published_profile_if_changed(sibling, person_updates)
 
     videos = profile.videos or []
     showreel = getattr(profile, "showreel_video_url", None)

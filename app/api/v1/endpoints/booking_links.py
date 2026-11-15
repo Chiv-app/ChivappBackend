@@ -10,6 +10,7 @@ from app.api.v1.endpoints.auth import (
     verify_login_otp_or_raise,
 )
 from app.services.availability_match import assert_musician_available
+from app.services.musician_profiles import resolve_active_profile
 from app.services.booking_contract import create_booking_contract
 from app.services.email.auth_emails import send_email_verification
 from sqlalchemy.orm import Session
@@ -93,7 +94,7 @@ def create_booking_link(
     if current_user.role != UserRole.musician:
         raise HTTPException(status_code=403, detail="Sólo los músicos pueden crear links de pago.")
         
-    musician_profile = db.query(MusicianProfile).filter(MusicianProfile.user_id == current_user.id).first()
+    musician_profile = resolve_active_profile(db, current_user)
     _assert_musician_eligible_for_link(musician_profile, for_owner=True)
 
     lima_now = datetime.now(ZoneInfo("America/Lima"))

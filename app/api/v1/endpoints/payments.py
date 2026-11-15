@@ -46,6 +46,7 @@ from app.services.payment_evidence import (
     normalize_evidence_urls,
 )
 from app.services import mercadopago_service
+from app.services.musician_profiles import resolve_active_profile
 from app.services.settlement import musician_released_amount
 from app.services.uploads import assert_private_upload_owned
 
@@ -1299,11 +1300,7 @@ def request_payout(
     if current_user.role != UserRole.musician:
         raise HTTPException(403, "Solo los músicos pueden solicitar retiro")
 
-    musician = (
-        db.query(MusicianProfile)
-        .filter(MusicianProfile.user_id == current_user.id)
-        .first()
-    )
+    musician = resolve_active_profile(db, current_user)
     if not musician:
         raise HTTPException(400, "Completa tu perfil de músico primero")
     if not current_user.is_verified:

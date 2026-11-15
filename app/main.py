@@ -13,6 +13,7 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from app.api import deps
 from app.api.v1.api import api_router
 from app.api.v1.endpoints import private_files
+from app.core.active_profile import ActiveProfileMiddleware
 from app.core.config import settings
 from app.core.limiter import limiter, rate_limit_exceeded_handler
 from app.core.security import SecurityHeadersMiddleware
@@ -83,6 +84,7 @@ app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
 
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(ActiveProfileMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.BACKEND_CORS_ORIGINS,

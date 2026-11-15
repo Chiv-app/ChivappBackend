@@ -510,6 +510,34 @@ MIGRATION_STATEMENTS = [
     "ALTER TABLE musician_profile ADD COLUMN IF NOT EXISTS profile_type VARCHAR(16) NOT NULL DEFAULT 'solo'",
     "ALTER TABLE musician_profile ADD COLUMN IF NOT EXISTS group_size VARCHAR(8)",
     "ALTER TABLE musician_profile ADD COLUMN IF NOT EXISTS details JSONB NOT NULL DEFAULT '{}'::jsonb",
+    # Varios perfiles por persona: se quita la unicidad de user_id y se marca uno como principal.
+    "ALTER TABLE musician_profile ADD COLUMN IF NOT EXISTS is_primary BOOLEAN NOT NULL DEFAULT TRUE",
+    """
+    DO $$
+    DECLARE r RECORD;
+    BEGIN
+        FOR r IN
+            SELECT c.conname FROM pg_constraint c
+            WHERE c.conrelid = 'musician_profile'::regclass AND c.contype = 'u'
+              AND array_length(c.conkey, 1) = 1
+              AND c.conkey[1] = (SELECT attnum FROM pg_attribute WHERE attrelid = 'musician_profile'::regclass AND attname = 'user_id')
+        LOOP
+            EXECUTE format('ALTER TABLE musician_profile DROP CONSTRAINT %I', r.conname);
+        END LOOP;
+        FOR r IN
+            SELECT i.indexrelid::regclass::text AS idx
+            FROM pg_index i
+            WHERE i.indrelid = 'musician_profile'::regclass AND i.indisunique AND NOT i.indisprimary
+              AND i.indpred IS NULL AND i.indnatts = 1
+              AND i.indkey[0] = (SELECT attnum FROM pg_attribute WHERE attrelid = 'musician_profile'::regclass AND attname = 'user_id')
+              AND NOT EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conindid = i.indexrelid)
+        LOOP
+            EXECUTE format('DROP INDEX %s', r.idx);
+        END LOOP;
+    END $$;
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_musician_profile_user_id ON musician_profile (user_id)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_musician_profile_one_primary ON musician_profile (user_id) WHERE is_primary",
 
     "ALTER TABLE \"user\" ADD COLUMN IF NOT EXISTS login_otp_hash VARCHAR",
     "ALTER TABLE \"user\" ADD COLUMN IF NOT EXISTS login_otp_expires_at TIMESTAMP",

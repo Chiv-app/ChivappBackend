@@ -13,6 +13,7 @@ from app.models.ensemble_member import (
     EnsembleMemberStatus,
 )
 from app.models.musician_profile import MusicianProfile
+from app.services.musician_profiles import resolve_active_profile, user_owns_profile
 from app.models.profile_status import ProfileStatus
 from app.models.user import User, UserRole
 from app.schemas.booking import BookingOut
@@ -115,13 +116,10 @@ def get_musician_profile(
     db: Session,
     user: User,
 ) -> MusicianProfile | None:
+    """El perfil activo del músico (el elegido por la app o el principal)."""
     if user.role != UserRole.musician:
         return None
-    return (
-        db.query(MusicianProfile)
-        .filter(MusicianProfile.user_id == user.id)
-        .first()
-    )
+    return resolve_active_profile(db, user)
 
 
 def get_contractor_profile_or_400(
@@ -272,8 +270,7 @@ def resolve_booking_viewer_role(
     if contractor and booking.contractor_id == contractor.id:
         return "owner"
 
-    musician = get_musician_profile(db, user)
-    if musician and booking.musician_id == musician.id:
+    if user.role == UserRole.musician and user_owns_profile(db, user, booking.musician_id):
         return "owner"
 
     if get_booking_member_invite(db, booking, user):
@@ -292,8 +289,7 @@ def assert_booking_participant(
     if contractor and booking.contractor_id == contractor.id:
         return
 
-    musician = get_musician_profile(db, user)
-    if musician and booking.musician_id == musician.id:
+    if user.role == UserRole.musician and user_owns_profile(db, user, booking.musician_id):
         return
 
     raise HTTPException(status_code=403, detail="No autorizado")
@@ -348,7 +344,13 @@ def assert_booking_musician_owner(
     booking: Booking,
     user: User,
 ) -> MusicianProfile:
-    musician = get_musician_profile_or_400(db, user)
-    if booking.musician_id != musician.id:
+    # La reserva es de un perfil concreto: basta con que ese perfil sea de esta persona.
+    get_musician_profile_or_400(db, user)
+    musician = (
+        db.query(MusicianProfile)
+        .filter(MusicianProfile.id == booking.musician_id, MusicianProfile.user_id == user.id)
+        .first()
+    )
+    if musician is None:
         raise HTTPException(status_code=403, detail="No autorizado")
     return musician

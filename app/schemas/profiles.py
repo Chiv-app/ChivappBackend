@@ -337,6 +337,7 @@ class MusicianProfileOut(MusicianProfileBase):
     user_id: UUID
     # Salida tolerante: un dato antiguo que ya no encaje con el esquema no debe romper el perfil.
     details: dict[str, Any] = Field(default_factory=dict)
+    is_primary: bool = True
     repertoire: list[RepertoireItemOut] = Field(default_factory=list)
     stage_name: str | None = None
     slug: str | None = None
@@ -394,6 +395,19 @@ class MusicianProfileOut(MusicianProfileBase):
         self.songs = songs
         self.repertoire = repertoire
         return self
+
+
+class MusicianProfileSummaryOut(BaseModel):
+    """Una fila del selector de perfiles de la persona."""
+
+    id: UUID
+    stage_name: str | None = None
+    slug: str | None = None
+    profile_type: str = "solo"
+    group_size: str | None = None
+    status: ProfileStatus
+    is_primary: bool = False
+    profile_image_url: str | None = None
 
 
 class MusicianProfileListOut(BaseModel):

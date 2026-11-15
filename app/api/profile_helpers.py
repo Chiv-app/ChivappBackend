@@ -5,21 +5,20 @@ from app.models.contractor_profile import ContractorProfile
 from app.models.musician_profile import AvailabilityType, MusicianProfile
 from app.models.profile_status import ProfileStatus
 from app.models.user import User, UserRole
+from app.services.musician_profiles import resolve_active_profile, user_has_other_published_profile
 from app.services.uniqueness import next_available_musician_slug, next_available_stage_name
 
 
 def get_or_create_musician_profile(db: Session, user: User) -> MusicianProfile:
-    profile = (
-        db.query(MusicianProfile)
-        .filter(MusicianProfile.user_id == user.id)
-        .first()
-    )
+    """El perfil activo de la persona (el elegido por la app o el principal); si no tiene ninguno, crea el principal."""
+    profile = resolve_active_profile(db, user)
     if profile:
         return profile
 
     stage_name = next_available_stage_name(db, user.fullname)
     profile = MusicianProfile(
         user_id=user.id,
+        is_primary=True,
         stage_name=stage_name,
         slug=next_available_musician_slug(db, stage_name),
         status=ProfileStatus.draft,
@@ -103,7 +102,8 @@ def demote_published_profile_if_changed(profile, updates: dict) -> bool:
         profile.published_at = None
         profile.rejection_reason = None
         if getattr(profile, "user", None) is not None:
-            profile.user.is_verified = False
+            # La cuenta sigue verificada mientras la persona tenga otro perfil publicado.
+            profile.user.is_verified = user_has_other_published_profile(profile.user, profile)
         return True
     return False
 
@@ -117,7 +117,7 @@ def demote_published_profile(profile) -> bool:
     profile.published_at = None
     profile.rejection_reason = None
     if getattr(profile, "user", None) is not None:
-        profile.user.is_verified = False
+        profile.user.is_verified = user_has_other_published_profile(profile.user, profile)
     return True
 
 
