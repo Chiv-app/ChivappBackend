@@ -506,6 +506,10 @@ MIGRATION_STATEMENTS = [
     """,
     # Integrantes
     "ALTER TABLE musician_profile ADD COLUMN IF NOT EXISTS is_ensemble_only BOOLEAN NOT NULL DEFAULT FALSE",
+    # Tipo de perfil (solista o grupo) y datos de detalle (app/services/profile_details.py).
+    "ALTER TABLE musician_profile ADD COLUMN IF NOT EXISTS profile_type VARCHAR(16) NOT NULL DEFAULT 'solo'",
+    "ALTER TABLE musician_profile ADD COLUMN IF NOT EXISTS group_size VARCHAR(8)",
+    "ALTER TABLE musician_profile ADD COLUMN IF NOT EXISTS details JSONB NOT NULL DEFAULT '{}'::jsonb",
 
     "ALTER TABLE \"user\" ADD COLUMN IF NOT EXISTS login_otp_hash VARCHAR",
     "ALTER TABLE \"user\" ADD COLUMN IF NOT EXISTS login_otp_expires_at TIMESTAMP",

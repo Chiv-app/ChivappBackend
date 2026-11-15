@@ -52,6 +52,7 @@ from app.services.profile_validation import (
     validate_musician_profile,
 )
 from app.services.profile_visibility import is_musician_listed_publicly
+from app.services.profile_details import normalize_type_and_details
 from app.services.repertoire import prepare_musician_updates, repertoire_from_profile
 from app.services.uniqueness import (
     assert_document_number_unique,
@@ -152,6 +153,8 @@ def _to_musician_list_out(db: Session, profile: MusicianProfile) -> MusicianProf
         id=profile.id,
         stage_name=profile.stage_name,
         slug=profile.slug,
+        profile_type=profile.profile_type or "solo",
+        group_size=profile.group_size,
         bio=profile.bio,
         genres=profile.genres or [],
         instruments=profile.instruments or [],
@@ -234,6 +237,9 @@ def _to_musician_public_out(
         id=profile.id,
         stage_name=profile.stage_name,
         slug=profile.slug,
+        profile_type=profile.profile_type or "solo",
+        group_size=profile.group_size,
+        details=profile.details or {},
         bio=profile.bio,
         genres=profile.genres or [],
         instruments=profile.instruments or [],
@@ -498,6 +504,7 @@ def create_musician_profile(
     from app.services.uploads import assert_private_upload_owned
 
     data = prepare_musician_updates(payload.model_dump())
+    data = normalize_type_and_details(db, current_user, data)
     for priv_field, label in (("id_document_url", "documento de identidad"), ("signature_image_url", "firma")):
         val = data.get(priv_field)
         if val:
@@ -549,6 +556,14 @@ def update_musician_profile(
     from app.services.uploads import assert_private_upload_owned
 
     updates = prepare_musician_updates(payload.model_dump(exclude_unset=True))
+    updates = normalize_type_and_details(
+        db,
+        current_user,
+        updates,
+        current_type=profile.profile_type or "solo",
+        current_group_size=profile.group_size,
+        current_details=profile.details,
+    )
     for priv_field, label in (("id_document_url", "documento de identidad"), ("signature_image_url", "firma")):
         val = updates.get(priv_field)
         if val:

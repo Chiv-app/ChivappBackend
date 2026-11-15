@@ -138,6 +138,8 @@ def search_musicians(
                 rating_count=int(m.rating_count) if m.rating_count is not None else None,
                 main_image_url=main_image_by_musician.get(m.id),
                 is_verified=m.user.is_verified,
+                profile_type=m.profile_type or "solo",
+                group_size=m.group_size,
             )
         )
 

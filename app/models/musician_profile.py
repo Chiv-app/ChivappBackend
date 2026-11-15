@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, Enum, ForeignKey, Integer, Numeric, String, Text, Boolean
+from sqlalchemy import CheckConstraint, Column, Enum, ForeignKey, Integer, Numeric, String, Text, Boolean, text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import relationship
 
@@ -19,6 +19,13 @@ class AvailabilityType(str, enum.Enum):
 
 class MusicianProfile(Base):
     __tablename__ = "musician_profile"
+    __table_args__ = (
+        CheckConstraint("profile_type IN ('solo', 'group')", name="ck_musician_profile_type"),
+        CheckConstraint(
+            "group_size IS NULL OR group_size IN ('2', '3', '4-5', '6-8', '9+')",
+            name="ck_musician_profile_group_size",
+        ),
+    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(
@@ -28,6 +35,13 @@ class MusicianProfile(Base):
         nullable=False,
     )
     is_ensemble_only = Column(Boolean, default=False, nullable=False)
+
+    # Cómo trabaja el artista: «solo» (solista) o «group» (varias personas). Solo un grupo tiene equipo.
+    profile_type = Column(String(16), nullable=False, default="solo", server_default="solo")
+    # Cuántas personas son (solo en grupos): "2", "3", "4-5", "6-8" o "9+".
+    group_size = Column(String(8), nullable=True)
+    # Datos opcionales validados (app/services/profile_details.py): eventos, show, reservas, experiencia…
+    details = Column(JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb"))
 
     stage_name = Column(String, nullable=True)
     # Slug único derivado de stage_name, para URLs públicas legibles

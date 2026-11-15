@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 from decimal import Decimal
 
@@ -6,6 +7,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.models.musician_profile import AvailabilityType
 from app.models.profile_status import ProfileStatus
+from app.services.profile_details import GroupSize, ProfileDetails, ProfileType
 
 
 class PlatformStatsOut(BaseModel):
@@ -122,6 +124,9 @@ def validate_private_upload_url(value: str | None) -> str | None:
 
 class MusicianProfileBase(BaseModel):
     is_ensemble_only: bool = False
+    profile_type: ProfileType = "solo"
+    group_size: GroupSize | None = None
+    details: ProfileDetails = Field(default_factory=ProfileDetails)
     stage_name: str | None = None
     bio: str | None = None
     genres: list[str] = Field(default_factory=list)
@@ -248,6 +253,9 @@ class MusicianProfileUpdate(BaseModel):
     def _validate_update_url_lists(cls, value):
         return _validate_safe_public_url_list(value)
     is_ensemble_only: bool | None = None
+    profile_type: ProfileType | None = None
+    group_size: GroupSize | None = None
+    details: ProfileDetails | None = None
 
     @field_validator("id_document_url", "signature_image_url", mode="before")
     @classmethod
@@ -327,6 +335,8 @@ def _sync_songs_and_repertoire(
 class MusicianProfileOut(MusicianProfileBase):
     id: UUID
     user_id: UUID
+    # Salida tolerante: un dato antiguo que ya no encaje con el esquema no debe romper el perfil.
+    details: dict[str, Any] = Field(default_factory=dict)
     repertoire: list[RepertoireItemOut] = Field(default_factory=list)
     stage_name: str | None = None
     slug: str | None = None
@@ -373,6 +383,11 @@ class MusicianProfileOut(MusicianProfileBase):
     def normalize_list_fields(cls, value):
         return value or []
 
+    @field_validator("details", mode="before")
+    @classmethod
+    def _normalize_details(cls, value):
+        return value or {}
+
     @model_validator(mode="after")
     def sync_repertoire(self):
         songs, repertoire = _sync_songs_and_repertoire(self.songs, self.repertoire)
@@ -385,6 +400,8 @@ class MusicianProfileListOut(BaseModel):
     id: UUID
     stage_name: str | None = None
     slug: str | None = None
+    profile_type: str = "solo"
+    group_size: str | None = None
     bio: str | None = None
     genres: list[str]
     instruments: list[str]
@@ -444,6 +461,9 @@ class MusicianProfilePublicOut(BaseModel):
     id: UUID
     stage_name: str | None = None
     slug: str | None = None
+    profile_type: str = "solo"
+    group_size: str | None = None
+    details: dict[str, Any] = Field(default_factory=dict)
     bio: str | None
     genres: list[str]
     instruments: list[str]

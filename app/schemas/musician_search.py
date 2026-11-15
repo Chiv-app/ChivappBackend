@@ -30,5 +30,7 @@ class MusicianSearchResult(BaseModel):
     rating_count: int | None
     main_image_url: str | None = None
     is_verified: bool = True
+    profile_type: str = "solo"
+    group_size: str | None = None
 
     model_config = {"from_attributes": False}

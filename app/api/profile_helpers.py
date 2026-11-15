@@ -83,6 +83,10 @@ NON_DEMOTING_FIELDS = {
 }
 
 
+# Datos que la persona completa por su cuenta (tipo, tamaño del grupo y detalles): no obligan a revisar de nuevo.
+SELF_SERVICE_FIELDS = frozenset({"profile_type", "group_size", "details"})
+
+
 def demote_published_profile_if_changed(profile, updates: dict) -> bool:
     """If a published profile receives real changes, return it to draft for re-review."""
     was_published = profile.status == ProfileStatus.published
@@ -90,7 +94,7 @@ def demote_published_profile_if_changed(profile, updates: dict) -> bool:
     for field, value in updates.items():
         current = getattr(profile, field, None)
         if not _profile_values_equal(current, value):
-            if field not in NON_DEMOTING_FIELDS:
+            if field not in NON_DEMOTING_FIELDS and field not in SELF_SERVICE_FIELDS:
                 changed = True
         setattr(profile, field, value)
 
