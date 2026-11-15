@@ -585,6 +585,9 @@ class MusicianProfileAdminOut(MusicianProfileOut):
     user_email: str | None = None
     user_fullname: str | None = None
     user_phone: str | None = None
+    # Los demás perfiles de la misma persona: la identidad se verifica una sola vez, el contenido por perfil.
+    other_profiles: list[MusicianProfileSummaryOut] = Field(default_factory=list)
+    identity_already_verified: bool = False
 
 
 class MusicianContractGenerateOut(BaseModel):

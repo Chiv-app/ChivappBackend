@@ -12,7 +12,9 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.models.booking import Booking, BookingStatus
+from app.models.ensemble_member import BookingMemberInvite, BookingMemberInviteStatus, EnsembleMember
 from app.models.musician_availability import MusicianAvailability
+from app.models.musician_profile import MusicianProfile
 
 ACTIVE_OVERLAP_STATUSES = (
     BookingStatus.payment_retained,
@@ -82,6 +84,20 @@ def _interval_minutes(start_time: time, end_time: time | None = None) -> tuple[i
     return start_min, end_min
 
 
+def _person_scope(db: Session, musician_id) -> tuple[list, object | None]:
+    """Los perfiles de la persona dueña de este perfil y su id de cuenta.
+
+    La agenda es de la persona: una fecha ocupada en un perfil queda ocupada en todos los demás.
+    """
+    from uuid import UUID
+
+    user_id = db.query(MusicianProfile.user_id).filter(MusicianProfile.id == musician_id).scalar()
+    if not isinstance(user_id, UUID):
+        return [musician_id], None
+    ids = [pid for (pid,) in db.query(MusicianProfile.id).filter(MusicianProfile.user_id == user_id).all()]
+    return (ids or [musician_id]), user_id
+
+
 def assert_no_booking_overlap(
     db: Session,
     musician_id,
@@ -91,15 +107,15 @@ def assert_no_booking_overlap(
     *,
     exclude_booking_id=None,
 ) -> None:
+    profile_ids, user_id = _person_scope(db, musician_id)
+    nearby_days = [
+        event_date - timedelta(days=1),
+        event_date,
+        event_date + timedelta(days=1),
+    ]
     query = db.query(Booking).filter(
-        Booking.musician_id == musician_id,
-        Booking.event_date.in_(
-            [
-                event_date - timedelta(days=1),
-                event_date,
-                event_date + timedelta(days=1),
-            ]
-        ),
+        Booking.musician_id.in_(profile_ids),
+        Booking.event_date.in_(nearby_days),
         Booking.status.in_(ACTIVE_OVERLAP_STATUSES),
     )
     if exclude_booking_id is not None:
@@ -108,6 +124,24 @@ def assert_no_booking_overlap(
     existing_bookings = query.all()
     if not isinstance(existing_bookings, list):
         return
+
+    # También ocupan la agenda los eventos de otros grupos a los que la persona aceptó ir como integrante.
+    if user_id is not None:
+        convoked = (
+            db.query(Booking)
+            .join(BookingMemberInvite, BookingMemberInvite.booking_id == Booking.id)
+            .join(EnsembleMember, EnsembleMember.id == BookingMemberInvite.ensemble_member_id)
+            .filter(
+                EnsembleMember.member_user_id == user_id,
+                BookingMemberInvite.status == BookingMemberInviteStatus.accepted,
+                Booking.musician_id.notin_(profile_ids),
+                Booking.event_date.in_(nearby_days),
+                Booking.status.in_(ACTIVE_OVERLAP_STATUSES),
+            )
+        )
+        if exclude_booking_id is not None:
+            convoked = convoked.filter(Booking.id != exclude_booking_id)
+        existing_bookings = [*existing_bookings, *convoked.all()]
 
     req_start, req_end = _interval_minutes(start_time, end_time)
     for other in existing_bookings:
@@ -122,7 +156,7 @@ def assert_no_booking_overlap(
         if req_start < other_end and other_start < req_end:
             raise HTTPException(
                 400,
-                "El músico ya tiene una reserva activa en ese horario.",
+                "El músico ya tiene un compromiso activo en ese horario.",
             )
 
 

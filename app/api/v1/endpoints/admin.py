@@ -11,6 +11,7 @@ from app.core.config import settings
 from app.models.booking import Booking, BookingStatus
 from app.models.contractor_profile import ContractorProfile
 from app.models.musician_profile import MusicianProfile
+from app.services.musician_profiles import profile_summary
 from app.models.payment import Payment, PaymentStatus
 from app.models.payout_request import PayoutRequest, PayoutRequestBooking
 from app.models.profile_status import ProfileStatus
@@ -51,6 +52,7 @@ from app.schemas.settlement import (
 from app.schemas.profiles import (
     ContractorProfileAdminOut,
     MusicianProfileAdminOut,
+    MusicianProfileSummaryOut,
     ProfileReviewAction,
 )
 from app.services.booking_notifications import (
@@ -105,6 +107,9 @@ def _musician_admin_out(profile: MusicianProfile) -> MusicianProfileAdminOut:
         out.user_email = profile.user.email
         out.user_fullname = profile.user.fullname
         out.user_phone = profile.user.phone
+        others = [p for p in profile.user.musician_profiles if p.id != profile.id]
+        out.other_profiles = [MusicianProfileSummaryOut(**profile_summary(p)) for p in others]
+        out.identity_already_verified = any(p.status == ProfileStatus.published for p in others)
     return out
 
 

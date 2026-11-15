@@ -396,3 +396,119 @@ def test_user_relationships_expose_the_primary_and_the_full_list(db_session: Ses
     assert loaded.musician_profile.id == primary.id
     assert [p.id for p in loaded.musician_profiles] == [primary.id, extra.id]
     assert db_session.execute(text("SELECT count(*) FROM musician_profile WHERE user_id = :u"), {"u": user.id}).scalar() == 2
+
+
+def _admin(db: Session) -> User:
+    admin = User(
+        email=f"admin_{uuid.uuid4().hex[:8]}@test.com",
+        fullname="Admin",
+        role=UserRole.admin,
+        is_active=True,
+        is_verified=True,
+        email_verified_at=datetime.utcnow(),
+    )
+    db.add(admin)
+    db.commit()
+    return admin
+
+
+def test_the_admin_sees_the_other_profiles_of_the_same_person(client: TestClient, db_session: Session):
+    user, primary = _musician(db_session)
+    extra = MusicianProfile(
+        user_id=user.id,
+        is_primary=False,
+        stage_name="Los Hermanos Quispe",
+        slug="los-hermanos-quispe",
+        profile_type="group",
+        status=ProfileStatus.pending_review,
+        availability_type=AvailabilityType.both,
+    )
+    db_session.add(extra)
+    db_session.commit()
+    admin = _admin(db_session)
+    client.cookies.clear()
+    client.cookies.set("access_token", create_access_token(subject=str(admin.id), role="admin", version=admin.token_version or 0))
+
+    pending = client.get(f"/api/v1/admin/musicians/{extra.id}")
+
+    assert pending.status_code == 200, pending.text
+    body = pending.json()
+    assert [p["id"] for p in body["other_profiles"]] == [str(primary.id)]
+    assert body["other_profiles"][0]["is_primary"] is True
+    # El perfil principal ya está publicado: la identidad de la persona ya se verificó.
+    assert body["identity_already_verified"] is True
+
+    first = client.get(f"/api/v1/admin/musicians/{primary.id}").json()
+    assert [p["id"] for p in first["other_profiles"]] == [str(extra.id)]
+    assert first["identity_already_verified"] is False
+
+
+def test_a_booking_in_one_profile_blocks_the_same_time_in_the_others(db_session: Session):
+    from fastapi import HTTPException
+
+    from app.services.availability_match import assert_musician_available
+
+    user, primary = _musician(db_session)
+    sibling = MusicianProfile(
+        user_id=user.id, is_primary=False, stage_name="Mi grupo", slug="mi-grupo", status=ProfileStatus.published, availability_type=AvailabilityType.both
+    )
+    db_session.add(sibling)
+    db_session.commit()
+    booking = _booking(db_session, primary, days=20)
+    stranger, stranger_profile = _musician(db_session)
+
+    # 18:00 a 20:00 ocupado en el perfil principal: el otro perfil de la misma persona también lo está.
+    with pytest.raises(HTTPException) as busy:
+        assert_musician_available(db_session, sibling.id, booking.event_date, time(19, 0))
+    assert busy.value.status_code == 400
+    # A otra hora, o con el perfil de otra persona, no hay choque.
+    assert_musician_available(db_session, sibling.id, booking.event_date, time(22, 0))
+    assert_musician_available(db_session, stranger_profile.id, booking.event_date, time(19, 0))
+    # La propia reserva no cuenta contra sí misma (cambios y reaperturas).
+    assert_musician_available(db_session, primary.id, booking.event_date, time(19, 0), exclude_booking_id=booking.id)
+    assert stranger.id != user.id
+
+
+def test_an_accepted_convocation_to_another_group_blocks_the_agenda_but_a_pending_one_does_not(db_session: Session):
+    from fastapi import HTTPException
+
+    from app.models.ensemble_member import (
+        BookingMemberInvite,
+        BookingMemberInviteStatus,
+        EnsembleMember,
+        EnsembleMemberStatus,
+    )
+    from app.services.availability_match import assert_musician_available
+
+    leader, leader_profile = _musician(db_session)
+    friend, friend_profile = _musician(db_session)
+    member = EnsembleMember(
+        leader_user_id=leader.id,
+        profile_id=leader_profile.id,
+        member_user_id=friend.id,
+        fullname="Amigo",
+        email=f"a_{uuid.uuid4().hex[:6]}@test.com",
+        specialties=["Voz"],
+        status=EnsembleMemberStatus.active,
+    )
+    db_session.add(member)
+    db_session.flush()
+    booking = _booking(db_session, leader_profile, days=20)
+    invite = BookingMemberInvite(
+        booking_id=booking.id,
+        ensemble_member_id=member.id,
+        status=BookingMemberInviteStatus.pending,
+        response_token=uuid.uuid4().hex,
+    )
+    db_session.add(invite)
+    db_session.commit()
+
+    assert_musician_available(db_session, friend_profile.id, booking.event_date, time(19, 0))
+
+    invite.status = BookingMemberInviteStatus.accepted
+    db_session.commit()
+    with pytest.raises(HTTPException) as busy:
+        assert_musician_available(db_session, friend_profile.id, booking.event_date, time(19, 0))
+    assert busy.value.status_code == 400
+    # El líder no queda bloqueado por convocar a otros: su agenda ya tiene su propia reserva.
+    assert_musician_available(db_session, friend_profile.id, booking.event_date, time(23, 30))
