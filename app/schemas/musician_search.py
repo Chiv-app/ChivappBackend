@@ -2,6 +2,8 @@ from datetime import date
 from pydantic import BaseModel, Field
 from typing import Annotated, List
 
+from app.services.profile_details import EventType, GroupSize, ProfileType
+
 # Topes para que una sola búsqueda no arme cientos de condiciones LIKE sobre toda la tabla (S-09).
 SearchTerm = Annotated[str, Field(max_length=60)]
 
@@ -13,6 +15,10 @@ class MusicianSearchFilters(BaseModel):
     min_price_per_event: float | None = None
     max_price_per_event: float | None = None
     available_date: date | None = None
+    profile_type: ProfileType | None = None
+    group_sizes: List[GroupSize] | None = Field(default=None, max_length=5)
+    # El músico debe animar todos los tipos de evento elegidos.
+    event_types: List[EventType] | None = Field(default=None, max_length=9)
     skip: int = 0
     limit: int = 20
 

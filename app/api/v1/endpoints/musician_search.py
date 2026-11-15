@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session, joinedload
 
 from app.api import deps
+from app.core.timezone import now_peru
 from app.models.musician_availability import MusicianAvailability
 from app.models.musician_profile import MusicianProfile
 from app.models.musician_media import MusicianMedia, MediaType
@@ -18,6 +19,9 @@ from app.services.profile_visibility import (
 )
 
 router = APIRouter(prefix="/musicians", tags=["Musician Search"])
+
+# Antelación mínima que pide cada opción de details.notice, en días.
+NOTICE_DAYS = {"0": 0, "2d": 2, "1w": 7, "2w": 14, "1m": 30}
 
 # Con filtro por fecha hay que cruzar horarios en Python; se acota cuántos candidatos se revisan.
 MAX_DATE_FILTER_SCAN = 500
@@ -50,8 +54,25 @@ def search_musicians(
     )
 
     if filters.city:
+        from sqlalchemy import or_
+
         escaped_city = _escape_like(filters.city.strip())
-        query = query.filter(MusicianProfile.location_city.ilike(f"%{escaped_city}%", escape="\\"))
+        # También aparece quien declaró esa ciudad como otra donde se presenta (details.other_cities).
+        query = query.filter(
+            or_(
+                MusicianProfile.location_city.ilike(f"%{escaped_city}%", escape="\\"),
+                MusicianProfile.details["other_cities"].astext.ilike(f'%"{escaped_city}"%', escape="\\"),
+            )
+        )
+
+    if filters.profile_type:
+        query = query.filter(MusicianProfile.profile_type == filters.profile_type)
+
+    if filters.group_sizes:
+        query = query.filter(MusicianProfile.group_size.in_(filters.group_sizes))
+
+    for event_type in dict.fromkeys(filters.event_types or []):
+        query = query.filter(MusicianProfile.details.contains({"event_types": [event_type]}))
 
     if filters.genres:
         from sqlalchemy import or_, func
@@ -118,10 +139,15 @@ def search_musicians(
             main_image_by_musician[media.musician_id] = media.url
 
     results: list[MusicianSearchResult] = []
+    days_until_event = (filters.available_date - now_peru().date()).days if filters.available_date is not None else None
     for m in musicians:
         if filters.available_date is not None:
             slots = slots_by_musician.get(m.id, [])
             if slots and not matching_slots(slots, filters.available_date):
+                continue
+            # Quien pide más antelación de la que queda hasta el evento no puede atenderlo.
+            notice_days = NOTICE_DAYS.get((m.details or {}).get("notice", ""), 0)
+            if days_until_event is not None and notice_days > days_until_event:
                 continue
 
         results.append(
