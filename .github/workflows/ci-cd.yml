@@ -140,6 +140,7 @@ jobs:
             FRONTEND_URL=https://chiv.app
             OAUTH_REDIRECT_BASE_URL=https://chiv.app/api/v1
             GOOGLE_OAUTH_REDIRECT_URI=https://chiv.app/calendar-callback
+            GOOGLE_CALENDAR_FREEBUSY_ENABLED=False
             GCP_BUCKET_NAME=chivapp-uploads
             GCP_PRIVATE_BUCKET_NAME=chivapp-private-uploads
 

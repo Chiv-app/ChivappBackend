@@ -206,6 +206,52 @@ def test_only_members_of_the_bookings_profile_can_be_convoked(client: TestClient
     assert right.status_code == 201, right.text
 
 
+def test_member_payouts_reject_members_from_another_group_and_show_group_stage_name(
+    client: TestClient, db_session: Session
+):
+    from app.models.contractor_recommendation import ContractorRecommendation
+
+    leader = _user(db_session, "Carlos Quispe")
+    group_a = _profile(db_session, leader, "Mariachi Sol", kind="group")
+    group_b = _profile(db_session, leader, "Trío Los Andes", kind="group", primary=False)
+    friend = _user(db_session, "Luis Pérez")
+    member_a = _member(db_session, leader, group_a, friend, "Luis Pérez")
+    member_b = _member(db_session, leader, group_b, friend, "Luis Pérez")
+    booking = _booking(db_session, group_a)
+    booking.status = BookingStatus.completed
+    db_session.add(
+        ContractorRecommendation(
+            booking_id=booking.id,
+            musician_id=group_a.id,
+            contractor_id=booking.contractor_id,
+            rating=5,
+            comment="Excelente presentación",
+        )
+    )
+    db_session.commit()
+
+    _login(client, leader, group_a)
+    wrong = client.put(
+        f"/api/v1/bookings/{booking.id}/member-payouts",
+        json={"items": [{"ensemble_member_id": str(member_b.id), "amount": "100.00"}], "lock": False},
+    )
+    assert wrong.status_code == 400, wrong.text
+    assert "no es integrante de este perfil" in wrong.json()["detail"]
+
+    right = client.put(
+        f"/api/v1/bookings/{booking.id}/member-payouts",
+        json={"items": [{"ensemble_member_id": str(member_a.id), "amount": "100.00"}], "lock": False},
+    )
+    assert right.status_code == 200, right.text
+
+    # El integrante ve el nombre artístico de cada grupo, no solo el nombre de la persona líder.
+    _login(client, friend)
+    ensembles = client.get("/api/v1/musician/my-ensembles").json()
+    assert {e["leader_name"] for e in ensembles} == {"Mariachi Sol", "Trío Los Andes"}
+    income = client.get("/api/v1/musician/my-income").json()
+    assert [i["leader_name"] for i in income["items"]] == ["Mariachi Sol"]
+
+
 def test_the_group_page_lists_active_members_with_a_discreet_link_to_their_solo_profile(client: TestClient, db_session: Session):
     leader = _user(db_session)
     group = _profile(db_session, leader, "Los Hermanos Quispe", kind="group")

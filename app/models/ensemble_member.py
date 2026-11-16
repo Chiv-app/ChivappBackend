@@ -99,6 +99,7 @@ class EnsembleMember(Base):
     updated_at = Column(UTCDateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     leader = relationship("User", foreign_keys=[leader_user_id])
+    profile = relationship("MusicianProfile", foreign_keys=[profile_id])
     member_user = relationship("User", foreign_keys=[member_user_id])
 
 

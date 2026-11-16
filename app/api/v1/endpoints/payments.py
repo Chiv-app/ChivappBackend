@@ -132,12 +132,14 @@ def compute_musician_earnings(
 ) -> MusicianEarningsSummary:
     if current_user.role != UserRole.musician:
         raise HTTPException(403, "Solo los músicos pueden ver sus ingresos")
+    if require_verified and not current_user.is_verified:
+        raise HTTPException(403, "Tu perfil de músico debe estar verificado para esta acción")
 
     from app.models.booking_complaint import BookingComplaint
     from app.services.platform_payment import musician_portion_of_paid
     from app.services.settlement import settlement_state_for_booking
 
-    musician = get_musician_profile_or_400(db, current_user, require_verified=require_verified)
+    musician = get_musician_profile_or_400(db, current_user, require_verified=False)
     bookings = (
         db.query(Booking)
         .filter(Booking.musician_id == musician.id)

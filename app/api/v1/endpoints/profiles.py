@@ -751,7 +751,13 @@ def update_musician_profile(
     person_updates = {k: v for k, v in updates.items() if k in PERSON_FIELDS}
     if person_updates:
         for sibling in sibling_profiles(db, profile):
-            demote_published_profile_if_changed(sibling, person_updates)
+            if demote_published_profile_if_changed(sibling, person_updates):
+                notify_profile_needs_resubmit(
+                    db,
+                    user=current_user,
+                    profile_role="musician",
+                    profile_id=str(sibling.id),
+                )
 
     videos = profile.videos or []
     showreel = getattr(profile, "showreel_video_url", None)

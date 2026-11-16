@@ -19,12 +19,16 @@ def get_auth_url(current_user: User = Depends(deps.get_current_user)):
     if not settings.GOOGLE_CLIENT_ID or not getattr(settings, "GOOGLE_OAUTH_REDIRECT_URI", None):
         raise HTTPException(500, "Google OAuth no configurado en servidor.")
 
+    scopes = ["https://www.googleapis.com/auth/calendar.events"]
+    if getattr(settings, "GOOGLE_CALENDAR_FREEBUSY_ENABLED", True):
+        scopes.append(FREEBUSY_SCOPE)
+
     params = {
         "client_id": settings.GOOGLE_CLIENT_ID,
         "redirect_uri": settings.GOOGLE_OAUTH_REDIRECT_URI,
         "response_type": "code",
         # events: enviar las reservas; freebusy: leer solo las horas ocupadas (sin ver los eventos).
-        "scope": f"https://www.googleapis.com/auth/calendar.events {FREEBUSY_SCOPE}",
+        "scope": " ".join(scopes),
         "access_type": "offline",
         "prompt": "consent",
         # Ligado al usuario: un callback con el state de otra cuenta se rechaza.

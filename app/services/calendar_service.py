@@ -358,6 +358,8 @@ def get_busy_blocks(user, start_dt, end_dt) -> BusyResult:
     plain = decrypt_refresh_token(token)
     if not plain:
         return BusyResult(connected=True, needs_reconnect=True)
+    if not getattr(settings, "GOOGLE_CALENDAR_FREEBUSY_ENABLED", True):
+        return BusyResult(connected=True, needs_reconnect=False, busy=[])
     service = _get_calendar_service_oauth(token)
     if not service:
         return BusyResult(connected=True, needs_reconnect=True)
@@ -448,7 +450,11 @@ def sync_booking_calendar(db, booking_id: str, include_contractor: bool, ensembl
         # Fallback duration if not found
         end_dt = start_dt + dt.timedelta(hours=1)
         
-    musician_name = musician_user.fullname if musician_user else "Músico"
+    musician_name = (
+        (booking.musician.stage_name if getattr(booking, "musician", None) and booking.musician.stage_name else None)
+        or (musician_user.fullname if musician_user else None)
+        or "Músico"
+    )
     musician_phone = musician_user.phone if musician_user else ""
     contractor_name = contractor_user.fullname if contractor_user else "Cliente"
     contractor_phone = contractor_user.phone if contractor_user else ""

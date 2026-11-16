@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     GOOGLE_CALENDAR_ID: str = ""
     GOOGLE_CREDENTIALS_JSON: str = ""
     GOOGLE_OAUTH_REDIRECT_URI: str = "http://localhost:3000/calendar-callback"
+    # Permite desactivar el permiso sensible calendar.freebusy en producción mientras Google lo verifica.
+    GOOGLE_CALENDAR_FREEBUSY_ENABLED: bool = True
     FACEBOOK_APP_ID: str = ""
     FACEBOOK_APP_SECRET: str = ""
     # Must match the browser-facing API base (Next.js proxy in local/dev).

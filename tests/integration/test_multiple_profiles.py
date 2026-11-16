@@ -512,3 +512,43 @@ def test_an_accepted_convocation_to_another_group_blocks_the_agenda_but_a_pendin
     assert busy.value.status_code == 400
     # El líder no queda bloqueado por convocar a otros: su agenda ya tiene su propia reserva.
     assert_musician_available(db_session, friend_profile.id, booking.event_date, time(23, 30))
+
+
+def test_earnings_screen_works_when_active_profile_is_a_draft_sibling(client: TestClient, db_session: Session):
+    user, _ = _musician(db_session)
+    _login(client, user)
+    extra = _add_profile(client)
+
+    res = client.get("/api/v1/payments/musician/earnings", headers={PROFILE_HEADER: extra["id"]})
+    assert res.status_code == 200, res.text
+    assert res.json()["debts"] == []
+
+
+def test_updating_person_id_document_from_a_draft_profile_notifies_the_published_sibling(
+    client: TestClient, db_session: Session
+):
+    from app.models.notification import Notification
+    from app.models.uploaded_file import UploadedFile
+
+    user, primary = _musician(db_session)
+    _login(client, user)
+    extra = _add_profile(client)
+    db_session.add(
+        UploadedFile(filename="nuevo-dni-2.jpg", content_type="image/jpeg", size_bytes=10, owner_user_id=user.id)
+    )
+    db_session.commit()
+
+    res = client.put(
+        "/api/v1/profiles/musician",
+        json={"id_document_url": "/uploads/private/nuevo-dni-2.jpg"},
+        headers={PROFILE_HEADER: extra["id"]},
+    )
+    assert res.status_code == 200, res.text
+
+    db_session.expire_all()
+    assert db_session.get(MusicianProfile, primary.id).status == ProfileStatus.draft
+    notified_ids = {
+        (n.meta or {}).get("profile_id")
+        for n in db_session.query(Notification).filter(Notification.user_id == user.id).all()
+    }
+    assert str(primary.id) in notified_ids

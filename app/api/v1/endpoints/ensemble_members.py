@@ -776,13 +776,17 @@ def _build_booking_invite_preview(db: Session, token: str) -> dict:
     member = invite.ensemble_member
     leader = db.get(User, member.leader_user_id) if member else None
     member_user = db.get(User, member.member_user_id) if member and member.member_user_id else None
+    profile = getattr(member, "profile", None) if member else None
+    leader_label = (profile.stage_name if profile and profile.stage_name else None) or (
+        leader.fullname if leader else "Tu agrupación"
+    )
     return {
         "event_type": booking.event_type,
         "event_date": booking.event_date,
         "start_time": booking.start_time,
         "location_city": booking.location_city,
         "location_address": booking.location_address,
-        "leader_name": leader.fullname if leader else "Tu agrupación",
+        "leader_name": leader_label,
         "member_fullname": member.fullname if member else "",
         "status": invite.status.value,
         "can_respond": invite.status == BookingMemberInviteStatus.pending
@@ -1091,10 +1095,16 @@ def upsert_member_payouts(
 
     results: list[BookingMemberPayout] = []
     now = datetime.utcnow()
+    booking_profile = db.get(MusicianProfile, booking.musician_id)
     for item in payload.items:
         member = get_member_for_leader(
             db, leader_id=current_user.id, member_id=item.ensemble_member_id
         )
+        if booking_profile is None or not member_belongs_to_profile(member, booking_profile):
+            raise HTTPException(
+                400,
+                f"{member.fullname} no es integrante de este perfil. Elige solo integrantes de su equipo.",
+            )
         if member.id in paid_members:
             existing_paid = next(
                 (r for r in existing_rows if r.ensemble_member_id == member.id),
@@ -1511,6 +1521,10 @@ def list_my_member_income(
 
         member = payout.ensemble_member
         leader = leaders.get(member.leader_user_id) if member else None
+        profile = getattr(member, "profile", None) if member else None
+        leader_label = (profile.stage_name if profile and profile.stage_name else None) or (
+            leader.fullname if leader else None
+        )
         items.append(
             MyMemberIncomeItem(
                 payout_id=payout.id,
@@ -1519,7 +1533,7 @@ def list_my_member_income(
                 event_date=booking.event_date,
                 location_city=booking.location_city,
                 booking_status=booking.status.value,
-                leader_name=leader.fullname if leader else None,
+                leader_name=leader_label,
                 amount=amount,
                 currency=payout.currency or "PEN",
                 status=status,

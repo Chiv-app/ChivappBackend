@@ -342,6 +342,7 @@ def test_subtracting_synced_events_ignores_malformed_blocks():
 
 def test_the_google_connection_asks_for_the_busy_hours_permission_too(client: TestClient, db_session: Session):
     from app.core.config import settings
+    from app.services.calendar_service import get_busy_blocks
 
     user, _ = _musician(db_session)
     _login(client, user)
@@ -351,6 +352,20 @@ def test_the_google_connection_asks_for_the_busy_hours_permission_too(client: Te
     assert res.status_code == 200, res.text
     url = res.json()["auth_url"]
     assert "calendar.events" in url and "calendar.freebusy" in url
+
+    # Si freebusy está desactivado en producción mientras Google revisa el scope, solo se pide calendar.events
+    user.google_calendar_refresh_token = "fake-refresh-token"
+    with (
+        patch.object(settings, "GOOGLE_CLIENT_ID", "client-id"),
+        patch.object(settings, "GOOGLE_OAUTH_REDIRECT_URI", "http://localhost/cb"),
+        patch.object(settings, "GOOGLE_CALENDAR_FREEBUSY_ENABLED", False),
+    ):
+        res_disabled = client.get("/api/v1/calendar-auth/url")
+        busy_disabled = get_busy_blocks(user, datetime(2026, 12, 1, 0, 0), datetime(2026, 12, 2, 0, 0))
+
+    url_disabled = res_disabled.json()["auth_url"]
+    assert "calendar.events" in url_disabled and "calendar.freebusy" not in url_disabled
+    assert busy_disabled.connected is True and busy_disabled.needs_reconnect is False and busy_disabled.busy == []
 
 
 def test_a_paid_booking_is_sent_to_the_musicians_google_calendar_automatically(db_session: Session):
@@ -386,3 +401,46 @@ def test_a_failing_google_calendar_never_blocks_the_payment_confirmation(db_sess
 
     notified.assert_called_once()
     assert booking.calendar_event_id is None
+
+
+def test_google_calendar_event_uses_the_booked_profiles_stage_name(db_session: Session):
+    from app.services.calendar_service import sync_booking_calendar
+
+    user, _ = _musician(db_session, "Carlos Quispe")
+    group = MusicianProfile(
+        user_id=user.id,
+        is_primary=False,
+        stage_name="Los Hermanos Quispe",
+        slug="los-hermanos-quispe-cal",
+        profile_type="group",
+        status=ProfileStatus.published,
+        availability_type=AvailabilityType.both,
+    )
+    db_session.add(group)
+    db_session.commit()
+    user.google_calendar_refresh_token = "fake-refresh-token"
+    _, contractor = _contractor(db_session)
+    booking = _booking(db_session, group, contractor, day=DAY)
+    captured: list[dict] = []
+
+    class _FakeEvents:
+        def insert(self, **kwargs):
+            captured.append(kwargs.get("body", {}))
+
+            class _Exec:
+                def execute(self_inner):
+                    return {"id": "evt-group-1"}
+
+            return _Exec()
+
+    class _FakeService:
+        def events(self):
+            return _FakeEvents()
+
+    with patch("app.services.calendar_service._get_calendar_service_oauth", return_value=_FakeService()):
+        event_id = sync_booking_calendar(db_session, str(booking.id), include_contractor=False, ensemble_member_ids=[])
+
+    assert event_id == "evt-group-1"
+    assert len(captured) == 1
+    assert "Los Hermanos Quispe" in captured[0]["summary"]
+    assert "Los Hermanos Quispe" in captured[0]["description"]

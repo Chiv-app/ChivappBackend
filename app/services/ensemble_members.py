@@ -130,6 +130,10 @@ def serialize_member(member: EnsembleMember, *, include_invite_url: bool = False
             invite_expires_at and invite_expires_at < datetime.utcnow()
         )
     leader = member.leader
+    profile = getattr(member, "profile", None)
+    group_name = (profile.stage_name if profile and profile.stage_name else None) or (
+        leader.fullname if leader else None
+    )
     return {
         "id": member.id,
         "email": member.email,
@@ -144,7 +148,7 @@ def serialize_member(member: EnsembleMember, *, include_invite_url: bool = False
         "invite_expires_at": invite_expires_at,
         "invite_expired": invite_expired,
         "member_user_id": None,
-        "leader_name": leader.fullname if leader else None,
+        "leader_name": group_name,
         "invited_at": member.invited_at,
         "joined_at": member.joined_at,
         "ended_by": member.ended_by,
@@ -254,7 +258,10 @@ def notify_leader_member_joined(db: Session, member: EnsembleMember) -> None:
 def serialize_booking_invite(invite: BookingMemberInvite) -> dict:
     member = invite.ensemble_member
     booking = invite.booking
-    leader_name = member.leader.fullname if member and member.leader else None
+    profile = getattr(member, "profile", None) if member else None
+    leader_name = (profile.stage_name if profile and profile.stage_name else None) or (
+        member.leader.fullname if member and member.leader else None
+    )
     return {
         "id": invite.id,
         "booking_id": invite.booking_id,
