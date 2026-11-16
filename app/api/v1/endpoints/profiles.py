@@ -609,6 +609,94 @@ def create_additional_musician_profile(
     return profile
 
 
+def _delete_draft_additional_profile(
+    db: Session,
+    current_user: User,
+    target_profile: MusicianProfile | None,
+) -> Response:
+    if current_user.role != UserRole.musician:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Solo usuarios con rol 'musician' pueden eliminar perfiles",
+        )
+    if not target_profile or target_profile.user_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Perfil no encontrado.",
+        )
+    if target_profile.is_primary:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No puedes eliminar tu perfil principal.",
+        )
+    if target_profile.status != ProfileStatus.draft:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Solo puedes cancelar un perfil adicional mientras esté en borrador.",
+        )
+    has_bookings = (
+        db.query(Booking.id)
+        .filter(Booking.musician_id == target_profile.id)
+        .first()
+        is not None
+    )
+    if has_bookings:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No puedes eliminar un perfil que ya tiene reservas registradas.",
+        )
+
+    from app.models.ensemble_member import EnsembleMember
+    from app.models.musician_availability import MusicianAvailability
+
+    db.query(MusicianAvailability).filter(
+        MusicianAvailability.musician_id == target_profile.id
+    ).delete(synchronize_session=False)
+    db.query(MusicianMedia).filter(
+        MusicianMedia.musician_id == target_profile.id
+    ).delete(synchronize_session=False)
+    db.query(EnsembleMember).filter(
+        EnsembleMember.profile_id == target_profile.id
+    ).delete(synchronize_session=False)
+    db.delete(target_profile)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete(
+    "/musician/additional",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def cancel_active_additional_musician_profile(
+    current_user: User = Depends(deps.get_current_user),
+    db: Session = Depends(deps.get_db),
+):
+    """Cancela y elimina el perfil adicional en borrador actualmente seleccionado."""
+    profile = _get_musician_profile_or_404(db, current_user)
+    return _delete_draft_additional_profile(db, current_user, profile)
+
+
+@router.delete(
+    "/musician/additional/{profile_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_additional_musician_profile_by_id(
+    profile_id: UUID,
+    current_user: User = Depends(deps.get_current_user),
+    db: Session = Depends(deps.get_db),
+):
+    """Cancela y elimina un perfil adicional en borrador por su ID."""
+    target = (
+        db.query(MusicianProfile)
+        .filter(
+            MusicianProfile.id == profile_id,
+            MusicianProfile.user_id == current_user.id,
+        )
+        .first()
+    )
+    return _delete_draft_additional_profile(db, current_user, target)
+
+
 @router.put(
     "/musician",
     response_model=MusicianProfileOut,

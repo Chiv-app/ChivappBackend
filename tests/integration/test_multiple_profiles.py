@@ -552,3 +552,21 @@ def test_updating_person_id_document_from_a_draft_profile_notifies_the_published
         for n in db_session.query(Notification).filter(Notification.user_id == user.id).all()
     }
     assert str(primary.id) in notified_ids
+
+
+def test_cancelling_a_draft_additional_profile_deletes_it_and_protects_primary(
+    client: TestClient, db_session: Session
+):
+    user, primary = _musician(db_session)
+    _login(client, user)
+    extra = _add_profile(client)
+
+    # No se puede eliminar el perfil principal
+    forbid_primary = client.delete(f"/api/v1/profiles/musician/additional/{primary.id}")
+    assert forbid_primary.status_code == 409
+
+    # Se puede cancelar y eliminar el perfil adicional en borrador
+    deleted = client.delete(f"/api/v1/profiles/musician/additional/{extra['id']}")
+    assert deleted.status_code == 204
+    mine = client.get("/api/v1/profiles/musician/mine").json()
+    assert [p["id"] for p in mine] == [str(primary.id)]
