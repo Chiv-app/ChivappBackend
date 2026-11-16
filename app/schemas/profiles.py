@@ -332,11 +332,29 @@ def _sync_songs_and_repertoire(
     return [], []
 
 
+class PublicTeamMemberOut(BaseModel):
+    """Integrante activo de un grupo, tal como se muestra en su perfil público."""
+
+    name: str
+    specialties: list[str] = Field(default_factory=list)
+    # Perfil de solista publicado de ese integrante, si lo tiene.
+    profile_slug: str | None = None
+
+
+class PublicGroupLinkOut(BaseModel):
+    """Grupo publicado en el que toca esta persona."""
+
+    name: str
+    slug: str
+
+
 class MusicianProfileOut(MusicianProfileBase):
     id: UUID
     user_id: UUID
     # Salida tolerante: un dato antiguo que ya no encaje con el esquema no debe romper el perfil.
     details: dict[str, Any] = Field(default_factory=dict)
+    members: list[PublicTeamMemberOut] = Field(default_factory=list)
+    plays_with: list[PublicGroupLinkOut] = Field(default_factory=list)
     is_primary: bool = True
     repertoire: list[RepertoireItemOut] = Field(default_factory=list)
     stage_name: str | None = None
@@ -469,22 +487,6 @@ class MusicianPublicReviewOut(BaseModel):
     author_label: str
     event_type: str | None = None
     created_at: datetime
-
-
-class PublicTeamMemberOut(BaseModel):
-    """Integrante activo de un grupo, tal como se muestra en su perfil público."""
-
-    name: str
-    specialties: list[str] = Field(default_factory=list)
-    # Perfil de solista publicado de ese integrante, si lo tiene.
-    profile_slug: str | None = None
-
-
-class PublicGroupLinkOut(BaseModel):
-    """Grupo publicado en el que toca esta persona."""
-
-    name: str
-    slug: str
 
 
 class MusicianProfilePublicOut(BaseModel):

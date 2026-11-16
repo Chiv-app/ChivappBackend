@@ -314,3 +314,27 @@ def test_the_migration_puts_existing_members_in_the_leaders_primary_profile(db_s
 
     assert db_session.get(EnsembleMember, old.id).profile_id == primary.id
     assert db_session.get(EnsembleMember, already.id).profile_id == kept
+
+
+def test_owned_profile_endpoint_also_returns_members_and_plays_with(
+    client: TestClient, db_session: Session
+):
+    leader = _user(db_session)
+    group = _profile(db_session, leader, "Mariachi América", kind="group")
+    friend = _user(db_session, "Luis Pérez")
+    friend_solo = _profile(db_session, friend, "Luis Pérez Solista")
+    _member(db_session, leader, group, friend, "Luis Pérez")
+    db_session.commit()
+
+    _login(client, leader, group)
+    me_group = client.get("/api/v1/profiles/musician/me")
+    assert me_group.status_code == 200, me_group.text
+    assert me_group.json()["members"] == [
+        {"name": "Luis Pérez", "specialties": ["Voz"], "profile_slug": friend_solo.slug}
+    ]
+
+    _login(client, friend, friend_solo)
+    me_solo = client.get("/api/v1/profiles/musician/me")
+    assert me_solo.status_code == 200, me_solo.text
+    assert me_solo.json()["plays_with"] == [{"name": "Mariachi América", "slug": group.slug}]
+

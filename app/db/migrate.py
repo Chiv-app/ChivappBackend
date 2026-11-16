@@ -510,6 +510,16 @@ MIGRATION_STATEMENTS = [
     "ALTER TABLE musician_profile ADD COLUMN IF NOT EXISTS profile_type VARCHAR(16) NOT NULL DEFAULT 'solo'",
     "ALTER TABLE musician_profile ADD COLUMN IF NOT EXISTS group_size VARCHAR(8)",
     "ALTER TABLE musician_profile ADD COLUMN IF NOT EXISTS details JSONB NOT NULL DEFAULT '{}'::jsonb",
+    """
+    UPDATE musician_profile AS mp
+    SET profile_type = 'group'
+    WHERE mp.profile_type = 'solo'
+      AND EXISTS (
+          SELECT 1 FROM ensemble_member AS em
+          WHERE em.leader_user_id = mp.user_id
+            AND em.status::text IN ('invited', 'active')
+      )
+    """,
     # Varios perfiles por persona: se quita la unicidad de user_id y se marca uno como principal.
     "ALTER TABLE musician_profile ADD COLUMN IF NOT EXISTS is_primary BOOLEAN NOT NULL DEFAULT TRUE",
     """

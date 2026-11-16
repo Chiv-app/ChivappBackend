@@ -304,9 +304,16 @@ def _validation_out(result) -> ProfileValidationOut:
     )
 
 
+def _with_public_team(db: Session, profile: MusicianProfile) -> MusicianProfile:
+    members, plays_with = public_team(db, profile)
+    profile.members = members  # type: ignore[attr-defined]
+    profile.plays_with = plays_with  # type: ignore[attr-defined]
+    return profile
+
+
 def _get_musician_profile_or_404(db: Session, current_user: User) -> MusicianProfile:
     profile = get_or_create_musician_profile(db, current_user)
-    return profile
+    return _with_public_team(db, profile)
 
 
 def _get_contractor_profile_or_404(db: Session, current_user: User) -> ContractorProfile:
@@ -445,7 +452,7 @@ def submit_musician_profile(
     )
     db.commit()
     db.refresh(profile)
-    return profile
+    return _with_public_team(db, profile)
 
 
 @router.post(
@@ -542,7 +549,7 @@ def create_musician_profile(
     db.commit()
     db.refresh(profile)
 
-    return profile
+    return _with_public_team(db, profile)
 
 
 @router.get("/musician/mine", response_model=list[MusicianProfileSummaryOut])
@@ -594,7 +601,7 @@ def create_additional_musician_profile(
     # Un solo borrador adicional a la vez: evita acumular perfiles vacíos.
     for existing in profiles[1:]:
         if existing.status == ProfileStatus.draft and not (existing.stage_name or "").strip():
-            return existing
+            return _with_public_team(db, existing)
 
     profile = MusicianProfile(
         user_id=current_user.id,
@@ -606,7 +613,7 @@ def create_additional_musician_profile(
     db.add(profile)
     db.commit()
     db.refresh(profile)
-    return profile
+    return _with_public_team(db, profile)
 
 
 def _delete_draft_additional_profile(
@@ -855,7 +862,7 @@ def update_musician_profile(
     db.commit()
     db.refresh(profile)
 
-    return profile
+    return _with_public_team(db, profile)
 
 
 @router.post(
@@ -919,7 +926,7 @@ def onboard_musician_profile(
         profile.status = ProfileStatus.draft
     db.commit()
     db.refresh(profile)
-    return profile
+    return _with_public_team(db, profile)
 
 
 @router.get(
