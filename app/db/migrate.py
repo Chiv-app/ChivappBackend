@@ -715,7 +715,46 @@ MIGRATION_STATEMENTS = [
     """,
 ]
 
-
+# Búsqueda semántica del asistente IA (pgvector). Tolerante: sin la extensión no falla y el asistente sigue
+# funcionando sin búsqueda semántica. Mismo SQL que `alembic/versions/20261117_b8c9d0e1f2a3_*`.
+PGVECTOR_STATEMENTS = [
+    """
+    DO $$
+    BEGIN
+        IF EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = 'vector') THEN
+            BEGIN
+                CREATE EXTENSION IF NOT EXISTS vector;
+            EXCEPTION WHEN OTHERS THEN
+                RAISE NOTICE 'No se pudo crear la extension vector';
+            END;
+        END IF;
+    END
+    $$
+    """,
+    """
+    DO $$
+    BEGIN
+        IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector') THEN
+            CREATE TABLE IF NOT EXISTS assistant_knowledge_chunk (
+                id UUID PRIMARY KEY,
+                profile_id UUID NOT NULL REFERENCES musician_profile(id) ON DELETE CASCADE,
+                source VARCHAR(32) NOT NULL,
+                source_ref VARCHAR(120) NOT NULL DEFAULT '',
+                content TEXT NOT NULL,
+                content_hash VARCHAR(64) NOT NULL,
+                embedding vector(768) NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS ix_assistant_knowledge_chunk_profile
+                ON assistant_knowledge_chunk (profile_id);
+            CREATE INDEX IF NOT EXISTS ix_assistant_knowledge_chunk_embedding
+                ON assistant_knowledge_chunk USING hnsw (embedding vector_cosine_ops);
+        END IF;
+    END
+    $$
+    """,
+]
+MIGRATION_STATEMENTS += PGVECTOR_STATEMENTS
 
 
 _STARTUP_SEED_ADVISORY_LOCK_KEY = 984512301

@@ -26,6 +26,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.models.musician_assistant import AssistantPlatformSettings
 
 logger = logging.getLogger(__name__)
@@ -136,6 +137,44 @@ def consume_ai_call(db: Session, user_id: UUID | str, *, audio: bool = False) ->
         logger.warning("Tope global diario de llamadas al modelo del asistente alcanzado (%s).", _day(now))
         return False
     return True
+
+
+def consume_extra_call(db: Session) -> bool:
+    """Una vuelta adicional del mismo turno: el músico ya pagó el turno, solo cuenta en el tope global diario."""
+    limits = get_limits(db)
+    if not _consume(db, f"ai:global:{_day(_now())}", limits.daily_ai_calls_global):
+        logger.warning("Tope global diario de llamadas al modelo del asistente alcanzado (%s).", _day(_now()))
+        return False
+    return True
+
+
+_CONSUME_N_SQL = text(
+    """
+    INSERT INTO assistant_usage_counter (key, count, updated_at)
+    VALUES (:key, :n, NOW())
+    ON CONFLICT (key) DO UPDATE
+        SET count = assistant_usage_counter.count + :n, updated_at = NOW()
+        WHERE assistant_usage_counter.count + :n <= :limit
+    RETURNING count
+    """
+)
+
+
+def consume_embeddings(db: Session, n: int = 1) -> bool:
+    """Reserva `n` embeddings del tope diario de toda la plataforma. False = sin cupo: no se debe llamar al modelo."""
+    if n <= 0:
+        return True
+    limit = int(settings.ASSISTANT_EMBED_DAILY_LIMIT)
+    if limit <= 0 or n > limit:
+        return False
+    with Session(bind=db.get_bind()) as counter_session:
+        row = counter_session.execute(
+            _CONSUME_N_SQL, {"key": f"emb:global:{_day(_now())}", "n": n, "limit": limit}
+        ).first()
+        counter_session.commit()
+    if row is None:
+        logger.warning("Tope diario de embeddings del asistente alcanzado (%s).", _day(_now()))
+    return row is not None
 
 
 def claim_whatsapp_message(db: Session, message_id: str) -> bool:

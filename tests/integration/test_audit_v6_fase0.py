@@ -282,7 +282,7 @@ def test_sec6_06_bug6_01_three_database_migration_scenarios():
                 ).scalar()
                 assert reg == required_table
             rev = conn.execute(sa.text("SELECT version_num FROM alembic_version")).scalar()
-            assert rev == "a7b8c9d0e1f2"
+            assert rev == "b8c9d0e1f2a3"
             assert BASELINE_REVISION == "c7a3bc7f5426"
 
         # Escenario 4: Base ya estampada en d8e9f0a1b2c3 (versión previa a Audit v6 sin columnas nuevas ni payout_request_booking)
@@ -370,7 +370,9 @@ def test_sec6_07_sec6_10_deploy_scripts_and_ci_workflows_hardened():
         workflows.append(("tests.yml", root_ci_path.read_text(encoding="utf-8")))
 
     for wf_name, wf in workflows:
-        assert "postgres:16-alpine" in wf, wf_name
+        # Postgres 16 con pgvector (búsqueda semántica del asistente) y las pruebas que lo exigen en CI.
+        assert "pgvector/pgvector:pg16" in wf, wf_name
+        assert 'REQUIRE_PGVECTOR: "1"' in wf, wf_name
         assert "pip-audit -r requirements.txt" in wf, wf_name
         assert "alembic upgrade head" in wf, wf_name
         assert "alembic check" in wf, wf_name

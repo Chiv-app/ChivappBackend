@@ -46,6 +46,12 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str = ""
     GEMINI_MODEL: str = "gemini-3.8-flash"
     GEMINI_TRANSCRIBE_MODEL: str = "gemini-3.5-transcribe"
+    # Búsqueda semántica del asistente (pgvector). Las dimensiones deben coincidir con `vector(768)` de la tabla.
+    GEMINI_EMBED_MODEL: str = "gemini-embedding-001"
+    ASSISTANT_EMBED_DAILY_LIMIT: int = Field(default=5000, ge=0, le=1_000_000)  # embeddings por día, toda la plataforma
+    ASSISTANT_MAX_CHUNKS_PER_PROFILE: int = Field(default=120, ge=1, le=1000)
+    # Motor del asistente: «rules» (reglas + redacción con IA, como hoy) o «agent» (conversa con herramientas).
+    ASSISTANT_ENGINE: str = "rules"
     META_WHATSAPP_APP_ID: str = ""
     META_WHATSAPP_APP_SECRET: str = ""
     META_WHATSAPP_VERIFY_TOKEN: str = "chivapp-whatsapp-verify"

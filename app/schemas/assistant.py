@@ -118,6 +118,8 @@ class AssistantMessageItem(BaseModel):
     media_type: Literal["text", "audio"] = "text"
     created_at: str
     booking_link_token: Optional[str] = None
+    # Cómo respondió el asistente (herramientas, fragmentos de conocimiento, vueltas). Opcional: la pantalla actual lo ignora.
+    trace: Optional[dict] = None
 
 
 class AssistantChatTurnOut(BaseModel):

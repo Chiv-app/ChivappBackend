@@ -521,7 +521,7 @@ def _extract_fields_heuristic(text: str, today: date | None = None) -> dict[str,
     iso_match = re.search(r"\b(20\d{2})-(\d{2})-(\d{2})\b", lower)
     slash_match = re.search(r"\b(\d{1,2})[/-](\d{1,2})(?:[/-](20\d{2}|\d{2}))?\b", lower)
     named_date_match = re.search(
-        r"\b(\d{1,2})\s+de\s+(enero|febrero|marzo|abril|mayo|junio|julio|agosto|setiembre|septiembre|octubre|noviembre|diciembre)(?:\s+del?\s+(20\d{2}))?\b",
+        r"\b(\d{1,2})\s+(?:de\s+)?(enero|febrero|marzo|abril|mayo|junio|julio|agosto|setiembre|septiembre|octubre|noviembre|diciembre)(?:\s+del?\s+(20\d{2}))?\b",
         lower,
     )
     weekday_num_match = re.search(
@@ -580,6 +580,15 @@ def _extract_fields_heuristic(text: str, today: date | None = None) -> dict[str,
                     days_ahead = 7
                 out["event_date"] = (base_today + timedelta(days=days_ahead)).isoformat()
                 break
+
+    # Si dice un día de la semana y una fecha que no coinciden («sábado 20 de noviembre» cuando el 20 cae viernes),
+    # no se adivina: se guarda el conflicto para preguntarle cuál quiso decir.
+    spoken_weekday = re.search(r"\b(lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\b", lower)
+    if spoken_weekday and out.get("event_date") and (named_date_match or weekday_num_match or iso_match or slash_match):
+        weekday_idx = _WEEKDAY_MAP[spoken_weekday.group(1)]
+        said_date = date.fromisoformat(out["event_date"])
+        if said_date.weekday() != weekday_idx:
+            out["date_conflict"] = {"weekday": spoken_weekday.group(1), "date": out.pop("event_date")}
 
     # 2. Hora (ej. "10 pm", "10:30pm", "a las 22:00", "a las 11 de la noche")
     time_match = re.search(
@@ -647,9 +656,11 @@ def _extract_fields_heuristic(text: str, today: date | None = None) -> dict[str,
     )
     if city_match:
         out["location_city"] = city_match.group(1).title()
-        if not out.get("location_address"):
-            # Si dijo "en San Juan Bautista" sin calle aún, guardamos la zona
-            pass
+    elif addr_match:
+        # «Jr Lima 450, Comas»: lo que sigue a la dirección tras una coma es el distrito.
+        tail = re.match(r"\s*,\s*([A-Za-zÁÉÍÓÚÑáéíóúñ ]{3,40}?)\s*(?:[,.;\n]|$)", raw[addr_match.end(1) :])
+        if tail and tail.group(1).split()[0].lower() not in _NOT_A_PLACE_WORDS:
+            out["location_city"] = tail.group(1).strip().title()
 
     # 7. Teléfono (Perú 9 dígitos o internacional)
     phone_match = re.search(r"(?:\+?51\s*)?(9\d{2}[\s-]?\d{3}[\s-]?\d{3})\b", raw)
@@ -698,7 +709,6 @@ def _extract_fields_heuristic(text: str, today: date | None = None) -> dict[str,
             "rebaja",
             "último precio",
             "ultimo precio",
-            "menos",
             "déjame en",
             "dejame en",
             "más cómodo",
@@ -706,6 +716,13 @@ def _extract_fields_heuristic(text: str, today: date | None = None) -> dict[str,
         )
     ):
         out["requested_discount"] = True
+    # «¿Hay algo menos?» suele pedir un formato más chico, no un descuento: primero se ofrece el paquete más barato.
+    elif re.search(
+        r"\b(algo menos|menos costos|más barat|mas barat|más económic|mas economic|más accesible|mas accesible"
+        r"|otra opci[oó]n m[aá]s|algo m[aá]s econ)",
+        lower,
+    ):
+        out["asked_cheaper"] = True
 
     return out
 
@@ -1101,7 +1118,195 @@ def _create_or_update_prefilled_booking_link(
     return link
 
 
-def _build_assistant_reply(
+_MONTH_NAMES = (
+    "enero", "febrero", "marzo", "abril", "mayo", "junio",
+    "julio", "agosto", "setiembre", "octubre", "noviembre", "diciembre",
+)  # fmt: skip
+_WEEKDAY_NAMES = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
+
+_INCLUDE_LABELS = {
+    "sound": "equipo de sonido",
+    "lights": "luces",
+    "transport": "transporte",
+    "outfit": "vestuario de presentación",
+    "requests": "pedidos de canciones del cliente",
+    "mc": "animador o presentador (MC)",
+}
+_SETUP_LABELS = {"30m": "unos 30 minutos", "1h": "1 hora", "2h+": "2 horas o más"}
+_FORMAT_LABELS = {
+    "acoustic": "acústico",
+    "electric": "eléctrico",
+    "orchestra": "orquesta",
+    "mixed": "mixto",
+}
+
+_INFO_QUESTION_MARKERS = (
+    "?", "explica", "explícame", "cuéntame", "cuentame", "cuenta me", "qué incluye", "que incluye",
+    "qué contiene", "que contiene", "contiene", "incluye", "quiénes son", "quienes son", "más de ti",
+    "mas de ti", "repertorio", "canciones", "temas", "video", "cómo es", "como es", "cómo funciona",
+    "como funciona", "garantía", "garantia", "experiencia",
+)  # fmt: skip
+_NOT_A_PLACE_WORDS = frozenset(
+    {"con", "y", "para", "por", "a", "el", "la", "los", "las", "mi", "me", "soy", "es", "será", "sera", "somos", "quiero", "necesito", "gracias"}
+)
+_ACK_WORDS = ("gracias", "ok", "okey", "vale", "listo", "perfecto", "genial", "dale", "excelente", "entendido")
+
+# Campos que, al venir en el mensaje del cliente, cambian la reserva (y por tanto el enlace).
+_BOOKING_FIELDS = (
+    "date_conflict", "event_date", "start_time", "end_time", "event_type", "location_address", "location_city",
+    "members_count", "duration_hours", "requested_discount", "asked_cheaper", "client_fullname",
+    "client_email",
+)  # fmt: skip
+
+
+def _human_date(iso: Any) -> str:
+    """'2026-11-20' -> 'viernes 20 de noviembre'. Si no se entiende, devuelve el texto tal cual."""
+    try:
+        d = date.fromisoformat(str(iso))
+    except (TypeError, ValueError):
+        return str(iso or "")
+    return f"{_WEEKDAY_NAMES[d.weekday()]} {d.day} de {_MONTH_NAMES[d.month - 1]}"
+
+
+def _has_district(extracted: dict[str, Any], profile: MusicianProfile, config: MusicianAssistantConfig) -> bool:
+    """True si se sabe en qué distrito o ciudad es el evento (dicho o contenido en la dirección)."""
+    if extracted.get("location_city"):
+        return True
+    haystack = (extracted.get("location_address") or "").lower()
+    details = getattr(profile, "details", None) or {}
+    known = [
+        getattr(profile, "location_city", None),
+        *(details.get("other_cities") or []),
+        *[z.get("zone") for z in (config.zone_surcharges or []) if isinstance(z, dict)],
+    ]
+    return any(k and str(k).strip().lower() in haystack for k in known)
+
+
+def _date_conflict_message(conflict: dict[str, Any]) -> str:
+    """Pregunta cuál fecha quiso decir cuando el día de la semana no coincide con el número."""
+    try:
+        said = date.fromisoformat(str(conflict.get("date")))
+        weekday_idx = _WEEKDAY_MAP[str(conflict.get("weekday")).lower()]
+    except (TypeError, ValueError, KeyError):
+        return "No me quedó claro el día del evento. ¿Me confirmas la fecha completa?"
+    delta = (weekday_idx - said.weekday()) % 7
+    if delta > 3:
+        delta -= 7
+    other = said + timedelta(days=delta)
+    month = _MONTH_NAMES[said.month - 1]
+    return (
+        f"Me dices *{conflict.get('weekday')} {said.day} de {month}*, pero el {said.day} de {month} cae "
+        f"{_WEEKDAY_NAMES[said.weekday()]}. ¿Te refieres al *{_human_date(said.isoformat())}* "
+        f"o al *{_human_date(other.isoformat())}*?"
+    )
+
+
+def _wa_format(text: str) -> str:
+    """WhatsApp pone en negrita con un solo asterisco: '**x**' (Markdown) se vería con los asteriscos a la vista."""
+    return re.sub(r"\*\*(.+?)\*\*", r"*\1*", text, flags=re.DOTALL)
+
+
+def _classify_followup(message: str) -> str | None:
+    """'info' si el cliente pregunta por el show/el artista, 'ack' si solo agradece o confirma, si no None."""
+    lower = (message or "").strip().lower()
+    if not lower:
+        return None
+    if any(marker in lower for marker in _INFO_QUESTION_MARKERS):
+        return "info"
+    words = re.findall(r"[a-záéíóúñ]+", lower)
+    if words and len(words) <= 4 and any(w in _ACK_WORDS for w in words):
+        return "ack"
+    return None
+
+
+def _show_facts(profile: MusicianProfile, config: MusicianAssistantConfig, quote: dict[str, Any]) -> list[str]:
+    """Datos reales del perfil para contar qué contiene el show (nunca se inventa nada fuera de esto)."""
+    facts: list[str] = []
+    bio = (getattr(profile, "bio", None) or getattr(profile, "portfolio_description", None) or "").strip()
+    if bio:
+        facts.append(f"Sobre el artista: {bio[:320]}")
+    pkg_name = quote.get("package_name")
+    if pkg_name:
+        line = f"Formato cotizado: {pkg_name}"
+        for pkg in config.packages or []:
+            if pkg.get("name") == pkg_name and pkg.get("description"):
+                line += f" — {pkg['description']}"
+                break
+        facts.append(line)
+    details = getattr(profile, "details", None) or {}
+    includes = [_INCLUDE_LABELS[i] for i in (details.get("includes") or []) if i in _INCLUDE_LABELS]
+    if includes:
+        facts.append("El show incluye: " + ", ".join(includes))
+    if details.get("setup") in _SETUP_LABELS:
+        facts.append(f"Montaje previo: {_SETUP_LABELS[details['setup']]}")
+    if details.get("format") in _FORMAT_LABELS:
+        facts.append(f"Formato musical: {_FORMAT_LABELS[details['format']]}")
+    genres = [g for g in (getattr(profile, "genres", None) or []) if g]
+    if genres:
+        facts.append("Géneros: " + ", ".join(genres))
+    titles = [
+        str(r.get("title")) for r in (getattr(profile, "repertoire", None) or [])[:8] if isinstance(r, dict) and r.get("title")
+    ] or list((getattr(profile, "songs", None) or [])[:8])
+    if titles:
+        facts.append("Repertorio de ejemplo: " + ", ".join(titles))
+    video = getattr(profile, "showreel_video_url", None) or ((getattr(profile, "videos", None) or [None])[0])
+    if video:
+        facts.append(f"Video de muestra: {video}")
+    return facts
+
+
+def _info_reply(
+    *,
+    profile: MusicianProfile,
+    config: MusicianAssistantConfig,
+    user_message: str,
+    quote: dict[str, Any],
+    booking_link_url: str | None,
+    usage_db: Session | None,
+    usage_user_id: Any,
+) -> str:
+    """Responde una pregunta sobre el show con los datos del perfil; con Gemini si hay cupo, si no por reglas."""
+    stage_name = profile.stage_name or "nuestra agrupación"
+    facts = _show_facts(profile, config, quote)
+    footer = (
+        f"\n\nCuando quieras asegurar tu fecha, tu enlace sigue disponible:\n👉 {booking_link_url}"
+        if booking_link_url
+        else ""
+    )
+    system_prompt = (
+        f"Eres el asistente de reservas de '{stage_name}' en Chivapp. Responde la pregunta del cliente "
+        "usando SOLO los datos de abajo; si algo no está en los datos, di que el músico lo confirmará, "
+        "sin inventar. Máximo 5 líneas, en español cálido y claro. La conversación ya empezó: no saludes de nuevo. "
+        "Usa un solo asterisco para negritas. No des un precio distinto al indicado "
+        f"({quote['summary']}). No incluyas enlaces.\n"
+        f"Instrucciones del músico: {config.custom_instructions or 'Sé amable, claro y conciso.'}\n"
+        "Datos:\n- " + "\n- ".join(facts or ["(el perfil aún no tiene más detalles)"])
+    )
+    try:
+        reply = _call_gemini_interaction(
+            system_instruction=system_prompt,
+            user_content=user_message,
+            usage_db=usage_db,
+            usage_user_id=usage_user_id,
+        )
+    except AssistantQuotaExceeded:
+        reply = None
+    if reply and reply.get("output_text"):
+        return reply["output_text"].strip() + footer
+
+    lines = [f"Con gusto te cuento más de *{stage_name}*:"]
+    lines.extend(f"• {fact}" for fact in facts)
+    if not facts:
+        lines.append("• El músico te confirmará los detalles del show por este medio.")
+    return "\n".join(lines) + footer
+
+
+def _build_assistant_reply(**kwargs: Any) -> str:
+    """Respuesta del asistente lista para WhatsApp (negritas con un solo asterisco)."""
+    return _wa_format(_build_assistant_reply_raw(**kwargs))
+
+
+def _build_assistant_reply_raw(
     *,
     profile: MusicianProfile,
     config: MusicianAssistantConfig,
@@ -1114,13 +1319,26 @@ def _build_assistant_reply(
     booking_link_url: str | None,
     usage_db: Session | None = None,
     usage_user_id: Any = None,
+    data_changed: bool = True,
+    extra_note: str | None = None,
 ) -> str:
-    """Construye la respuesta del asistente (vía Gemini 3.8 Flash si hay API key, o motor conversacional estructurado)."""
+    """Construye la respuesta del asistente (vía Gemini 3.8 Flash si hay API key, o motor conversacional estructurado).
+
+    `data_changed` es False cuando el mensaje del cliente no trae datos nuevos de la reserva (una pregunta, un
+    «gracias»): entonces no se repite la plantilla del enlace, se contesta lo que preguntó.
+    """
     stage_name = profile.stage_name or "nuestra agrupación"
+    followup = _classify_followup(user_message)
+    link_sent_before = any(
+        m.get("booking_link_token") for m in (conversation.messages or []) if isinstance(m, dict)
+    )
     repertoire_titles = [
         str(r.get("title")) for r in (profile.repertoire or [])[:6] if isinstance(r, dict) and r.get("title")
     ] or list((profile.songs or [])[:6])
     video_url = profile.showreel_video_url or ((profile.videos or [None])[0] if profile.videos else None)
+
+    if extracted.get("date_conflict"):
+        return _date_conflict_message(extracted["date_conflict"])
 
     if quote.get("out_of_coverage"):
         return (
@@ -1131,19 +1349,50 @@ def _build_assistant_reply(
 
     if availability_ok is False:
         return (
-            f"Te comento que para esa fecha y hora ({extracted.get('event_date')} a las {extracted.get('start_time')}) "
-            f"no podemos: {availability_reason} ¿Te gustaría que revisemos otra hora ese mismo día o una fecha cercana?"
+            f"Te comento que para esa fecha y hora ({_human_date(extracted.get('event_date'))} a las "
+            f"{extracted.get('start_time')}) no podemos: {availability_reason} "
+            "¿Te gustaría que revisemos otra hora ese mismo día o una fecha cercana?"
         )
 
     if booking_link_url:
+        # El enlace ya se envió y el cliente no cambió nada de la reserva: se contesta lo que dijo, sin repetir la plantilla.
+        if link_sent_before and not data_changed:
+            if followup == "info":
+                return _info_reply(
+                    profile=profile,
+                    config=config,
+                    user_message=user_message,
+                    quote=quote,
+                    booking_link_url=booking_link_url,
+                    usage_db=usage_db,
+                    usage_user_id=usage_user_id,
+                )
+            if followup == "ack":
+                return f"¡Con gusto! Tu enlace sigue disponible para cuando quieras asegurar tu fecha:\n👉 {booking_link_url}"
         client_label = extracted.get("client_fullname") or conversation.client_name or ""
-        greeting_name = f" {client_label}" if client_label and client_label != "Cliente de Prueba" else ""
+        greeting_name = f" {client_label}" if client_label and client_label not in ("Cliente de Prueba", "Cliente") else ""
+        note = f"{extra_note}\n\n" if extra_note else ""
         return (
-            f"¡Excelente{greeting_name}! Tenemos disponibilidad confirmada en agenda para tu **{extracted.get('event_type')}** "
-            f"el **{extracted.get('event_date')} a las {extracted.get('start_time')}** en **{extracted.get('location_address')}**.\n\n"
+            f"¡Excelente{greeting_name}! {note}Tenemos disponibilidad confirmada en agenda para tu **{extracted.get('event_type')}** "
+            f"el **{_human_date(extracted.get('event_date'))} a las {extracted.get('start_time')}** en **{extracted.get('location_address')}**.\n\n"
             f"💰 **Cotización:** {quote['summary']}\n\n"
             "Para formalizar nuestra contrata con todas las garantías, ya dejé cargados todos tus datos en Chivapp. "
             f"Solo ingresa a este enlace para revisar el contrato digital, firmarlo y asegurar tu fecha:\n👉 {booking_link_url}"
+        )
+
+    # Un saludo sin datos del evento: se saluda y se piden los datos, sin soltar un precio que nadie preguntó.
+    has_event_info = any(
+        extracted.get(k)
+        for k in ("event_date", "start_time", "event_type", "location_address", "location_city", "members_count", "duration_hours")
+    )
+    asks_price = any(
+        k in (user_message or "").lower()
+        for k in ("precio", "cuánto", "cuanto", "cotiz", "costo", "tarifa", "cobran", "cobra")
+    )
+    if not has_event_info and not asks_price and followup != "info":
+        return config.greeting_message or (
+            f"¡Hola! Soy el asistente de **{stage_name}**. Cuéntame para qué fecha, hora, lugar y tipo de evento "
+            "deseas cotizar."
         )
 
     # Identificar qué datos faltan para poder generar el contrato en Chivapp
@@ -1156,6 +1405,8 @@ def _build_assistant_reply(
         missing_labels.append("el **tipo de evento** (cumpleaños, serenata, boda, etc.)")
     if not extracted.get("location_address"):
         missing_labels.append("la **dirección exacta y distrito** del evento")
+    elif not _has_district(extracted, profile, config):
+        missing_labels.append("el **distrito o ciudad** del evento")
 
     # Intentar enriquecer con Gemini 3.8 Flash si GEMINI_API_KEY está configurada
     system_prompt = (
@@ -1169,9 +1420,13 @@ def _build_assistant_reply(
         f"- Estado de agenda: {'Disponible' if availability_ok else 'Por verificar fecha y hora'}\n"
         f"- Instrucciones del músico: {config.custom_instructions or 'Sé amable, claro y conciso.'}\n"
         f"- Datos ya recopilados: {json.dumps(extracted, ensure_ascii=False)}\n"
-        f"- Datos que aún faltan para generar el link de contrato en Chivapp: {', '.join(missing_labels)}\n\n"
-        "REGLA DE ORO: Responde en español en máximo 4 líneas, de forma cálida y profesional. "
-        "Dale el precio calculado según la cotización actual y pídele amablemente los datos que faltan para generarle su link de contrato en Chivapp."
+        f"- Datos que aún faltan para generar el link de contrato en Chivapp: {', '.join(missing_labels)}\n"
+        + (f"- Dato real del show: {'; '.join(_show_facts(profile, config, quote))}\n" if followup == "info" else "")
+        + (f"- Aviso para el cliente: {extra_note}\n" if extra_note else "")
+        + "\nREGLA DE ORO: Responde en español en máximo 4 líneas, de forma cálida y profesional. "
+        "Si el cliente hizo una pregunta, contéstala primero con los datos de arriba, sin inventar nada. "
+        "Dale el precio calculado según la cotización actual (no otro) y TERMINA siempre pidiéndole los datos "
+        "que faltan para generarle su link de contrato en Chivapp. Usa un solo asterisco para negritas."
     )
     try:
         gemini_reply = _call_gemini_interaction(
@@ -1193,12 +1448,21 @@ def _build_assistant_reply(
             config.greeting_message
             or f"¡Hola! Soy el asistente de **{stage_name}**."
         )
+    if followup == "info":
+        intro_parts.append(
+            "\n".join(f"• {fact}" for fact in _show_facts(profile, config, quote))
+            or "El músico te confirmará los detalles del show por este medio."
+        )
+    if extra_note:
+        intro_parts.append(extra_note)
     if availability_ok is True and extracted.get("event_date") and extracted.get("start_time"):
         intro_parts.append(
-            f"✅ Te confirmo que **sí tenemos libre el {extracted['event_date']} a las {extracted['start_time']}**."
+            f"✅ Te confirmo que **sí tenemos libre el {_human_date(extracted['event_date'])} a las {extracted['start_time']}**."
         )
     intro_parts.append(f"💰 Según lo que me comentas, la tarifa es: **{quote['summary']}**.")
-    if repertoire_titles and any(k in user_message.lower() for k in ("cancion", "repertorio", "tocan", "temas", "video")):
+    if followup != "info" and repertoire_titles and any(
+        k in user_message.lower() for k in ("cancion", "repertorio", "tocan", "temas", "video")
+    ):
         intro_parts.append(f"🎵 Tocamos temas como {', '.join(repertoire_titles[:4])} y más.")
     if missing_labels:
         intro_parts.append(
@@ -1387,12 +1651,79 @@ def process_assistant_turn(
                 "booking_link": None,
             }
 
+    # 3b. Motor con memoria y herramientas (opcional, `ASSISTANT_ENGINE=agent`). Si no hay clave ni cupo, si falla o si
+    #     la respuesta no pasa la validación, el turno lo atiende el motor por reglas de más abajo, como siempre.
+    if getattr(settings, "ASSISTANT_ENGINE", "rules") == "agent":
+        from app.services.assistant_agent import run_agent_turn
+
+        agent_res: dict[str, Any] | None = None
+        try:
+            agent_res = run_agent_turn(
+                db,
+                user=user,
+                profile=profile,
+                config=config,
+                conversation=conversation,
+                user_message=clean_text,
+                channel_type=channel_type,
+            )
+        except AssistantQuotaExceeded:
+            agent_res = None
+        except Exception:
+            logger.exception("Falló el motor con herramientas del asistente; atiende el motor por reglas.")
+            agent_res = None
+        if agent_res is not None:
+            agent_link = agent_res.get("booking_link")
+            msgs = list(conversation.messages or [])
+            msgs.append(
+                {
+                    "id": uuid.uuid4().hex[:12],
+                    "sender": "assistant",
+                    "text": agent_res["reply"],
+                    "media_type": "text",
+                    "created_at": datetime.utcnow().isoformat(),
+                    "booking_link_token": agent_link.token if agent_link else None,
+                    "trace": agent_res.get("trace"),
+                }
+            )
+            conversation.messages = msgs
+            conversation.last_message_at = datetime.utcnow()
+            db.commit()
+            db.refresh(conversation)
+            return {
+                "conversation": conversation,
+                "profile": profile,
+                "reply": agent_res["reply"],
+                "quote": agent_res.get("quote"),
+                "booking_link": agent_link,
+                "booking_link_url": agent_res.get("booking_link_url"),
+            }
+
     # 4. Actualizar datos extraídos acumulados en la conversación
     current_data = dict(conversation.extracted_data or {})
     newly_extracted = {**_extract_fields_heuristic(clean_text), **{k: v for k, v in audio_extracted.items() if v is not None}}
+    data_changed = any(newly_extracted.get(k) not in (None, "") for k in _BOOKING_FIELDS)
     for k, v in newly_extracted.items():
         if v is not None and v != "":
             current_data[k] = v
+    asked_cheaper = bool(current_data.pop("asked_cheaper", None))
+    if newly_extracted.get("date_conflict"):
+        current_data.pop("event_date", None)  # no se adivina: se le pregunta
+    elif newly_extracted.get("event_date"):
+        current_data.pop("date_conflict", None)
+    if (
+        current_data.get("location_address")
+        and not _has_district(current_data, profile, config)
+        and not any(newly_extracted.get(k) for k in _BOOKING_FIELDS)
+        and _classify_followup(clean_text) is None
+        and len(clean_text.split()) <= 4
+        and not re.search(r"\d", clean_text)
+    ):
+        # El asistente pidió el distrito y el cliente contestó solo con eso («Comas», «en Surco»).
+        bare = re.sub(r"^(?:en|distrito de|en el distrito de)\s+", "", clean_text.strip(" .,"), flags=re.IGNORECASE)
+        if bare:
+            current_data["location_city"] = bare.title()
+            data_changed = True
     if conversation.client_phone and not current_data.get("client_phone"):
         current_data["client_phone"] = conversation.client_phone
     if conversation.client_name and conversation.client_name != "Cliente de Prueba" and not current_data.get("client_fullname"):
@@ -1431,6 +1762,25 @@ def process_assistant_turn(
             st_time_obj,
             et_time_obj,
         )
+
+    # 5b. «¿Hay algo más económico?»: primero se ofrece el paquete inmediatamente más barato; sin uno, se
+    #     aplica el descuento máximo que configuró el músico (si lo hay).
+    extra_note: str | None = None
+    if asked_cheaper:
+        packages = list(config.packages or []) or _default_packages_for_profile(profile)
+        base_price = calculate_smart_quote(
+            profile,
+            config,
+            members_count=current_data.get("members_count"),
+            duration_hours=current_data.get("duration_hours"),
+        )["base_price"]
+        cheaper = [p for p in packages if float(p.get("price") or 0) < base_price]
+        if cheaper:
+            option = max(cheaper, key=lambda p: float(p.get("price") or 0))
+            current_data["members_count"] = int(option.get("members_count") or 1)
+            extra_note = f"Para algo más económico te propongo *{option.get('name')}*."
+        elif float(config.max_discount_amount or 0) > 0 or float(config.max_discount_percent or 0) > 0:
+            current_data["requested_discount"] = True
 
     # 6. Calcular cotización inteligente según reglas del perfil
     quote = calculate_smart_quote(
@@ -1471,6 +1821,7 @@ def process_assistant_turn(
         and st_time_obj is not None
         and current_data.get("event_type")
         and current_data.get("location_address")
+        and _has_district(current_data, profile, config)
     ):
         # ¡Tenemos todos los datos clave y el horario está libre! Generar el BookingLink pre-llenado en Chivapp
         booking_link = _create_or_update_prefilled_booking_link(
@@ -1498,6 +1849,8 @@ def process_assistant_turn(
         booking_link_url=booking_link_url,
         usage_db=db,
         usage_user_id=user.id,
+        data_changed=data_changed,
+        extra_note=extra_note,
     )
 
     msgs = list(conversation.messages or [])

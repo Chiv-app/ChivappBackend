@@ -261,3 +261,24 @@ def test_prefilled_booking_link_schemas():
     assert payload.source == "whatsapp_ai"
     assert payload.location_address == "Av. Mariscal Cáceres 820, Huamanga"
     assert BookingLinkPublicOut.model_fields["location_address"] is not None
+
+
+def test_heuristic_flags_weekday_that_does_not_match_the_date():
+    from datetime import date as _date
+
+    today = _date(2026, 11, 16)  # lunes
+    # 20 de noviembre de 2026 cae viernes: «sábado 20 noviembre» (sin «de») es un conflicto, no una fecha
+    out = _extract_fields_heuristic("Tengo un cumpleaños este sábado 20 noviembre a las 8pm", today=today)
+    assert "event_date" not in out
+    assert out["date_conflict"] == {"weekday": "sábado", "date": "2026-11-20"}
+
+    ok = _extract_fields_heuristic("Es el viernes 20 de noviembre a las 8pm", today=today)
+    assert ok["event_date"] == "2026-11-20"
+    assert "date_conflict" not in ok
+
+
+def test_heuristic_takes_the_district_after_the_address():
+    out = _extract_fields_heuristic("Será en Jr. Lima 450, Comas. Somos 20 personas")
+    assert out["location_address"].startswith("Jr. Lima 450")
+    assert out["location_city"] == "Comas"
+    assert "location_city" not in _extract_fields_heuristic("Será en Jr. Lima 450, con 7 integrantes")

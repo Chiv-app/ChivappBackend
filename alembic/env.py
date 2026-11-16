@@ -44,6 +44,8 @@ _MANAGED_CUSTOM_INDEXES = {
     "ix_notification_user_read_created_at",
     "ix_payment_booking_id",
     "ix_musician_availability_musician_id",
+    "ix_assistant_knowledge_chunk_profile",
+    "ix_assistant_knowledge_chunk_embedding",
 }
 
 _PRESERVED_LEGACY_COLUMNS = {
@@ -54,6 +56,9 @@ _PRESERVED_LEGACY_COLUMNS = {
 
 def include_object(object_, name, type_, reflected, compare_to):
     if type_ == "table" and name == "alembic_version":
+        return False
+    # Su columna `vector` necesita la extensión pgvector: se gestiona con SQL directo, fuera del ORM.
+    if type_ == "table" and name == "assistant_knowledge_chunk":
         return False
     if type_ == "column" and reflected and compare_to is None and name in _PRESERVED_LEGACY_COLUMNS:
         return False
