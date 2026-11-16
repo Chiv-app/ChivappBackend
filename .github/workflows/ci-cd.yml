@@ -48,7 +48,8 @@ jobs:
 
       - name: Audit dependencies with pip-audit
         run: |
-          pip-audit -r requirements.txt --no-deps --disable-pip --ignore-vuln PYSEC-2026-4298
+          pip-audit -r requirements.txt --no-deps --disable-pip --timeout 60 --ignore-vuln PYSEC-2026-4298 \
+            || pip-audit -r requirements.txt --no-deps --disable-pip --vulnerability-service osv --timeout 60 --ignore-vuln PYSEC-2026-4298
 
       - name: Validate production Settings(_env_file=None) and rate limiter
         env:
