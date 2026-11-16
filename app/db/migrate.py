@@ -619,6 +619,100 @@ MIGRATION_STATEMENTS = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS ix_payout_request_booking_booking_id ON payout_request_booking (booking_id)",
+    # Pre-llenado completo en booking_link (desde asistente de WhatsApp o autocompletado por audio/texto)
+    "ALTER TABLE booking_link ADD COLUMN IF NOT EXISTS end_time TIME",
+    "ALTER TABLE booking_link ADD COLUMN IF NOT EXISTS event_type VARCHAR(120)",
+    "ALTER TABLE booking_link ADD COLUMN IF NOT EXISTS location_address VARCHAR(300)",
+    "ALTER TABLE booking_link ADD COLUMN IF NOT EXISTS location_city VARCHAR(120)",
+    "ALTER TABLE booking_link ADD COLUMN IF NOT EXISTS location_reference VARCHAR(255)",
+    "ALTER TABLE booking_link ADD COLUMN IF NOT EXISTS client_fullname VARCHAR(120)",
+    "ALTER TABLE booking_link ADD COLUMN IF NOT EXISTS client_phone VARCHAR(40)",
+    "ALTER TABLE booking_link ADD COLUMN IF NOT EXISTS client_document_number VARCHAR(20)",
+    "ALTER TABLE booking_link ADD COLUMN IF NOT EXISTS event_description TEXT",
+    "ALTER TABLE booking_link ADD COLUMN IF NOT EXISTS source VARCHAR(32) NOT NULL DEFAULT 'manual'",
+    # Asistente IA por perfil de músico y canal WhatsApp Business (Meta Cloud API)
+    """
+    CREATE TABLE IF NOT EXISTS musician_assistant_config (
+        id UUID PRIMARY KEY,
+        profile_id UUID NOT NULL REFERENCES musician_profile(id) ON DELETE CASCADE,
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        greeting_message VARCHAR(500),
+        packages JSONB NOT NULL DEFAULT '[]'::jsonb,
+        additional_hour_price NUMERIC(10, 2),
+        zone_surcharges JSONB NOT NULL DEFAULT '[]'::jsonb,
+        per_km_rate NUMERIC(10, 2),
+        night_surcharge_amount NUMERIC(10, 2) DEFAULT 0,
+        night_surcharge_start_hour INTEGER NOT NULL DEFAULT 23,
+        special_date_surcharge_percent NUMERIC(5, 2) DEFAULT 0,
+        max_discount_amount NUMERIC(10, 2) DEFAULT 0,
+        max_discount_percent NUMERIC(5, 2) DEFAULT 0,
+        custom_instructions TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+    """,
+    "CREATE UNIQUE INDEX IF NOT EXISTS ix_musician_assistant_config_profile_id ON musician_assistant_config (profile_id)",
+    """
+    CREATE TABLE IF NOT EXISTS musician_whatsapp_channel (
+        id UUID PRIMARY KEY,
+        user_id UUID NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+        phone_number_id VARCHAR(64),
+        waba_id VARCHAR(64),
+        display_phone_number VARCHAR(40),
+        access_token_encrypted TEXT,
+        webhook_verify_token VARCHAR(128),
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        auto_pause_on_human_reply BOOLEAN NOT NULL DEFAULT TRUE,
+        ignore_ensemble_members BOOLEAN NOT NULL DEFAULT TRUE,
+        ignore_personal_chats BOOLEAN NOT NULL DEFAULT TRUE,
+        ignored_phones JSONB NOT NULL DEFAULT '[]'::jsonb,
+        connected_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+    """,
+    "CREATE UNIQUE INDEX IF NOT EXISTS ix_musician_whatsapp_channel_user_id ON musician_whatsapp_channel (user_id)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS ix_musician_whatsapp_channel_phone_number_id ON musician_whatsapp_channel (phone_number_id)",
+    """
+    CREATE TABLE IF NOT EXISTS assistant_conversation (
+        id UUID PRIMARY KEY,
+        user_id UUID NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+        profile_id UUID REFERENCES musician_profile(id) ON DELETE SET NULL,
+        channel VARCHAR(24) NOT NULL DEFAULT 'whatsapp',
+        client_phone VARCHAR(40),
+        client_name VARCHAR(120),
+        status VARCHAR(32) NOT NULL DEFAULT 'bot_active',
+        escalation_reason VARCHAR(255),
+        extracted_data JSONB NOT NULL DEFAULT '{}'::jsonb,
+        messages JSONB NOT NULL DEFAULT '[]'::jsonb,
+        last_booking_link_id UUID REFERENCES booking_link(id) ON DELETE SET NULL,
+        last_interaction_id VARCHAR(128),
+        last_message_at TIMESTAMPTZ DEFAULT NOW(),
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_assistant_conversation_user_id ON assistant_conversation (user_id)",
+    "CREATE INDEX IF NOT EXISTS ix_assistant_conversation_profile_id ON assistant_conversation (profile_id)",
+    "CREATE INDEX IF NOT EXISTS ix_assistant_conversation_client_phone ON assistant_conversation (client_phone)",
+    # Topes de uso del asistente (contadores atómicos + límites que ajusta el admin)
+    """
+    CREATE TABLE IF NOT EXISTS assistant_usage_counter (
+        key VARCHAR(120) PRIMARY KEY,
+        count INTEGER NOT NULL DEFAULT 0,
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS assistant_platform_settings (
+        id UUID PRIMARY KEY,
+        monthly_ai_calls_per_musician INTEGER NOT NULL DEFAULT 300,
+        monthly_audio_per_musician INTEGER NOT NULL DEFAULT 60,
+        daily_ai_calls_global INTEGER NOT NULL DEFAULT 3000,
+        updated_at TIMESTAMPTZ DEFAULT NOW(),
+        created_at TIMESTAMPTZ DEFAULT NOW()
+    )
+    """,
 ]
 
 

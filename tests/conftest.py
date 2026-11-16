@@ -23,6 +23,8 @@ os.environ["EMAIL_ENABLED"] = "false"
 os.environ["MERCADO_PAGO_ACCESS_TOKEN"] = ""
 os.environ["MERCADO_PAGO_PUBLIC_KEY"] = ""
 os.environ["GOOGLE_CREDENTIALS_JSON"] = ""
+# Las pruebas nunca deben llamar al modelo real (Chivapp paga cada llamada), aunque el .env local tenga la clave.
+os.environ["GEMINI_API_KEY"] = ""
 os.environ["GOOGLE_CALENDAR_ID"] = ""
 os.environ["GOOGLE_CLIENT_ID"] = ""
 os.environ["GCP_BUCKET_NAME"] = ""

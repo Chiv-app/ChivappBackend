@@ -42,6 +42,14 @@ class Settings(BaseSettings):
     GOOGLE_CALENDAR_FREEBUSY_ENABLED: bool = True
     FACEBOOK_APP_ID: str = ""
     FACEBOOK_APP_SECRET: str = ""
+    # Inteligencia Artificial (Gemini API - Interactions API) y WhatsApp Cloud API (Meta Oficial)
+    GEMINI_API_KEY: str = ""
+    GEMINI_MODEL: str = "gemini-3.8-flash"
+    GEMINI_TRANSCRIBE_MODEL: str = "gemini-3.5-transcribe"
+    META_WHATSAPP_APP_ID: str = ""
+    META_WHATSAPP_APP_SECRET: str = ""
+    META_WHATSAPP_VERIFY_TOKEN: str = "chivapp-whatsapp-verify"
+    META_GRAPH_API_VERSION: str = "v21.0"
     # Must match the browser-facing API base (Next.js proxy in local/dev).
     OAUTH_REDIRECT_BASE_URL: str = "http://localhost:3000/api/v1"
     FRONTEND_URL: str = "http://localhost:3000"
@@ -59,6 +67,8 @@ class Settings(BaseSettings):
     RATE_LIMIT_DEFAULT: str = "100/minute"
     RATE_LIMIT_PUBLIC: str = "30/minute"
     RATE_LIMIT_PAYMENT: str = "15/minute"
+    # Endpoints que llaman al modelo de IA (simulador y autocompletado): frenan ráfagas; el tope mensual va aparte.
+    RATE_LIMIT_ASSISTANT: str = "20/minute"
     # memory:// es por proceso; en producción con varias instancias usar redis://...
     RATE_LIMIT_STORAGE_URI: str = "memory://"
     # Secreto compartido con el proxy de Next.js para confiar en la IP del cliente

@@ -237,7 +237,20 @@ def test_sec6_06_bug6_01_three_database_migration_scenarios():
         legacy_tables = [
             t
             for name, t in Base.metadata.tables.items()
-            if name not in {"booking_link", "payout_request", "payout_request_booking", "uploaded_file"}
+            if name
+            not in {
+                "booking_link",
+                "payout_request",
+                "payout_request_booking",
+                "uploaded_file",
+                # Tablas del asistente IA: assistant_conversation referencia booking_link, así que también faltan
+                # en la base legada y las crea la migración.
+                "musician_assistant_config",
+                "musician_whatsapp_channel",
+                "assistant_conversation",
+                "assistant_usage_counter",
+                "assistant_platform_settings",
+            }
         ]
         with engine.begin() as conn:
             conn.execute(sa.text(f'SET search_path TO "{schema_legacy}"'))
@@ -269,7 +282,7 @@ def test_sec6_06_bug6_01_three_database_migration_scenarios():
                 ).scalar()
                 assert reg == required_table
             rev = conn.execute(sa.text("SELECT version_num FROM alembic_version")).scalar()
-            assert rev == "f6a7b8c9d0e1"
+            assert rev == "a7b8c9d0e1f2"
             assert BASELINE_REVISION == "c7a3bc7f5426"
 
         # Escenario 4: Base ya estampada en d8e9f0a1b2c3 (versión previa a Audit v6 sin columnas nuevas ni payout_request_booking)

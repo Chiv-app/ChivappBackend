@@ -37,6 +37,8 @@ from app.schemas.booking_link import (
     BookingLinkIdentityCheck,
     BookingLinkOtpRequest,
     CancellationPolicyPublicOut,
+    BookingLinkAutocompleteRequest,
+    BookingLinkAutocompleteOut,
 )
 
 router = APIRouter()
@@ -112,7 +114,17 @@ def create_booking_link(
         price=payload.price,
         event_date=payload.event_date,
         start_time=payload.start_time,
+        end_time=payload.end_time,
+        event_type=(payload.event_type or "").strip() or None,
+        location_address=(payload.location_address or "").strip() or None,
+        location_city=(payload.location_city or "").strip() or None,
+        location_reference=(payload.location_reference or "").strip() or None,
+        client_fullname=(payload.client_fullname or "").strip() or None,
+        client_phone=(payload.client_phone or "").strip() or None,
         client_email=payload.client_email,
+        client_document_number=(payload.client_document_number or "").strip() or None,
+        event_description=(payload.event_description or "").strip() or None,
+        source=(payload.source or "manual").strip() or "manual",
         expires_at=datetime.utcnow() + timedelta(hours=24)
     )
     
@@ -121,6 +133,40 @@ def create_booking_link(
     db.refresh(booking_link)
     
     return booking_link
+
+
+@router.post("/autocomplete", response_model=BookingLinkAutocompleteOut)
+@limiter.limit(settings.RATE_LIMIT_ASSISTANT)
+def autocomplete_booking_link(
+    request: Request,
+    payload: BookingLinkAutocompleteRequest,
+    db: Session = Depends(deps.get_db),
+    current_user: User = Depends(deps.get_current_user),
+):
+    """Extrae desde un audio o texto dictado por el músico los campos del formulario de Nueva Contrata."""
+    if current_user.role != UserRole.musician:
+        raise HTTPException(status_code=403, detail="Sólo los músicos pueden usar el autocompletado.")
+    if not (payload.text and payload.text.strip()) and not (payload.audio_base64 and payload.audio_base64.strip()):
+        raise HTTPException(status_code=400, detail="Envía un texto o una grabación de voz para autocompletar.")
+
+    from app.services.musician_assistant import extract_booking_fields_from_text_or_audio
+
+    from app.services.assistant_usage import AssistantQuotaExceeded
+
+    try:
+        extracted = extract_booking_fields_from_text_or_audio(
+            text=payload.text,
+            audio_base64=payload.audio_base64,
+            audio_mime_type=payload.audio_mime_type or "audio/webm",
+            usage_db=db,
+            usage_user_id=current_user.id,
+        )
+    except AssistantQuotaExceeded:
+        raise HTTPException(
+            status_code=429,
+            detail="Llegaste al límite mensual de audios del asistente. Escribe los datos o inténtalo el próximo mes.",
+        )
+    return BookingLinkAutocompleteOut(**extracted)
 
 @router.get("/me", response_model=list[BookingLinkOut])
 def get_my_booking_links(
@@ -274,7 +320,17 @@ def get_booking_link(
         total_payable=float(total_payable),
         event_date=link.event_date,
         start_time=link.start_time,
+        end_time=link.end_time,
+        event_type=link.event_type,
+        location_address=link.location_address,
+        location_city=link.location_city,
+        location_reference=link.location_reference,
+        client_fullname=link.client_fullname,
+        client_phone=link.client_phone,
         client_email=link.client_email,
+        client_document_number=link.client_document_number,
+        event_description=link.event_description,
+        source=link.source or "manual",
         musician=MusicianLinkProfile(
             id=link.musician.id,
             stage_name=link.musician.stage_name,
@@ -435,19 +491,25 @@ def checkout_booking_link(
             status_code=403,
             detail="Este link de pago fue emitido exclusivamente para otro correo electrónico.",
         )
-    if link.event_date and payload.event_date != link.event_date:
-        raise HTTPException(
-            status_code=400,
-            detail="La fecha del evento no coincide con la fijada en el link de pago.",
-        )
-    if link.start_time and payload.start_time != link.start_time:
-        raise HTTPException(
-            status_code=400,
-            detail="La hora de inicio no coincide con la fijada en el link de pago.",
-        )
+    is_editable_prefill = (link.source or "manual") in (
+        "assistant_whatsapp",
+        "assistant_simulator",
+        "voice_autocomplete",
+    )
+    if not is_editable_prefill:
+        if link.event_date and payload.event_date != link.event_date:
+            raise HTTPException(
+                status_code=400,
+                detail="La fecha del evento no coincide con la fijada en el link de pago.",
+            )
+        if link.start_time and payload.start_time != link.start_time:
+            raise HTTPException(
+                status_code=400,
+                detail="La hora de inicio no coincide con la fijada en el link de pago.",
+            )
 
-    effective_date = link.event_date or payload.event_date
-    effective_start = link.start_time or payload.start_time
+    effective_date = payload.event_date if is_editable_prefill else (link.event_date or payload.event_date)
+    effective_start = payload.start_time if is_editable_prefill else (link.start_time or payload.start_time)
 
     lima_now = datetime.now(ZoneInfo("America/Lima"))
     if effective_date < lima_now.date():
@@ -619,15 +681,23 @@ def checkout_booking_link(
     elif saved_sig_url:
         assert_private_upload_owned(db, saved_sig_url, user.id, "firma")
     
+    effective_end = payload.end_time or link.end_time
+    effective_description = (
+        payload.event_description.strip()
+        if payload.event_description and payload.event_description.strip()
+        else link.event_description
+    )
     # 2. Reuse existing unpaid Booking or create a new Booking
     if reuse_existing:
         booking = existing_booking
         booking.event_date = effective_date
         booking.start_time = effective_start
+        booking.end_time = effective_end
         booking.event_type = payload.event_type
         booking.location_address = payload.location_address
         booking.location_city = payload.location_city
         booking.location_reference = payload.location_reference
+        booking.event_description = effective_description
         booking.price_agreed = link.price
         booking.status = BookingStatus.contract_signed if saved_sig_url else BookingStatus.contract_pending
     else:
@@ -636,10 +706,12 @@ def checkout_booking_link(
             contractor_id=contractor.id,
             event_date=effective_date,
             start_time=effective_start,
+            end_time=effective_end,
             event_type=payload.event_type,
             location_address=payload.location_address,
             location_city=payload.location_city,
             location_reference=payload.location_reference,
+            event_description=effective_description,
             price_agreed=link.price,
             status=BookingStatus.contract_signed if saved_sig_url else BookingStatus.contract_pending,
         )

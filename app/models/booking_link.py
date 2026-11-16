@@ -2,7 +2,7 @@ import uuid
 import enum
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, Column, String, Date, Time, Numeric, Enum, ForeignKey
+from sqlalchemy import CheckConstraint, Column, String, Date, Time, Numeric, Enum, ForeignKey, Text, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -28,7 +28,17 @@ class BookingLink(Base):
     
     event_date = Column(Date, nullable=True)
     start_time = Column(Time, nullable=True)
+    end_time = Column(Time, nullable=True)
+    event_type = Column(String(120), nullable=True)
+    location_address = Column(String(300), nullable=True)
+    location_city = Column(String(120), nullable=True)
+    location_reference = Column(String(255), nullable=True)
+    client_fullname = Column(String(120), nullable=True)
+    client_phone = Column(String(40), nullable=True)
     client_email = Column(String, nullable=True)
+    client_document_number = Column(String(20), nullable=True)
+    event_description = Column(Text, nullable=True)
+    source = Column(String(32), nullable=False, default="manual", server_default=text("'manual'"))
     
     status = Column(Enum(BookingLinkStatus), default=BookingLinkStatus.active, nullable=False)
     expires_at = Column(UTCDateTime, nullable=False)

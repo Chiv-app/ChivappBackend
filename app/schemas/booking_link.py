@@ -10,7 +10,26 @@ class BookingLinkCreate(BaseModel):
     price: float = Field(..., ge=10.0, le=50000.0, description="Monto acordado en Soles (PEN)")
     event_date: Optional[date] = None
     start_time: Optional[time] = None
+    end_time: Optional[time] = None
+    event_type: Optional[str] = Field(default=None, max_length=120)
+    location_address: Optional[str] = Field(default=None, max_length=300)
+    location_city: Optional[str] = Field(default=None, max_length=120)
+    location_reference: Optional[str] = Field(default=None, max_length=255)
+    client_fullname: Optional[str] = Field(default=None, max_length=120)
+    client_phone: Optional[str] = Field(default=None, max_length=40)
     client_email: Optional[EmailStr] = None
+    client_document_number: Optional[str] = Field(default=None, max_length=20)
+    event_description: Optional[str] = Field(default=None, max_length=2000)
+    source: Optional[str] = Field(default="manual", max_length=32)
+
+    @field_validator("client_email", mode="before")
+    @classmethod
+    def _empty_email_to_none(cls, value):
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @field_validator("price")
     @classmethod
@@ -32,7 +51,17 @@ class BookingLinkOut(BaseModel):
     price: float
     event_date: Optional[date] = None
     start_time: Optional[time] = None
+    end_time: Optional[time] = None
+    event_type: Optional[str] = None
+    location_address: Optional[str] = None
+    location_city: Optional[str] = None
+    location_reference: Optional[str] = None
+    client_fullname: Optional[str] = None
+    client_phone: Optional[str] = None
     client_email: Optional[str] = None
+    client_document_number: Optional[str] = None
+    event_description: Optional[str] = None
+    source: Optional[str] = "manual"
     status: BookingLinkStatus
     expires_at: datetime
     booking_id: Optional[UUID] = None
@@ -83,7 +112,17 @@ class BookingLinkPublicOut(BaseModel):
     total_payable: Optional[float] = 0.0
     event_date: Optional[date] = None
     start_time: Optional[time] = None
+    end_time: Optional[time] = None
+    event_type: Optional[str] = None
+    location_address: Optional[str] = None
+    location_city: Optional[str] = None
+    location_reference: Optional[str] = None
+    client_fullname: Optional[str] = None
+    client_phone: Optional[str] = None
     client_email: Optional[str] = None
+    client_document_number: Optional[str] = None
+    event_description: Optional[str] = None
+    source: Optional[str] = "manual"
     musician: MusicianLinkProfile
     status: BookingLinkStatus
     expires_at: datetime
@@ -97,10 +136,12 @@ class BookingLinkPublicOut(BaseModel):
 class BookingLinkCheckout(BaseModel):
     event_date: date
     start_time: time
+    end_time: Optional[time] = None
     event_type: str = Field(..., min_length=2, max_length=100)
     location_address: str = Field(..., min_length=5, max_length=300)
     location_city: Optional[str] = Field(default=None, max_length=100)
     location_reference: Optional[str] = Field(default=None, max_length=255)
+    event_description: Optional[str] = Field(default=None, max_length=2000)
 
     # Customer fields
     fullname: str = Field(..., min_length=2, max_length=100)
@@ -141,3 +182,28 @@ class BookingLinkIdentityResponse(BaseModel):
 
 class BookingLinkOtpRequest(BaseModel):
     email: EmailStr
+
+
+class BookingLinkAutocompleteRequest(BaseModel):
+    text: Optional[str] = Field(default=None, max_length=4000)
+    audio_base64: Optional[str] = Field(
+        default=None, max_length=7_000_000, description="Audio en base64 o data URL (hasta ~5 MB)"
+    )
+    audio_mime_type: Optional[str] = Field(default="audio/webm", max_length=64)
+
+
+class BookingLinkAutocompleteOut(BaseModel):
+    transcript: Optional[str] = None
+    price: Optional[float] = None
+    event_date: Optional[str] = None
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
+    event_type: Optional[str] = None
+    location_address: Optional[str] = None
+    location_city: Optional[str] = None
+    location_reference: Optional[str] = None
+    client_fullname: Optional[str] = None
+    client_phone: Optional[str] = None
+    client_email: Optional[str] = None
+    client_document_number: Optional[str] = None
+    event_description: Optional[str] = None

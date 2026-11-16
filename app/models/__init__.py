@@ -29,6 +29,13 @@ from app.models.booking_link import BookingLink, BookingLinkStatus
 from app.models.payout_request import PayoutRequest, PayoutRequestBooking
 from app.models.admin_audit_log import AdminAuditLog
 from app.models.ledger_entry import LedgerEntry
+from app.models.musician_assistant import (
+    MusicianAssistantConfig,
+    MusicianWhatsAppChannel,
+    AssistantConversation,
+    AssistantUsageCounter,
+    AssistantPlatformSettings,
+)
 
 __all__ = [
     "UploadedFile",
@@ -65,4 +72,9 @@ __all__ = [
     "PayoutRequestBooking",
     "AdminAuditLog",
     "LedgerEntry",
+    "MusicianAssistantConfig",
+    "MusicianWhatsAppChannel",
+    "AssistantConversation",
+    "AssistantUsageCounter",
+    "AssistantPlatformSettings",
 ]

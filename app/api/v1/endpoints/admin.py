@@ -48,6 +48,7 @@ from app.schemas.settlement import (
     PlatformPaymentInstructionsOut,
     PlatformPaymentInstructionsUpdate,
 )
+from app.schemas.assistant import AssistantLimitsOut, AssistantLimitsUpdate
 
 from app.schemas.profiles import (
     ContractorProfileAdminOut,
@@ -1450,6 +1451,56 @@ def update_admin_payment_instructions(
     invalidate_platform_payment_cache()
     db.refresh(row)
     return PlatformPaymentInstructionsOut.model_validate(row)
+
+
+@router.get("/assistant-limits", response_model=AssistantLimitsOut)
+def get_admin_assistant_limits(
+    _: User = Depends(deps.get_current_admin),
+    db: Session = Depends(deps.get_db),
+):
+    """Topes de uso del modelo de IA del asistente (los paga Chivapp) y lo gastado hoy en toda la plataforma."""
+    from app.services.assistant_usage import get_global_calls_today, get_limits
+
+    limits = get_limits(db)
+    return AssistantLimitsOut(
+        monthly_ai_calls_per_musician=limits.monthly_ai_calls_per_musician,
+        monthly_audio_per_musician=limits.monthly_audio_per_musician,
+        daily_ai_calls_global=limits.daily_ai_calls_global,
+        global_calls_today=get_global_calls_today(db),
+    )
+
+
+@router.put("/assistant-limits", response_model=AssistantLimitsOut)
+def update_admin_assistant_limits(
+    payload: AssistantLimitsUpdate,
+    current_admin: User = Depends(deps.get_current_admin),
+    db: Session = Depends(deps.get_db),
+):
+    from app.services.assistant_usage import get_global_calls_today, get_limits, get_or_create_settings_row
+
+    before = get_limits(db)
+    row = get_or_create_settings_row(db)
+    row.monthly_ai_calls_per_musician = payload.monthly_ai_calls_per_musician
+    row.monthly_audio_per_musician = payload.monthly_audio_per_musician
+    row.daily_ai_calls_global = payload.daily_ai_calls_global
+    record_admin_audit(
+        db,
+        admin_user=current_admin,
+        action="assistant_limits.update",
+        target_type="assistant_platform_settings",
+        target_id=str(row.id),
+        before_state={
+            "monthly_ai_calls_per_musician": before.monthly_ai_calls_per_musician,
+            "monthly_audio_per_musician": before.monthly_audio_per_musician,
+            "daily_ai_calls_global": before.daily_ai_calls_global,
+        },
+        after_state=payload.model_dump(),
+    )
+    db.commit()
+    return AssistantLimitsOut(
+        **payload.model_dump(),
+        global_calls_today=get_global_calls_today(db),
+    )
 
 
 @router.get("/settlements")
