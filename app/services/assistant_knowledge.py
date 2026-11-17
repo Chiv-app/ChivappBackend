@@ -6,6 +6,7 @@ Por cada perfil se guardan fragmentos de texto con su embedding en `assistant_kn
 - `policy`: la política de cancelación de Chivapp, con los valores vigentes de la configuración.
 - `profile`: biografía, géneros, repertorio, qué incluye el show.
 - `package`: nombre y descripción de cada paquete (nunca el precio: el precio lo calcula el código).
+- `faq`: las respuestas que el músico le enseñó (`assistant_knowledge_entry`).
 
 La fuente de verdad sigue siendo el perfil y la contrata. Los fragmentos son una copia que se sincroniza de forma
 perezosa: antes de buscar se compara el hash de cada fragmento y solo se calculan los embeddings de lo que cambió.
@@ -147,11 +148,33 @@ def profile_chunks(profile: Any, config: Any) -> list[Chunk]:
     return chunks
 
 
-def build_chunks(profile: Any, config: Any) -> list[Chunk]:
-    """Todos los fragmentos vigentes del perfil, sin duplicados y con el tope por perfil."""
+def faq_chunks(entries: list[Any] | None) -> list[Chunk]:
+    chunks: list[Chunk] = []
+    for entry in entries or []:
+        content = ("Pregunta: " + entry.question + chr(10) + "Respuesta: " + entry.answer)[:MAX_CHUNK_CHARS]
+        chunks.append(Chunk("faq", str(entry.id), content))
+    return chunks
+
+
+def load_entries(db: Session, profile: Any) -> list[Any]:
+    from app.models.musician_assistant import AssistantKnowledgeEntry
+
+    return (
+        db.query(AssistantKnowledgeEntry)
+        .filter(AssistantKnowledgeEntry.profile_id == profile.id)
+        .order_by(AssistantKnowledgeEntry.created_at)
+        .all()
+    )
+
+
+def build_chunks(profile: Any, config: Any, entries: list[Any] | None = None) -> list[Chunk]:
+    """Todos los fragmentos vigentes del perfil, sin duplicados y con el tope por perfil.
+
+    Lo que el músico enseñó va primero: si hay que recortar por el tope, se pierde antes lo genérico.
+    """
     seen: set[tuple[str, str, str]] = set()
     result: list[Chunk] = []
-    for chunk in [*contract_chunks(profile), policy_chunk(), *profile_chunks(profile, config)]:
+    for chunk in [*faq_chunks(entries), *contract_chunks(profile), policy_chunk(), *profile_chunks(profile, config)]:
         key = (chunk.source, chunk.ref, chunk.hash)
         if key in seen:
             continue
@@ -227,7 +250,7 @@ def sync_profile_chunks(db: Session, profile: Any, config: Any) -> dict[str, int
     """
     if not vector_available(db):
         return None
-    wanted = build_chunks(profile, config)
+    wanted = build_chunks(profile, config, load_entries(db, profile))
     profile_id = str(profile.id)
     with Session(bind=db.get_bind()) as session:
         rows = session.execute(
@@ -277,11 +300,11 @@ def sync_profile_chunks(db: Session, profile: Any, config: Any) -> dict[str, int
     return stats
 
 
-def _context_fallback(profile: Any, config: Any) -> list[dict[str, Any]]:
+def _context_fallback(profile: Any, config: Any, entries: list[Any] | None = None) -> list[dict[str, Any]]:
     """Todo el conocimiento como contexto, con tope de caracteres (sin búsqueda semántica)."""
     results: list[dict[str, Any]] = []
     used = 0
-    for chunk in build_chunks(profile, config):
+    for chunk in build_chunks(profile, config, entries):
         if used + len(chunk.content) > MAX_CONTEXT_CHARS:
             break
         used += len(chunk.content)
@@ -304,12 +327,13 @@ def search_knowledge(
     o «vacio» (la búsqueda no encontró nada suficientemente cercano).
     """
     clean = (query or "").strip()
+    entries = load_entries(db, profile)
     if not clean or not vector_available(db):
-        return _context_fallback(profile, config), "todo"
+        return _context_fallback(profile, config, entries), "todo"
     try:
         sync_profile_chunks(db, profile, config)
         if not consume_embeddings(db, 1):
-            return _context_fallback(profile, config), "todo"
+            return _context_fallback(profile, config, entries), "todo"
         vector = embed_texts([clean], "RETRIEVAL_QUERY")[0]
         # Sesión propia: si la consulta falla no se aborta la transacción de la conversación.
         with Session(bind=db.get_bind()) as session:
@@ -323,7 +347,7 @@ def search_knowledge(
             ).all()
     except Exception as exc:  # pgvector o el modelo fallaron: el asistente no debe caerse
         logger.warning("Búsqueda semántica del asistente falló, se usa todo el conocimiento: %s", exc)
-        return _context_fallback(profile, config), "todo"
+        return _context_fallback(profile, config, entries), "todo"
     found = [
         {"content": r.content, "source": r.source, "ref": r.source_ref, "score": round(float(r.score), 4)}
         for r in rows

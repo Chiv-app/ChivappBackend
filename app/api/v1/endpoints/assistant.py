@@ -24,6 +24,7 @@ from app.models.musician_assistant import (
 from app.models.musician_profile import MusicianProfile
 from app.models.user import User, UserRole
 from app.schemas.assistant import (
+    EscalationRulesItem,
     AssistantChatTurnOut,
     AssistantChatTurnRequest,
     AssistantConversationOut,
@@ -41,6 +42,7 @@ from app.services.assistant_usage import (
     claim_whatsapp_message,
     get_user_usage,
 )
+from app.services.assistant_training import get_escalation_rules, record_version
 from app.services.musician_assistant import (
     decrypt_whatsapp_token,
     encrypt_whatsapp_token,
@@ -120,6 +122,9 @@ def _serialize_config_out(
         max_discount_amount=float(config.max_discount_amount or 0.0),
         max_discount_percent=float(config.max_discount_percent or 0.0),
         custom_instructions=config.custom_instructions,
+        tone=config.tone or "cercano",
+        voice_examples=[str(e) for e in (config.voice_examples or [])],
+        escalation_rules=EscalationRulesItem(**get_escalation_rules(config)),
     )
 
 
@@ -188,7 +193,15 @@ def update_assistant_config(
     config.max_discount_amount = payload.max_discount_amount
     config.max_discount_percent = payload.max_discount_percent
     config.custom_instructions = (payload.custom_instructions or "").strip() or None
+    # Los campos de entrenamiento nuevos son opcionales: si la pantalla no los envía, quedan como estaban.
+    if payload.tone is not None:
+        config.tone = payload.tone
+    if payload.voice_examples is not None:
+        config.voice_examples = [e.strip()[:300] for e in payload.voice_examples if e and e.strip()][:10]
+    if payload.escalation_rules is not None:
+        config.escalation_rules = payload.escalation_rules.model_dump()
 
+    record_version(db, profile, config)
     db.commit()
     db.refresh(config)
     return _serialize_config_out(profile, config)

@@ -35,6 +35,9 @@ from app.models.musician_assistant import (
     AssistantConversation,
     AssistantUsageCounter,
     AssistantPlatformSettings,
+    AssistantKnowledgeEntry,
+    AssistantPendingQuestion,
+    AssistantConfigVersion,
 )
 
 __all__ = [
@@ -77,4 +80,7 @@ __all__ = [
     "AssistantConversation",
     "AssistantUsageCounter",
     "AssistantPlatformSettings",
+    "AssistantKnowledgeEntry",
+    "AssistantPendingQuestion",
+    "AssistantConfigVersion",
 ]

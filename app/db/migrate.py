@@ -757,6 +757,54 @@ PGVECTOR_STATEMENTS = [
 MIGRATION_STATEMENTS += PGVECTOR_STATEMENTS
 
 
+# Entrenamiento del asistente IA: tono, voz, reglas de derivación, conocimiento, dudas pendientes y versiones.
+# Mismo SQL que `alembic/versions/20261117_c9d0e1f2a3b4_*`.
+ASSISTANT_TRAINING_STATEMENTS = [
+    "ALTER TABLE musician_assistant_config ADD COLUMN IF NOT EXISTS tone VARCHAR(16) NOT NULL DEFAULT 'cercano'",
+    "ALTER TABLE musician_assistant_config ADD COLUMN IF NOT EXISTS voice_examples JSONB NOT NULL DEFAULT '[]'::jsonb",
+    "ALTER TABLE musician_assistant_config ADD COLUMN IF NOT EXISTS escalation_rules JSONB NOT NULL DEFAULT '{}'::jsonb",
+    """
+    CREATE TABLE IF NOT EXISTS assistant_knowledge_entry (
+        id UUID PRIMARY KEY,
+        profile_id UUID NOT NULL REFERENCES musician_profile(id) ON DELETE CASCADE,
+        question VARCHAR(300) NOT NULL,
+        answer TEXT NOT NULL,
+        source VARCHAR(24) NOT NULL DEFAULT 'tu',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_assistant_knowledge_entry_profile_id ON assistant_knowledge_entry (profile_id)",
+    """
+    CREATE TABLE IF NOT EXISTS assistant_pending_question (
+        id UUID PRIMARY KEY,
+        profile_id UUID NOT NULL REFERENCES musician_profile(id) ON DELETE CASCADE,
+        conversation_id UUID REFERENCES assistant_conversation(id) ON DELETE SET NULL,
+        question VARCHAR(300) NOT NULL,
+        context TEXT,
+        asked_count INTEGER NOT NULL DEFAULT 1,
+        status VARCHAR(16) NOT NULL DEFAULT 'open',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        answered_at TIMESTAMPTZ
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_assistant_pending_question_profile_id ON assistant_pending_question (profile_id)",
+    """
+    CREATE TABLE IF NOT EXISTS assistant_config_version (
+        id UUID PRIMARY KEY,
+        profile_id UUID NOT NULL REFERENCES musician_profile(id) ON DELETE CASCADE,
+        number INTEGER NOT NULL,
+        label VARCHAR(255) NOT NULL DEFAULT '',
+        snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        CONSTRAINT uq_assistant_config_version_profile_number UNIQUE (profile_id, number)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_assistant_config_version_profile_id ON assistant_config_version (profile_id)",
+]
+MIGRATION_STATEMENTS += ASSISTANT_TRAINING_STATEMENTS
+
+
 _STARTUP_SEED_ADVISORY_LOCK_KEY = 984512301
 
 

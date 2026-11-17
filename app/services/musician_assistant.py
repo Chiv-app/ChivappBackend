@@ -40,6 +40,13 @@ from app.models.musician_assistant import (
 from app.models.musician_profile import MusicianProfile
 from app.models.profile_status import ProfileStatus
 from app.models.user import User
+from app.services.assistant_training import (
+    escalation_reason,
+    get_escalation_rules,
+    list_entries,
+    match_faq,
+    tone_prompt,
+)
 from app.services.assistant_usage import AssistantQuotaExceeded, consume_ai_call
 from app.services.availability_match import assert_musician_available
 from app.services.booking_notifications import notify_user
@@ -635,6 +642,11 @@ def _extract_fields_heuristic(text: str, today: date | None = None) -> dict[str,
     if mem_match:
         out["members_count"] = int(mem_match.group(1))
 
+    # Invitados del evento (distinto de los integrantes del show): sirve para derivar eventos grandes al músico.
+    guests_match = re.search(r"\b(\d{2,4})\s*(?:invitados|asistentes|personas)\b(?!\s+en\s+escena)", lower)
+    if guests_match:
+        out["guests_count"] = int(guests_match.group(1))
+
     # 5. Tipo de evento
     for kw, label in _EVENT_TYPES_KEYWORDS:
         if kw in lower:
@@ -1155,7 +1167,7 @@ _ACK_WORDS = ("gracias", "ok", "okey", "vale", "listo", "perfecto", "genial", "d
 _BOOKING_FIELDS = (
     "date_conflict", "event_date", "start_time", "end_time", "event_type", "location_address", "location_city",
     "members_count", "duration_hours", "requested_discount", "asked_cheaper", "client_fullname",
-    "client_email",
+    "client_email", "guests_count",
 )  # fmt: skip
 
 
@@ -1280,6 +1292,7 @@ def _info_reply(
         "Usa un solo asterisco para negritas. No des un precio distinto al indicado "
         f"({quote['summary']}). No incluyas enlaces.\n"
         f"Instrucciones del músico: {config.custom_instructions or 'Sé amable, claro y conciso.'}\n"
+        f"Estilo: {tone_prompt(config)}\n"
         "Datos:\n- " + "\n- ".join(facts or ["(el perfil aún no tiene más detalles)"])
     )
     try:
@@ -1321,6 +1334,9 @@ def _build_assistant_reply_raw(
     usage_user_id: Any = None,
     data_changed: bool = True,
     extra_note: str | None = None,
+    escalation_note: str | None = None,
+    carries_booking_data: bool = False,
+    allow_model: bool = True,
 ) -> str:
     """Construye la respuesta del asistente (vía Gemini 3.8 Flash si hay API key, o motor conversacional estructurado).
 
@@ -1347,6 +1363,20 @@ def _build_assistant_reply_raw(
             "directamente al director de la agrupación para que te confirme el costo de traslado en breve."
         )
 
+    if escalation_note:
+        return (
+            f"¡Gracias por escribir a **{stage_name}**! Este tipo de evento lo coordina el músico personalmente. "
+            "Ya le avisé y te responde por aquí en cuanto pueda."
+        )
+
+    # Respuesta que el músico enseñó para esta pregunta (no hace falta el modelo). Solo si el mensaje no trae
+    # fecha, hora ni lugar: si los trae, se atiende primero la reserva.
+    if not carries_booking_data and usage_db is not None:
+        taught = match_faq(list_entries(usage_db, profile.id), user_message)
+        if taught is not None:
+            footer = f"\n\nTu enlace sigue disponible:\n👉 {booking_link_url}" if booking_link_url else ""
+            return taught.answer.strip() + footer
+
     if availability_ok is False:
         return (
             f"Te comento que para esa fecha y hora ({_human_date(extracted.get('event_date'))} a las "
@@ -1364,7 +1394,7 @@ def _build_assistant_reply_raw(
                     user_message=user_message,
                     quote=quote,
                     booking_link_url=booking_link_url,
-                    usage_db=usage_db,
+                    usage_db=usage_db if allow_model else None,
                     usage_user_id=usage_user_id,
                 )
             if followup == "ack":
@@ -1419,6 +1449,7 @@ def _build_assistant_reply_raw(
         f"- Cotización calculada actual: {quote['summary']}\n"
         f"- Estado de agenda: {'Disponible' if availability_ok else 'Por verificar fecha y hora'}\n"
         f"- Instrucciones del músico: {config.custom_instructions or 'Sé amable, claro y conciso.'}\n"
+        f"- Estilo: {tone_prompt(config)}\n"
         f"- Datos ya recopilados: {json.dumps(extracted, ensure_ascii=False)}\n"
         f"- Datos que aún faltan para generar el link de contrato en Chivapp: {', '.join(missing_labels)}\n"
         + (f"- Dato real del show: {'; '.join(_show_facts(profile, config, quote))}\n" if followup == "info" else "")
@@ -1432,7 +1463,7 @@ def _build_assistant_reply_raw(
         gemini_reply = _call_gemini_interaction(
             system_instruction=system_prompt,
             user_content=user_message,
-            usage_db=usage_db,
+            usage_db=usage_db if allow_model else None,
             usage_user_id=usage_user_id,
         )
     except AssistantQuotaExceeded:
@@ -1651,6 +1682,7 @@ def process_assistant_turn(
                 "booking_link": None,
             }
 
+    agent_failed = False
     # 3b. Motor con memoria y herramientas (opcional, `ASSISTANT_ENGINE=agent`). Si no hay clave ni cupo, si falla o si
     #     la respuesta no pasa la validación, el turno lo atiende el motor por reglas de más abajo, como siempre.
     if getattr(settings, "ASSISTANT_ENGINE", "rules") == "agent":
@@ -1672,6 +1704,7 @@ def process_assistant_turn(
         except Exception:
             logger.exception("Falló el motor con herramientas del asistente; atiende el motor por reglas.")
             agent_res = None
+        agent_failed = agent_res is None
         if agent_res is not None:
             agent_link = agent_res.get("booking_link")
             msgs = list(conversation.messages or [])
@@ -1802,6 +1835,11 @@ def process_assistant_turn(
     booking_link: BookingLink | None = None
     booking_link_url: str | None = None
 
+    rules_reason = escalation_reason(
+        get_escalation_rules(config),
+        guests_count=current_data.get("guests_count"),
+        event_date=ev_date_obj,
+    )
     if quote.get("out_of_coverage"):
         conversation.status = "needs_musician"
         conversation.escalation_reason = "Evento fuera de las zonas de cobertura configuradas"
@@ -1813,6 +1851,18 @@ def process_assistant_turn(
             message=(
                 f"Un cliente ({conversation.client_name or conversation.client_phone or 'Chat'}) "
                 "consultó por un evento fuera de tus zonas configuradas."
+            ),
+        )
+    elif rules_reason:
+        conversation.status = "needs_musician"
+        conversation.escalation_reason = rules_reason[:255]
+        notify_user(
+            db,
+            user=user,
+            type="assistant_escalation",
+            title="Tu asistente requiere tu intervención",
+            message=(
+                f"Un cliente ({conversation.client_name or conversation.client_phone or 'Chat'}): {rules_reason}."
             ),
         )
     elif (
@@ -1851,6 +1901,13 @@ def process_assistant_turn(
         usage_user_id=user.id,
         data_changed=data_changed,
         extra_note=extra_note,
+        escalation_note=rules_reason if not quote.get("out_of_coverage") else None,
+        carries_booking_data=any(
+            newly_extracted.get(k) for k in ("event_date", "start_time", "location_address", "location_city", "date_conflict")
+        ),
+        # Si el motor con herramientas ya falló o se pasó de tiempo, el respaldo responde con plantillas, sin otra
+        # llamada al modelo (acota el tiempo del turno y evita pagar dos veces).
+        allow_model=not agent_failed,
     )
 
     msgs = list(conversation.messages or [])

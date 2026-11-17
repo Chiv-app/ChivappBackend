@@ -20,6 +20,15 @@ class AssistantZoneSurchargeItem(BaseModel):
     distance_km: Optional[float] = Field(default=None, ge=0.0, le=1000.0)
 
 
+class EscalationRulesItem(BaseModel):
+    """Cuándo el asistente deja de responder y le pasa la conversación al músico."""
+
+    big_event_on: bool = False
+    big_event_guests: int = Field(default=100, ge=10, le=5000)
+    special_date_on: bool = False
+    unknown_question_on: bool = True
+
+
 class MusicianAssistantConfigUpdate(BaseModel):
     enabled: bool = True
     greeting_message: Optional[str] = Field(default=None, max_length=500)
@@ -33,6 +42,10 @@ class MusicianAssistantConfigUpdate(BaseModel):
     max_discount_amount: float = Field(default=0.0, ge=0.0, le=5000.0)
     max_discount_percent: float = Field(default=0.0, ge=0.0, le=50.0)
     custom_instructions: Optional[str] = Field(default=None, max_length=4000)
+    # Opcionales: si no se envían, no se cambian (la pantalla anterior no los conoce).
+    tone: Optional[Literal["cercano", "formal", "breve"]] = None
+    voice_examples: Optional[list[str]] = Field(default=None, max_length=10)
+    escalation_rules: Optional[EscalationRulesItem] = None
 
 
 class MusicianAssistantConfigOut(MusicianAssistantConfigUpdate):
@@ -156,3 +169,97 @@ class AssistantConversationOut(BaseModel):
 
 class AssistantConversationStatusUpdate(BaseModel):
     status: Literal["bot_active", "paused_by_musician", "ignored_personal"]
+
+
+# --- Entrenamiento: conocimiento, dudas pendientes, versiones, preparación y vista previa ---
+
+
+class KnowledgeEntryIn(BaseModel):
+    question: str = Field(..., min_length=3, max_length=300)
+    answer: str = Field(..., min_length=3, max_length=2000)
+    source: Literal["tu", "conversacion", "entrevista"] = "tu"
+
+
+class KnowledgeEntryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    question: str
+    answer: str
+    source: str
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class PendingQuestionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    question: str
+    context: Optional[str] = None
+    asked_count: int
+    status: str
+    conversation_id: Optional[UUID] = None
+    created_at: Optional[datetime] = None
+
+
+class PendingAnswerIn(BaseModel):
+    answer: str = Field(..., min_length=3, max_length=2000)
+
+
+class ConfigVersionOut(BaseModel):
+    number: int
+    label: str
+    created_at: Optional[datetime] = None
+    knowledge_count: Optional[int] = None
+    package_count: int = 0
+    tone: Optional[str] = None
+    is_current: bool = False
+
+
+class ReadinessItemOut(BaseModel):
+    key: str
+    title: str
+    detail: str
+    progress: float
+    weight: int
+
+
+class ReadinessOut(BaseModel):
+    score: int
+    items: list[ReadinessItemOut]
+
+
+class PreviewQuoteIn(BaseModel):
+    """Una consulta de ejemplo cotizada con las reglas que se están editando (sin guardarlas)."""
+
+    config: Optional[MusicianAssistantConfigUpdate] = None
+    members_count: Optional[int] = Field(default=None, ge=1, le=60)
+    duration_hours: Optional[float] = Field(default=None, gt=0, le=24)
+    zone: Optional[str] = Field(default=None, max_length=120)
+    start_time: Optional[str] = Field(default=None, pattern=r"^\d{1,2}:\d{2}$")
+    special_date: bool = False
+    requested_discount: bool = False
+
+
+class PreviewQuoteOut(BaseModel):
+    total: float
+    package_name: str
+    summary: str
+    lines: list[dict[str, Any]]
+    out_of_coverage: bool = False
+
+
+class PreviewCompareIn(BaseModel):
+    config: MusicianAssistantConfigUpdate
+
+
+class PreviewScenarioOut(BaseModel):
+    key: str
+    label: str
+    current_total: float
+    proposed_total: float
+    current_summary: str
+    proposed_summary: str
+    changed: bool
+

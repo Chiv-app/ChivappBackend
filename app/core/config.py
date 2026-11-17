@@ -50,8 +50,12 @@ class Settings(BaseSettings):
     GEMINI_EMBED_MODEL: str = "gemini-embedding-001"
     ASSISTANT_EMBED_DAILY_LIMIT: int = Field(default=5000, ge=0, le=1_000_000)  # embeddings por día, toda la plataforma
     ASSISTANT_MAX_CHUNKS_PER_PROFILE: int = Field(default=120, ge=1, le=1000)
-    # Motor del asistente: «rules» (reglas + redacción con IA, como hoy) o «agent» (conversa con herramientas).
-    ASSISTANT_ENGINE: str = "rules"
+    # Motor del asistente: «agent» (conversa con memoria y herramientas; el de siempre) o «rules» (reglas + redacción
+    # con IA). El motor por reglas queda como respaldo: sin clave, sin cupo, si el modelo falla o tarda demasiado, o si la
+    # respuesta no pasa el validador, atiende «rules» ese turno.
+    ASSISTANT_ENGINE: str = "agent"
+    # Tiempo máximo que el motor con herramientas puede tardar en un turno antes de ceder al motor por reglas.
+    ASSISTANT_AGENT_TIME_BUDGET_SECONDS: int = Field(default=20, ge=5, le=60)
     META_WHATSAPP_APP_ID: str = ""
     META_WHATSAPP_APP_SECRET: str = ""
     META_WHATSAPP_VERIFY_TOKEN: str = "chivapp-whatsapp-verify"

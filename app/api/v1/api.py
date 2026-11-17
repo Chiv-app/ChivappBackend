@@ -21,6 +21,7 @@ from app.api.v1.endpoints import (
     calendar_events,
     booking_links,
     assistant,
+    assistant_training,
 )
 
 api_router = APIRouter()
@@ -32,6 +33,7 @@ api_router.include_router(booking_share.router)
 api_router.include_router(booking_location.router)
 api_router.include_router(booking_links.router, prefix="/booking-links", tags=["booking-links"])
 api_router.include_router(assistant.router)
+api_router.include_router(assistant_training.router)
 api_router.include_router(contracts.router)
 api_router.include_router(payments.router)
 api_router.include_router(notifications.router)

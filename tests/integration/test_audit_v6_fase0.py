@@ -250,6 +250,9 @@ def test_sec6_06_bug6_01_three_database_migration_scenarios():
                 "assistant_conversation",
                 "assistant_usage_counter",
                 "assistant_platform_settings",
+                "assistant_knowledge_entry",
+                "assistant_pending_question",
+                "assistant_config_version",
             }
         ]
         with engine.begin() as conn:
@@ -282,7 +285,7 @@ def test_sec6_06_bug6_01_three_database_migration_scenarios():
                 ).scalar()
                 assert reg == required_table
             rev = conn.execute(sa.text("SELECT version_num FROM alembic_version")).scalar()
-            assert rev == "b8c9d0e1f2a3"
+            assert rev == "c9d0e1f2a3b4"
             assert BASELINE_REVISION == "c7a3bc7f5426"
 
         # Escenario 4: Base ya estampada en d8e9f0a1b2c3 (versión previa a Audit v6 sin columnas nuevas ni payout_request_booking)

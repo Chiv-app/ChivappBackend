@@ -9,6 +9,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    UniqueConstraint,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -53,6 +54,13 @@ class MusicianAssistantConfig(Base):
 
     # Instrucciones libres en lenguaje natural ("Entrena a tu asistente")
     custom_instructions = Column(Text, nullable=True)
+
+    # Cómo habla: tono ("cercano" | "formal" | "breve") y mensajes de ejemplo del músico para imitar su estilo.
+    tone = Column(String(16), nullable=False, default="cercano", server_default=text("'cercano'"))
+    voice_examples = Column(JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb"))
+    # Cuándo el asistente deriva al músico: {"big_event_on": bool, "big_event_guests": int,
+    # "special_date_on": bool, "unknown_question_on": bool}. Vacío = comportamiento de siempre.
+    escalation_rules = Column(JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb"))
 
     created_at = Column(UTCDateTime, default=datetime.utcnow)
     updated_at = Column(UTCDateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -161,3 +169,69 @@ class AssistantConversation(Base):
 
     profile = relationship("MusicianProfile")
     last_booking_link = relationship("BookingLink")
+
+
+class AssistantKnowledgeEntry(Base):
+    """Pregunta y respuesta que el músico le enseña a su asistente (se usa como dato, no como pregunta exacta)."""
+
+    __tablename__ = "assistant_knowledge_entry"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    profile_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("musician_profile.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    question = Column(String(300), nullable=False)
+    answer = Column(Text, nullable=False)
+    # "tu" (escrita por el músico) | "conversacion" (de una duda pendiente) | "entrevista"
+    source = Column(String(24), nullable=False, default="tu", server_default=text("'tu'"))
+    created_at = Column(UTCDateTime, default=datetime.utcnow)
+    updated_at = Column(UTCDateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class AssistantPendingQuestion(Base):
+    """Duda de un cliente que el asistente no supo responder; el músico la responde una vez y queda enseñada."""
+
+    __tablename__ = "assistant_pending_question"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    profile_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("musician_profile.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    conversation_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("assistant_conversation.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    question = Column(String(300), nullable=False)
+    context = Column(Text, nullable=True)
+    asked_count = Column(Integer, nullable=False, default=1, server_default=text("1"))
+    # "open" | "answered" | "dismissed"
+    status = Column(String(16), nullable=False, default="open", server_default=text("'open'"))
+    created_at = Column(UTCDateTime, default=datetime.utcnow)
+    answered_at = Column(UTCDateTime, nullable=True)
+
+
+class AssistantConfigVersion(Base):
+    """Copia de la configuración de entrenamiento cada vez que cambia, para poder volver a una versión anterior."""
+
+    __tablename__ = "assistant_config_version"
+    __table_args__ = (UniqueConstraint("profile_id", "number", name="uq_assistant_config_version_profile_number"),)
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    profile_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("musician_profile.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    number = Column(Integer, nullable=False)
+    label = Column(String(255), nullable=False, default="", server_default=text("''"))
+    snapshot = Column(JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb"))
+    created_at = Column(UTCDateTime, default=datetime.utcnow)
+

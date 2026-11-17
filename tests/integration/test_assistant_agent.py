@@ -279,12 +279,13 @@ def test_when_the_model_fails_the_rules_engine_answers(client, db_session, engin
     assert "S/ 450.00" in turn["reply"]
 
 
-def test_the_default_engine_never_calls_the_agent(client, db_session, monkeypatch):
+def test_the_rules_engine_never_calls_the_agent(client, db_session, monkeypatch):
     profile = _musician(db_session)
     _login(client, db_session, profile)
+    monkeypatch.setattr(settings, "ASSISTANT_ENGINE", "rules")
     monkeypatch.setattr(settings, "GEMINI_API_KEY", "clave-de-prueba")
     monkeypatch.setattr(assistant_svc, "_call_gemini_interaction", lambda **_kw: None)
-    monkeypatch.setattr(agent, "_interactions_call", lambda *_a, **_kw: pytest.fail("el motor por defecto es «rules»"))
+    monkeypatch.setattr(agent, "_interactions_call", lambda *_a, **_kw: pytest.fail("con ASSISTANT_ENGINE=rules no debe llamarse al agente"))
 
     turn = _say(client, "Hola, ¿cuánto cobran?")
 
@@ -336,3 +337,46 @@ def test_conversation_row_keeps_the_reservation_state(client, db_session, engine
     assert conversation.extracted_data["location_city"] == "Lima"
     assert conversation.extracted_data["calculated_price"] == 450.0
     assert db_session.execute(text("select count(*) from booking_link")).scalar() == 1
+
+
+def test_the_fallback_does_not_call_the_model_again_after_the_agent_failed(client, db_session, engine, monkeypatch):
+    profile = _musician(db_session)
+    _login(client, db_session, profile)
+    calls = []
+    monkeypatch.setattr(assistant_svc, "_call_gemini_interaction", lambda **kw: calls.append(kw) or None)
+    engine.use(lambda _s, _steps: None)
+
+    turn = _say(client, "Hola, ¿cuánto cobran? ¿Qué incluye el show?")
+
+    assert turn["reply"]
+    # Sin contexto de cupo (usage_db=None) el modelo no se llama ni se cobra: el respaldo respondió con plantillas.
+    assert all(kw["usage_db"] is None for kw in calls)
+
+
+def test_a_turn_that_ran_out_of_time_does_not_call_the_model(monkeypatch):
+    import time
+
+    import httpx
+
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", "clave-de-prueba")
+
+    def no_network(*_a, **_kw):
+        raise AssertionError("no debía abrir una conexión")
+
+    monkeypatch.setattr(httpx, "Client", no_network)
+    token = agent._DEADLINE.set(time.monotonic() - 1)
+    try:
+        assert agent._interactions_call("sistema", [{"type": "user_input", "content": "hola"}]) is None
+    finally:
+        agent._DEADLINE.reset(token)
+
+
+def test_a_wrong_weekday_in_the_reply_is_rejected_by_the_validator(client, db_session, engine):
+    profile = _musician(db_session)
+    _login(client, db_session, profile)
+    wrong = _WEEKDAY_NAMES[(EVENT_DATE.weekday() + 1) % 7]
+    engine.use(lambda _s, _steps: _text(f"Perfecto, te esperamos el {wrong} {EVENT_DATE.day} de {_MONTH_NAMES[EVENT_DATE.month - 1]}."))
+
+    turn = _say(client, "Quiero reservar")
+
+    assert wrong not in turn["reply"]  # la respuesta del modelo se descartó y atendió el motor por reglas
