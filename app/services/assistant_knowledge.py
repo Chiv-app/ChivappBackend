@@ -331,7 +331,11 @@ def search_knowledge(
     if not clean or not vector_available(db):
         return _context_fallback(profile, config, entries), "todo"
     try:
-        sync_profile_chunks(db, profile, config)
+        stats = sync_profile_chunks(db, profile, config)
+        if stats and stats.get("skipped"):
+            # El índice quedó incompleto (sin cupo de embeddings o con un fallo): buscar solo en lo ya indexado
+            # haría creer que no hay información. Se envía todo el conocimiento como contexto.
+            return _context_fallback(profile, config, entries), "todo"
         if not consume_embeddings(db, 1):
             return _context_fallback(profile, config, entries), "todo"
         vector = embed_texts([clean], "RETRIEVAL_QUERY")[0]

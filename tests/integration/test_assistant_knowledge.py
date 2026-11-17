@@ -125,9 +125,9 @@ def test_sync_is_idempotent_and_only_embeds_what_changed(db_session, pgvector, f
 def test_search_finds_the_cancellation_policy_first(db_session, pgvector, fake_embeddings):
     profile, config = _profile(db_session)
 
-    found, mode = knowledge.search_knowledge(
-        db_session, profile, config, "¿Qué pasa con el reembolso si cancelo la reserva con pocos días?", min_score=0.05
-    )
+    # Los embeddings de prueba son por palabras exactas (no por significado): se pregunta con una palabra que solo
+    # aparece en lo que habla de reembolsos.
+    found, mode = knowledge.search_knowledge(db_session, profile, config, "reembolsos", min_score=0.05)
 
     assert mode == "vector"
     assert found[0]["source"] in {"policy", "contract"}

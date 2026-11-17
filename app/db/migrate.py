@@ -733,22 +733,32 @@ PGVECTOR_STATEMENTS = [
     """,
     """
     DO $$
+    DECLARE
+        ext_schema text;
     BEGIN
-        IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector') THEN
-            CREATE TABLE IF NOT EXISTS assistant_knowledge_chunk (
-                id UUID PRIMARY KEY,
-                profile_id UUID NOT NULL REFERENCES musician_profile(id) ON DELETE CASCADE,
-                source VARCHAR(32) NOT NULL,
-                source_ref VARCHAR(120) NOT NULL DEFAULT '',
-                content TEXT NOT NULL,
-                content_hash VARCHAR(64) NOT NULL,
-                embedding vector(768) NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );
+        SELECT n.nspname INTO ext_schema
+        FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace
+        WHERE e.extname = 'vector';
+        IF ext_schema IS NOT NULL THEN
+            -- El tipo `vector` vive en el esquema donde se instaló la extensión (no siempre el de la sesión).
+            EXECUTE $q$
+                CREATE TABLE IF NOT EXISTS assistant_knowledge_chunk (
+                    id UUID PRIMARY KEY,
+                    profile_id UUID NOT NULL REFERENCES musician_profile(id) ON DELETE CASCADE,
+                    source VARCHAR(32) NOT NULL,
+                    source_ref VARCHAR(120) NOT NULL DEFAULT '',
+                    content TEXT NOT NULL,
+                    content_hash VARCHAR(64) NOT NULL,
+                    embedding $q$ || quote_ident(ext_schema) || $q$.vector(768) NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            $q$;
             CREATE INDEX IF NOT EXISTS ix_assistant_knowledge_chunk_profile
                 ON assistant_knowledge_chunk (profile_id);
-            CREATE INDEX IF NOT EXISTS ix_assistant_knowledge_chunk_embedding
-                ON assistant_knowledge_chunk USING hnsw (embedding vector_cosine_ops);
+            EXECUTE $q$
+                CREATE INDEX IF NOT EXISTS ix_assistant_knowledge_chunk_embedding
+                ON assistant_knowledge_chunk USING hnsw (embedding $q$ || quote_ident(ext_schema) || $q$.vector_cosine_ops)
+            $q$;
         END IF;
     END
     $$
