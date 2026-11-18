@@ -216,7 +216,7 @@ def get_or_create_whatsapp_channel(
             webhook_verify_token=secrets.token_urlsafe(16),
             is_active=True,
             auto_pause_on_human_reply=True,
-            ignore_ensemble_members=True,
+            ignore_ensemble_members=False,
             ignore_personal_chats=True,
             ignored_phones=[],
         )

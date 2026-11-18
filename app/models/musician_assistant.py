@@ -87,7 +87,8 @@ class MusicianWhatsAppChannel(Base):
 
     is_active = Column(Boolean, nullable=False, default=True, server_default=text("true"))
     auto_pause_on_human_reply = Column(Boolean, nullable=False, default=True, server_default=text("true"))
-    ignore_ensemble_members = Column(Boolean, nullable=False, default=True, server_default=text("true"))
+    # Por defecto el asistente NO descarta a los integrantes: el músico lo activa si lo necesita.
+    ignore_ensemble_members = Column(Boolean, nullable=False, default=False, server_default=text("false"))
     ignore_personal_chats = Column(Boolean, nullable=False, default=True, server_default=text("true"))
     ignored_phones = Column(JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb"))
 

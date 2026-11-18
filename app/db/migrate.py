@@ -663,7 +663,7 @@ MIGRATION_STATEMENTS = [
         webhook_verify_token VARCHAR(128),
         is_active BOOLEAN NOT NULL DEFAULT TRUE,
         auto_pause_on_human_reply BOOLEAN NOT NULL DEFAULT TRUE,
-        ignore_ensemble_members BOOLEAN NOT NULL DEFAULT TRUE,
+        ignore_ensemble_members BOOLEAN NOT NULL DEFAULT FALSE,
         ignore_personal_chats BOOLEAN NOT NULL DEFAULT TRUE,
         ignored_phones JSONB NOT NULL DEFAULT '[]'::jsonb,
         connected_at TIMESTAMPTZ,
@@ -813,6 +813,13 @@ ASSISTANT_TRAINING_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS ix_assistant_config_version_profile_id ON assistant_config_version (profile_id)",
 ]
 MIGRATION_STATEMENTS += ASSISTANT_TRAINING_STATEMENTS
+
+# Integrantes: el filtro viene desactivado por defecto. Mismo cambio de valor por defecto que
+# `alembic/versions/20261117_d0e1f2a3b4c5_*`; el UPDATE de filas existentes vive solo en Alembic (aquí correría en cada arranque).
+ASSISTANT_ENSEMBLE_DEFAULT_STATEMENTS = [
+    "ALTER TABLE musician_whatsapp_channel ALTER COLUMN ignore_ensemble_members SET DEFAULT FALSE",
+]
+MIGRATION_STATEMENTS += ASSISTANT_ENSEMBLE_DEFAULT_STATEMENTS
 
 
 _STARTUP_SEED_ADVISORY_LOCK_KEY = 984512301

@@ -539,7 +539,16 @@ def _send_whatsapp_cloud_message(
                     "text": {"preview_url": True, "body": text},
                 },
             )
-            return resp.status_code < 400
+            if resp.status_code >= 400:
+                # Meta explica el motivo en el cuerpo (token vencido, destinatario no permitido, ventana de 24 h...).
+                logger.warning(
+                    "WhatsApp Cloud API rechazó el envío (phone_number_id=%s, HTTP %s): %s",
+                    phone_number_id,
+                    resp.status_code,
+                    (resp.text or "")[:300],
+                )
+                return False
+            return True
     except Exception as exc:
         logger.warning("Fallo enviando mensaje a WhatsApp Cloud API: %s", exc)
         return False
@@ -573,6 +582,7 @@ async def receive_meta_whatsapp_webhook(
         raise HTTPException(status_code=400, detail="JSON inválido.")
 
     processed_results: list[dict[str, Any]] = []
+    logger.info("Webhook de WhatsApp recibido y firmado correctamente (%d entradas).", len(payload.get("entry") or []))
 
     for entry in payload.get("entry") or []:
         for change in entry.get("changes") or []:
@@ -588,6 +598,10 @@ async def receive_meta_whatsapp_webhook(
                 .first()
             )
             if not channel:
+                logger.warning(
+                    "Webhook de WhatsApp para un número sin canal vinculado en Chivapp (phone_number_id=%s).",
+                    phone_number_id,
+                )
                 continue
 
             musician_user = db.get(User, channel.user_id)
@@ -705,13 +719,27 @@ async def receive_meta_whatsapp_webhook(
                     db.rollback()
                     continue
                 reply_text = turn_res.get("reply")
+                conversation_obj = turn_res["conversation"]
+                sent_ok: bool | None = None
                 if reply_text and access_token:
-                    _send_whatsapp_cloud_message(
+                    sent_ok = _send_whatsapp_cloud_message(
                         phone_number_id=phone_number_id,
                         access_token=access_token,
                         to_phone=from_phone,
                         text=reply_text,
                     )
+                # Sin contenido del mensaje ni teléfono del cliente: solo lo necesario para saber qué pasó.
+                logger.info(
+                    "WhatsApp entrante procesado: phone_number_id=%s tipo=%s estado_conversacion=%s motivo=%s respuesta=%s "
+                    "token=%s enviada=%s",
+                    phone_number_id,
+                    msg_type,
+                    conversation_obj.status,
+                    getattr(conversation_obj, "escalation_reason", None),
+                    "sí" if reply_text else "no",
+                    "sí" if access_token else "no",
+                    sent_ok,
+                )
                 link_obj = turn_res.get("booking_link")
                 processed_results.append(
                     {

@@ -83,7 +83,7 @@ class WhatsAppChannelOut(BaseModel):
     has_access_token: bool = False
     is_active: bool = True
     auto_pause_on_human_reply: bool = True
-    ignore_ensemble_members: bool = True
+    ignore_ensemble_members: bool = False
     ignore_personal_chats: bool = True
     ignored_phones: list[str] = Field(default_factory=list)
     webhook_url: str
