@@ -34,13 +34,27 @@ def serialize_booking_out(
     *,
     viewer_role: BookingViewerRole | None = None,
     member_invite_status: str | None = None,
+    viewer_user: User | None = None,
 ) -> BookingOut:
     """Map ORM booking + optional party preview fields."""
+    from app.services.calendar_service import get_booking_calendar_event_id_for_viewer
+
     base = BookingOut.model_validate(booking)
     musician = booking.musician
     contractor = booking.contractor
     contractor_user = contractor.user if contractor else None
     complaint = getattr(booking, "complaint", None)
+    if viewer_role == "member":
+        cal_role = "member"
+    elif viewer_user is not None and viewer_user.role == UserRole.contractor:
+        cal_role = "contractor"
+    else:
+        cal_role = "owner"
+    resolved_calendar_event_id = get_booking_calendar_event_id_for_viewer(
+        booking,
+        role=cal_role,
+        user_id=str(viewer_user.id) if viewer_user else None,
+    )
     # Un integrante convocado ve el evento (fecha, lugar, estado) pero no el dinero ni las disputas
     # entre el líder y el contratante.
     private_money: dict = (
@@ -62,6 +76,7 @@ def serialize_booking_out(
     return base.model_copy(
         update={
             **private_money,
+            "calendar_event_id": resolved_calendar_event_id,
             "musician_name": musician.stage_name if musician else None,
             "musician_image_url": (
                 musician.profile_image_url if musician else None

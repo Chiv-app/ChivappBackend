@@ -365,11 +365,13 @@ def _serialize_booking_clean(
     viewer_role: str = "owner",
     member_invite_status: str | None = None,
     requested_fee_percent: Decimal | None = None,
+    viewer_user: User | None = None,
 ) -> BookingOut:
     out = serialize_booking_out(
         booking,
         viewer_role=viewer_role,
         member_invite_status=member_invite_status,
+        viewer_user=viewer_user,
     )
     if viewer_role == "member":
         # El integrante no ve precios ni comisión: no se recalcula nada para él.
@@ -422,7 +424,7 @@ def list_bookings(
         )
         return [
             _serialize_booking_clean(
-                db, b, viewer_role="owner", requested_fee_percent=fee_pct
+                db, b, viewer_role="owner", requested_fee_percent=fee_pct, viewer_user=current_user
             )
             for b in bookings
         ]
@@ -460,7 +462,7 @@ def list_bookings(
         )
         results = [
             _serialize_booking_clean(
-                db, b, viewer_role="owner", requested_fee_percent=fee_pct
+                db, b, viewer_role="owner", requested_fee_percent=fee_pct, viewer_user=current_user
             )
             for b in owned
         ] + [
@@ -470,6 +472,7 @@ def list_bookings(
                 member_invite_status=resolve_member_invite_status(
                     db, b, current_user
                 ),
+                viewer_user=current_user,
             )
             for b in member_bookings
         ]
@@ -497,6 +500,7 @@ def get_booking(
         booking,
         viewer_role=viewer_role,
         member_invite_status=invite_status,
+        viewer_user=current_user,
     )
 
 
@@ -1094,47 +1098,103 @@ def sync_booking_calendar_endpoint(
     current_user: User = Depends(deps.get_current_user),
     db: Session = Depends(deps.get_db),
 ):
-    from app.services.calendar_service import sync_booking_calendar
-    
+    from app.services.calendar_service import (
+        CALENDAR_SYNC_STATUS_NAMES,
+        set_booking_calendar_event_id_for_viewer,
+        sync_booking_calendar,
+        sync_participant_booking_calendar,
+    )
+
     booking = _get_booking_with_parties(db, booking_id)
     viewer_role = assert_booking_viewer(db, booking, current_user)
-    
-    if viewer_role != "owner":
-        raise HTTPException(403, "Solo el m\u00fasico l\u00edder puede sincronizar la agenda.")
-
-    if current_user.role != UserRole.musician:
-        raise HTTPException(403, "Solo los m\u00fasicos pueden realizar esta acci\u00f3n.")
-
-    from app.services.calendar_service import CALENDAR_SYNC_STATUS_NAMES
 
     if getattr(booking.status, "value", booking.status) not in CALENDAR_SYNC_STATUS_NAMES:
-        raise HTTPException(400, "Solo puedes agendar una reserva que ya tiene el pago confirmado y sigue vigente.")
+        raise HTTPException(
+            400,
+            "Solo puedes agendar una reserva que ya tiene el pago confirmado y sigue vigente.",
+        )
 
-    str_member_ids = [str(uid) for uid in payload.ensemble_member_ids]
-    new_event_id = sync_booking_calendar(db, str(booking.id), payload.include_contractor, str_member_ids)
-    if new_event_id:
-        booking.calendar_event_id = new_event_id
-        db.commit()
+    invite_status: str | None = None
+
+    if current_user.role == UserRole.musician and viewer_role == "owner":
+        str_member_ids = [str(uid) for uid in payload.ensemble_member_ids]
+        new_event_id = sync_booking_calendar(
+            db, str(booking.id), payload.include_contractor, str_member_ids
+        )
+        if new_event_id:
+            set_booking_calendar_event_id_for_viewer(
+                booking, new_event_id, role="owner"
+            )
+            db.commit()
+        else:
+            raise HTTPException(
+                400,
+                "No se pudo sincronizar. Asegúrate de tener conectado tu Google Calendar y verifica los permisos.",
+            )
+
+        # Enviar invitaciones (emails y BD) usando la funcion oficial
+        try:
+            from app.api.v1.endpoints.ensemble_members import create_booking_invites
+            from app.schemas.ensemble import BookingMemberInviteCreate
+            import uuid
+
+            if str_member_ids:
+                invite_payload = BookingMemberInviteCreate(
+                    ensemble_member_ids=[uuid.UUID(m) for m in str_member_ids]
+                )
+                create_booking_invites(
+                    booking_id=uuid.UUID(booking_id),
+                    payload=invite_payload,
+                    db=db,
+                    current_user=current_user,
+                )
+        except Exception as e:
+            import logging
+
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error creando invitaciones de reserva: {e}")
+
+    elif current_user.role == UserRole.contractor and viewer_role == "owner":
+        new_event_id = sync_participant_booking_calendar(
+            db,
+            str(booking.id),
+            current_user,
+            role="contractor",
+            include_counterparty=payload.include_contractor,
+        )
+        if not new_event_id:
+            raise HTTPException(
+                400,
+                "No se pudo sincronizar. Asegúrate de tener conectado tu Google Calendar y verifica los permisos.",
+            )
+
+    elif current_user.role == UserRole.musician and viewer_role == "member":
+        invite_status = resolve_member_invite_status(db, booking, current_user)
+        if invite_status != "accepted":
+            raise HTTPException(
+                403,
+                "Debes aceptar la convocatoria antes de sincronizar la agenda.",
+            )
+        new_event_id = sync_participant_booking_calendar(
+            db,
+            str(booking.id),
+            current_user,
+            role="member",
+            include_counterparty=False,
+        )
+        if not new_event_id:
+            raise HTTPException(
+                400,
+                "No se pudo sincronizar. Asegúrate de tener conectado tu Google Calendar y verifica los permisos.",
+            )
     else:
-        raise HTTPException(400, "No se pudo sincronizar. Asegúrate que el músico líder tenga conectado su Google Calendar y verifica los permisos.")
-    
-    # Enviar invitaciones (emails y BD) usando la funcion oficial
-    try:
-        from app.api.v1.endpoints.ensemble_members import create_booking_invites
-        from app.schemas.ensemble import BookingMemberInviteCreate
-        import uuid
-        if str_member_ids:
-            invite_payload = BookingMemberInviteCreate(ensemble_member_ids=[uuid.UUID(m) for m in str_member_ids])
-            create_booking_invites(booking_id=uuid.UUID(booking_id), payload=invite_payload, db=db, current_user=current_user)
-    except Exception as e:
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.error(f"Error creando invitaciones de reserva: {e}")
+        raise HTTPException(403, "No tienes permiso para sincronizar esta agenda.")
 
     return serialize_booking_out(
         booking,
         viewer_role=viewer_role,
-        member_invite_status=None,
+        member_invite_status=invite_status,
+        viewer_user=current_user,
     )
 
 

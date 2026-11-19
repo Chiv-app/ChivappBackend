@@ -964,6 +964,7 @@ def respond_my_booking_invite(
         member_invite_status=resolve_member_invite_status(
             db, booking, current_user
         ),
+        viewer_user=current_user,
     )
 
 
@@ -986,11 +987,21 @@ def _apply_booking_invite_response(
     invite.responded_at = datetime.utcnow()
 
     member = invite.ensemble_member
-    
+    member_user = db.get(User, member.member_user_id) if member and member.member_user_id else None
+
     # REMOVE FROM CALENDAR IF DECLINED
     if action == "decline" and booking.calendar_event_id and member:
         from app.services.calendar_service import remove_attendee_from_booking_event
         remove_attendee_from_booking_event(booking.calendar_event_id, member.email)
+
+    # Si el integrante acepta y tiene Google Calendar conectado, enviamos el evento a su agenda
+    if action == "accept" and member_user and getattr(member_user, "google_calendar_refresh_token", None):
+        try:
+            from app.services.calendar_service import sync_participant_booking_calendar
+
+            sync_participant_booking_calendar(db, str(booking.id), member_user, role="member")
+        except Exception:  # noqa: BLE001
+            pass
 
     leader = db.get(User, member.leader_user_id) if member else None
     if leader:

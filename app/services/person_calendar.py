@@ -83,8 +83,14 @@ def _booking_event(
     title: str,
     profile: MusicianProfile | None,
     role: str,
+    user_id: str | None = None,
 ) -> dict[str, Any]:
+    from app.services.calendar_service import get_booking_calendar_event_id_for_viewer
+
     begin, finish = _bounds(booking.event_date, booking.start_time, booking.end_time)
+    synced_id = get_booking_calendar_event_id_for_viewer(
+        booking, role=role, user_id=user_id
+    )
     return {
         "id": f"{kind}:{booking.id}",
         "booking_id": str(booking.id),
@@ -99,7 +105,7 @@ def _booking_event(
         "address": booking.location_address,
         "profile_id": str(profile.id) if profile else None,
         "profile_name": (profile.stage_name if profile else None),
-        "synced": bool(booking.calendar_event_id),
+        "synced": bool(synced_id),
         "conflict": False,
     }
 
@@ -183,6 +189,7 @@ def _musician_events(db: Session, user: User, rng: CalendarRange) -> list[dict[s
                 title=f"{booking.event_type or 'Evento'} con {group}" if group else (booking.event_type or "Evento"),
                 profile=None,
                 role="member",
+                user_id=str(user.id),
             )
         )
     return events

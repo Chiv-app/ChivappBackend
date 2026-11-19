@@ -444,3 +444,153 @@ def test_google_calendar_event_uses_the_booked_profiles_stage_name(db_session: S
     assert len(captured) == 1
     assert "Los Hermanos Quispe" in captured[0]["summary"]
     assert "Los Hermanos Quispe" in captured[0]["description"]
+
+
+def test_contractor_can_sync_confirmed_booking_manually_and_automatically(
+    client: TestClient, db_session: Session
+):
+    from app.services.mercadopago_service import _confirm_booking_notifications_and_calendar
+
+    m_user, m_profile = _musician(db_session, "Mariachi Sol")
+    c_user, c_profile = _contractor(db_session)
+    c_user.google_calendar_refresh_token = "contractor-refresh-token"
+    db_session.commit()
+    booking = _booking(db_session, m_profile, c_profile, day=DAY)
+
+    captured: list[dict] = []
+
+    class _FakeEvents:
+        def insert(self, **kwargs):
+            captured.append(kwargs.get("body", {}))
+
+            class _Exec:
+                def execute(self_inner):
+                    return {"id": "evt-contractor-1"}
+
+            return _Exec()
+
+        def update(self, **kwargs):
+            captured.append(kwargs.get("body", {}))
+
+            class _Exec:
+                def execute(self_inner):
+                    return {"id": kwargs.get("eventId", "evt-contractor-1")}
+
+            return _Exec()
+
+    class _FakeService:
+        def events(self):
+            return _FakeEvents()
+
+    # 1. Envío automático al confirmar el pago cuando el contratista tiene Google Calendar conectado
+    with (
+        patch("app.services.calendar_service._get_calendar_service_oauth", return_value=_FakeService()),
+        patch("app.services.mercadopago_service.notify_booking_confirmed"),
+    ):
+        _confirm_booking_notifications_and_calendar(db_session, booking)
+
+    assert len(captured) == 1
+    assert m_profile.stage_name in captured[0]["summary"]
+
+    # El contratista ve su evento como sincronizado, pero el músico líder (sin Google conectado) no
+    _login(client, c_user)
+    c_events = _events(client, *RANGE)
+    assert len(c_events) == 1 and c_events[0]["synced"] is True
+    c_detail = client.get(f"/api/v1/bookings/{booking.id}")
+    assert c_detail.status_code == 200
+    assert c_detail.json()["calendar_event_id"] == "evt-contractor-1"
+
+    _login(client, m_user)
+    m_events = _events(client, *RANGE)
+    assert len(m_events) == 1 and m_events[0]["synced"] is False
+    m_detail = client.get(f"/api/v1/bookings/{booking.id}")
+    assert m_detail.status_code == 200
+    assert m_detail.json()["calendar_event_id"] is None
+
+    # 2. Botón manual del contratista (POST /api/v1/bookings/{id}/calendar-sync)
+    _login(client, c_user)
+    with patch("app.services.calendar_service._get_calendar_service_oauth", return_value=_FakeService()):
+        res_sync = client.post(
+            f"/api/v1/bookings/{booking.id}/calendar-sync",
+            json={"include_contractor": True, "ensemble_member_ids": []},
+        )
+    assert res_sync.status_code == 200, res_sync.text
+    assert res_sync.json()["calendar_event_id"] == "evt-contractor-1"
+    assert any(
+        att.get("email") == m_user.email
+        for att in captured[-1].get("attendees", [])
+    )
+
+
+def test_accepted_ensemble_member_can_sync_confirmed_booking_and_pending_cannot(
+    client: TestClient, db_session: Session
+):
+    leader_user, leader_profile = _musician(db_session, "Líder")
+    member_user, _ = _musician(db_session, "Integrante")
+    member_user.google_calendar_refresh_token = "member-refresh-token"
+    c_user, c_profile = _contractor(db_session)
+    c_user.phone = "999888777"
+    booking = _booking(db_session, leader_profile, c_profile, day=DAY)
+
+    ens_member = EnsembleMember(
+        leader_user_id=leader_user.id,
+        profile_id=leader_profile.id,
+        member_user_id=member_user.id,
+        fullname=member_user.fullname,
+        email=member_user.email,
+        specialties=["Trompeta"],
+        status=EnsembleMemberStatus.active,
+    )
+    db_session.add(ens_member)
+    db_session.flush()
+    invite = BookingMemberInvite(
+        booking_id=booking.id,
+        ensemble_member_id=ens_member.id,
+        status=BookingMemberInviteStatus.pending,
+        response_token=uuid.uuid4().hex,
+    )
+    db_session.add(invite)
+    db_session.commit()
+
+    _login(client, member_user)
+
+    # Mientras la convocatoria está pendiente, no puede sincronizar
+    res_pending = client.post(
+        f"/api/v1/bookings/{booking.id}/calendar-sync",
+        json={"include_contractor": False, "ensemble_member_ids": []},
+    )
+    assert res_pending.status_code == 403
+
+    # Una vez aceptada, puede sincronizar en su propio Google Calendar y nunca recibe el teléfono del contratista
+    invite.status = BookingMemberInviteStatus.accepted
+    db_session.commit()
+
+    captured: list[dict] = []
+
+    class _FakeEvents:
+        def insert(self, **kwargs):
+            captured.append(kwargs.get("body", {}))
+
+            class _Exec:
+                def execute(self_inner):
+                    return {"id": "evt-member-1"}
+
+            return _Exec()
+
+    class _FakeService:
+        def events(self):
+            return _FakeEvents()
+
+    with patch("app.services.calendar_service._get_calendar_service_oauth", return_value=_FakeService()):
+        res_accepted = client.post(
+            f"/api/v1/bookings/{booking.id}/calendar-sync",
+            json={"include_contractor": False, "ensemble_member_ids": []},
+        )
+
+    assert res_accepted.status_code == 200, res_accepted.text
+    assert res_accepted.json()["calendar_event_id"] == "evt-member-1"
+    assert len(captured) == 1
+    assert "999888777" not in captured[0]["description"]
+
+    events = _events(client, *RANGE)
+    assert len(events) == 1 and events[0]["synced"] is True

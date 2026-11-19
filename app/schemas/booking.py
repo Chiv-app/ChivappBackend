@@ -486,6 +486,19 @@ class BookingOut(BaseModel):
             return [str(item) for item in value if str(item).strip()]
         return []
 
+    @field_validator("calendar_event_id", mode="before")
+    @classmethod
+    def coerce_calendar_event_id(cls, value):
+        if not value or not isinstance(value, str):
+            return value
+        stripped = value.strip()
+        if stripped.startswith("{"):
+            from app.services.calendar_service import parse_booking_calendar_events
+
+            parsed = parse_booking_calendar_events(stripped)
+            return parsed["musician"] or parsed["contractor"] or None
+        return value
+
     @field_validator("id", "contractor_id", "musician_id", mode="before")
     @classmethod
     def coerce_uuid(cls, value):

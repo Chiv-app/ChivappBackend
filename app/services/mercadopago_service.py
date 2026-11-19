@@ -456,18 +456,30 @@ def _confirm_booking_notifications_and_calendar(db: Session, booking: Booking) -
 
     notify_booking_confirmed(db, musician_user, str(booking.id), contractor_user)
 
+    from app.services.calendar_service import (
+        get_booking_calendar_event_id_for_viewer,
+        set_booking_calendar_event_id_for_viewer,
+    )
+
     # Si el músico conectó su Google Calendar, la reserva confirmada se envía sola a su agenda.
-    if not booking.calendar_event_id and getattr(musician_user, "google_calendar_refresh_token", None):
+    if (
+        not get_booking_calendar_event_id_for_viewer(booking, role="owner")
+        and getattr(musician_user, "google_calendar_refresh_token", None)
+    ):
         try:
             from app.services.calendar_service import sync_booking_calendar
 
             event_id = sync_booking_calendar(db, str(booking.id), False, [])
             if event_id:
-                booking.calendar_event_id = event_id
+                set_booking_calendar_event_id_for_viewer(booking, event_id, role="owner")
         except Exception as exc:  # noqa: BLE001 - la agenda nunca debe frenar la confirmación del pago
             logger.warning("No se pudo enviar la reserva a Google Calendar: %s", exc)
 
-    if not booking.calendar_event_id and contractor_user and musician_user:
+    if (
+        not get_booking_calendar_event_id_for_viewer(booking, role="owner")
+        and contractor_user
+        and musician_user
+    ):
         from app.services.calendar_service import create_booking_event
 
         try:
@@ -502,9 +514,28 @@ def _confirm_booking_notifications_and_calendar(db: Session, booking: Booking) -
                 contractor_phone=contractor_user.phone or "",
             )
             if event_id:
-                booking.calendar_event_id = event_id
+                set_booking_calendar_event_id_for_viewer(booking, event_id, role="owner")
         except Exception as e:
             logger.error(f"Error calling create_booking_event: {e}")
+
+    # Si el contratista conectó su Google Calendar, también se envía sola a su propia agenda.
+    if (
+        contractor_user
+        and not get_booking_calendar_event_id_for_viewer(booking, role="contractor")
+        and getattr(contractor_user, "google_calendar_refresh_token", None)
+    ):
+        try:
+            from app.services.calendar_service import sync_participant_booking_calendar
+
+            contractor_evt_id = sync_participant_booking_calendar(
+                db, str(booking.id), contractor_user, role="contractor"
+            )
+            if contractor_evt_id:
+                set_booking_calendar_event_id_for_viewer(
+                    booking, contractor_evt_id, role="contractor"
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("No se pudo enviar la reserva al Google Calendar del contratista: %s", exc)
 
 
 def process_approved_mercadopago_payment(db: Session, payment_data: dict[str, Any]) -> Payment | None:

@@ -244,11 +244,140 @@ def cancel_booking_event(event_id: str) -> bool:
         return False
 
 
-def cancel_booking_calendar_event(db, booking, musician_user=None) -> bool:
-    """Elimina el evento de Google Calendar (OAuth del músico o Service Account) y limpia calendar_event_id."""
-    event_id = getattr(booking, "calendar_event_id", None)
-    if not event_id:
+def parse_booking_calendar_events(raw: str | None) -> dict[str, Any]:
+    """Devuelve el mapa de eventos sincronizados: {'musician': str|None, 'contractor': str|None, 'members': dict[str, str]}."""
+    result: dict[str, Any] = {"musician": None, "contractor": None, "members": {}}
+    if not raw or not isinstance(raw, str):
+        return result
+    stripped = raw.strip()
+    if not stripped:
+        return result
+    if stripped.startswith("{"):
+        try:
+            data = json.loads(stripped)
+            if isinstance(data, dict):
+                if isinstance(data.get("musician"), str) and data["musician"]:
+                    result["musician"] = data["musician"]
+                if isinstance(data.get("contractor"), str) and data["contractor"]:
+                    result["contractor"] = data["contractor"]
+                members = data.get("members")
+                if isinstance(members, dict):
+                    result["members"] = {
+                        str(k): str(v)
+                        for k, v in members.items()
+                        if k and isinstance(v, str) and v
+                    }
+                return result
+        except (ValueError, TypeError):
+            pass
+    result["musician"] = stripped
+    return result
+
+
+def dump_booking_calendar_events(events_map: dict[str, Any]) -> str | None:
+    """Serializa el mapa de eventos. Si solo existe el del músico titular, guarda el string plano por compatibilidad."""
+    musician_id = events_map.get("musician") or None
+    contractor_id = events_map.get("contractor") or None
+    members = {
+        str(k): str(v)
+        for k, v in (events_map.get("members") or {}).items()
+        if k and v
+    }
+    if not musician_id and not contractor_id and not members:
+        return None
+    if musician_id and not contractor_id and not members:
+        return str(musician_id)
+    payload: dict[str, Any] = {}
+    if musician_id:
+        payload["musician"] = str(musician_id)
+    if contractor_id:
+        payload["contractor"] = str(contractor_id)
+    if members:
+        payload["members"] = members
+    return json.dumps(payload, separators=(",", ":"))
+
+
+def get_booking_calendar_event_id_for_viewer(
+    booking: Any,
+    *,
+    role: str = "owner",
+    user_id: str | None = None,
+) -> str | None:
+    parsed = parse_booking_calendar_events(getattr(booking, "calendar_event_id", None))
+    if role == "contractor":
+        return parsed["contractor"]
+    if role == "member":
+        if user_id:
+            return parsed["members"].get(str(user_id))
+        return None
+    return parsed["musician"]
+
+
+def set_booking_calendar_event_id_for_viewer(
+    booking: Any,
+    event_id: str | None,
+    *,
+    role: str = "owner",
+    user_id: str | None = None,
+) -> None:
+    parsed = parse_booking_calendar_events(getattr(booking, "calendar_event_id", None))
+    if role == "contractor":
+        parsed["contractor"] = event_id or None
+    elif role == "member":
+        if user_id:
+            if event_id:
+                parsed["members"][str(user_id)] = event_id
+            else:
+                parsed["members"].pop(str(user_id), None)
+    else:
+        parsed["musician"] = event_id or None
+    booking.calendar_event_id = dump_booking_calendar_events(parsed)
+
+
+def _delete_user_oauth_calendar_event(user: Any, event_id: str | None) -> bool:
+    if not user or not event_id:
         return False
+    refresh_token = getattr(user, "google_calendar_refresh_token", None)
+    if not refresh_token:
+        return False
+    oauth_svc = _get_calendar_service_oauth(refresh_token)
+    if not oauth_svc:
+        return False
+    try:
+        oauth_svc.events().delete(calendarId="primary", eventId=event_id).execute()
+        return True
+    except Exception as exc:
+        logger.warning("No se pudo eliminar evento OAuth %s: %s", event_id, exc)
+        return False
+
+
+def _patch_user_oauth_calendar_event(user: Any, event_id: str | None, patch_body: dict[str, Any]) -> bool:
+    if not user or not event_id:
+        return False
+    refresh_token = getattr(user, "google_calendar_refresh_token", None)
+    if not refresh_token:
+        return False
+    oauth_svc = _get_calendar_service_oauth(refresh_token)
+    if not oauth_svc:
+        return False
+    try:
+        oauth_svc.events().patch(calendarId="primary", eventId=event_id, body=patch_body).execute()
+        return True
+    except Exception as exc:
+        logger.warning("No se pudo actualizar evento OAuth %s: %s", event_id, exc)
+        return False
+
+
+def cancel_booking_calendar_event(db, booking, musician_user=None) -> bool:
+    """Elimina los eventos de Google Calendar sincronizados (músico, contratista, integrantes o Service Account) y limpia calendar_event_id."""
+    raw_event_id = getattr(booking, "calendar_event_id", None)
+    if not raw_event_id:
+        return False
+
+    parsed = parse_booking_calendar_events(raw_event_id)
+    musician_event_id = parsed["musician"]
+    contractor_event_id = parsed["contractor"]
+    member_events: dict[str, str] = parsed["members"]
 
     deleted = False
     try:
@@ -260,37 +389,59 @@ def cancel_booking_calendar_event(db, booking, musician_user=None) -> bool:
             if mp:
                 musician_user = db.query(User).filter(User.id == mp.user_id).first()
 
-        refresh_token = getattr(musician_user, "google_calendar_refresh_token", None) if musician_user else None
-        if refresh_token:
-            oauth_svc = _get_calendar_service_oauth(refresh_token)
-            if oauth_svc:
-                try:
-                    oauth_svc.events().delete(calendarId="primary", eventId=event_id).execute()
-                    deleted = True
-                except Exception as exc:
-                    logger.warning("No se pudo eliminar evento OAuth %s: %s", event_id, exc)
+        if musician_event_id and _delete_user_oauth_calendar_event(musician_user, musician_event_id):
+            deleted = True
     except Exception as exc:
-        logger.warning("Error resolviendo OAuth calendar al cancelar %s: %s", event_id, exc)
+        logger.warning("Error resolviendo OAuth calendar al cancelar %s: %s", musician_event_id, exc)
 
-    if not deleted:
+    if musician_event_id and not deleted:
         try:
-            deleted = cancel_booking_event(event_id)
+            deleted = cancel_booking_event(musician_event_id)
         except Exception as exc:
-            logger.warning("Error eliminando evento Service Account %s: %s", event_id, exc)
+            logger.warning("Error eliminando evento Service Account %s: %s", musician_event_id, exc)
+
+    if contractor_event_id and db is not None and getattr(booking, "contractor_id", None):
+        try:
+            from app.models.contractor_profile import ContractorProfile
+            from app.models.user import User
+
+            cp = db.query(ContractorProfile).filter(ContractorProfile.id == booking.contractor_id).first()
+            contractor_user = db.query(User).filter(User.id == cp.user_id).first() if cp else None
+            if _delete_user_oauth_calendar_event(contractor_user, contractor_event_id):
+                deleted = True
+        except Exception as exc:
+            logger.warning("Error eliminando evento OAuth del contratista %s: %s", contractor_event_id, exc)
+
+    if member_events and db is not None:
+        try:
+            from app.models.user import User
+
+            for member_uid, member_evt_id in member_events.items():
+                m_user = db.query(User).filter(User.id == member_uid).first()
+                if _delete_user_oauth_calendar_event(m_user, member_evt_id):
+                    deleted = True
+        except Exception as exc:
+            logger.warning("Error eliminando eventos OAuth de integrantes: %s", exc)
 
     booking.calendar_event_id = None
     return deleted
 
 
 def update_booking_calendar_event(db, booking) -> bool:
-    """Actualiza la ubicación/descripción de un evento existente en Google Calendar tras un cambio."""
-    event_id = getattr(booking, "calendar_event_id", None)
-    if not event_id:
+    """Actualiza la ubicación/descripción de los eventos existentes en Google Calendar tras un cambio."""
+    raw_event_id = getattr(booking, "calendar_event_id", None)
+    if not raw_event_id:
         return False
+
+    parsed = parse_booking_calendar_events(raw_event_id)
+    musician_event_id = parsed["musician"]
+    contractor_event_id = parsed["contractor"]
+    member_events: dict[str, str] = parsed["members"]
 
     patch_body = {
         "location": f"{booking.location_address or ''}, {booking.location_reference or ''}, {booking.location_city or ''}".strip(", "),
     }
+    updated = False
     try:
         musician_user = None
         if db is not None and getattr(booking, "musician_id", None):
@@ -301,21 +452,35 @@ def update_booking_calendar_event(db, booking) -> bool:
             if mp:
                 musician_user = db.query(User).filter(User.id == mp.user_id).first()
 
-        refresh_token = getattr(musician_user, "google_calendar_refresh_token", None) if musician_user else None
-        if refresh_token:
-            oauth_svc = _get_calendar_service_oauth(refresh_token)
-            if oauth_svc:
-                oauth_svc.events().patch(calendarId="primary", eventId=event_id, body=patch_body).execute()
-                return True
+        if musician_event_id:
+            if _patch_user_oauth_calendar_event(musician_user, musician_event_id, patch_body):
+                updated = True
+            else:
+                service = _get_calendar_service()
+                if service:
+                    calendar_id = settings.GOOGLE_CALENDAR_ID or "primary"
+                    service.events().patch(calendarId=calendar_id, eventId=musician_event_id, body=patch_body).execute()
+                    updated = True
 
-        service = _get_calendar_service()
-        if service:
-            calendar_id = settings.GOOGLE_CALENDAR_ID or "primary"
-            service.events().patch(calendarId=calendar_id, eventId=event_id, body=patch_body).execute()
-            return True
+        if contractor_event_id and db is not None and getattr(booking, "contractor_id", None):
+            from app.models.contractor_profile import ContractorProfile
+            from app.models.user import User
+
+            cp = db.query(ContractorProfile).filter(ContractorProfile.id == booking.contractor_id).first()
+            contractor_user = db.query(User).filter(User.id == cp.user_id).first() if cp else None
+            if _patch_user_oauth_calendar_event(contractor_user, contractor_event_id, patch_body):
+                updated = True
+
+        if member_events and db is not None:
+            from app.models.user import User
+
+            for member_uid, member_evt_id in member_events.items():
+                m_user = db.query(User).filter(User.id == member_uid).first()
+                if _patch_user_oauth_calendar_event(m_user, member_evt_id, patch_body):
+                    updated = True
     except Exception as exc:
-        logger.warning("No se pudo actualizar evento de Google Calendar %s: %s", event_id, exc)
-    return False
+        logger.warning("No se pudo actualizar evento de Google Calendar %s: %s", raw_event_id, exc)
+    return updated
 
 def add_attendee_to_booking_event(event_id: str, attendee_email: str) -> bool:
     # Desactivado debido a la restriccion 403 de Service Accounts (sin Workspace)
@@ -508,29 +673,31 @@ def sync_booking_calendar(db, booking_id: str, include_contractor: bool, ensembl
 
     try:
         from googleapiclient.errors import HttpError
-        if booking.calendar_event_id:
+        existing_event_id = get_booking_calendar_event_id_for_viewer(booking, role="owner")
+        if existing_event_id:
             try:
                 event = service.events().update(
                     calendarId=calendar_id, 
-                    eventId=booking.calendar_event_id,
+                    eventId=existing_event_id,
                     body=event_body, 
                     sendUpdates='all'
                 ).execute()
                 return event.get('id')
             except HttpError as he:
                 if he.resp.status == 404 or he.resp.status == 410:
-                    logger.warning(f"Evento {booking.calendar_event_id} no encontrado en Google Calendar. Creando uno nuevo.")
-                    booking.calendar_event_id = None
+                    logger.warning(f"Evento {existing_event_id} no encontrado en Google Calendar. Creando uno nuevo.")
+                    set_booking_calendar_event_id_for_viewer(booking, None, role="owner")
+                    existing_event_id = None
                 else:
                     raise he
 
-        if not booking.calendar_event_id:
+        if not existing_event_id:
             event = service.events().insert(
                 calendarId=calendar_id, 
                 body=event_body, 
                 sendUpdates='all'
             ).execute()
-            booking.calendar_event_id = event.get('id')
+            set_booking_calendar_event_id_for_viewer(booking, event.get('id'), role="owner")
             db.commit()
             return event.get('id')
     except Exception as e:
@@ -538,6 +705,167 @@ def sync_booking_calendar(db, booking_id: str, include_contractor: bool, ensembl
         if _is_revoked_token_error(e):
             try:
                 musician_user.google_calendar_refresh_token = None
+                db.commit()
+            except Exception:  # noqa: BLE001
+                db.rollback()
+        return None
+
+
+def sync_participant_booking_calendar(
+    db,
+    booking_id: str,
+    target_user: Any,
+    *,
+    role: str,
+    include_counterparty: bool = False,
+) -> str | None:
+    """Sincroniza la reserva en el Google Calendar propio del contratista o de un integrante aceptado."""
+    from app.models.booking import Booking
+    from app.models.user import User
+
+    booking = db.query(Booking).filter(Booking.id == booking_id).first()
+    if not booking:
+        return None
+
+    if getattr(booking.status, "value", booking.status) not in CALENDAR_SYNC_STATUS_NAMES:
+        return None
+
+    if not target_user or not getattr(target_user, "google_calendar_refresh_token", None):
+        logger.warning(
+            "Usuario %s (%s) no tiene Google Calendar conectado via OAuth.",
+            getattr(target_user, "id", "unknown"),
+            role,
+        )
+        return None
+
+    service = _get_calendar_service_oauth(target_user.google_calendar_refresh_token)
+    if not service:
+        return None
+
+    musician_user = db.query(User).filter(User.id == booking.musician.user_id).first() if getattr(booking, "musician", None) else None
+    contractor_user = db.query(User).filter(User.id == booking.contractor.user_id).first() if getattr(booking, "contractor", None) else None
+
+    attendees: list[dict[str, str]] = []
+    if getattr(target_user, "email", None) and not str(target_user.email).endswith("@guest.local"):
+        attendees.append({"email": str(target_user.email)})
+    if (
+        role == "contractor"
+        and include_counterparty
+        and musician_user
+        and musician_user.email
+        and not musician_user.email.endswith("@guest.local")
+    ):
+        attendees.append({"email": musician_user.email})
+
+    import datetime as dt
+    from zoneinfo import ZoneInfo
+
+    start_dt = dt.datetime.combine(booking.event_date, booking.start_time)
+    if booking.end_time:
+        end_dt = dt.datetime.combine(booking.event_date, booking.end_time)
+        if end_dt < start_dt:
+            end_dt = end_dt + dt.timedelta(days=1)
+    else:
+        end_dt = start_dt + dt.timedelta(hours=1)
+
+    musician_name = (
+        (booking.musician.stage_name if getattr(booking, "musician", None) and booking.musician.stage_name else None)
+        or (musician_user.fullname if musician_user else None)
+        or "Músico"
+    )
+    musician_phone = musician_user.phone if musician_user else ""
+    contractor_name = contractor_user.fullname if contractor_user else "Cliente"
+    contractor_phone = contractor_user.phone if contractor_user else ""
+    # Los integrantes no reciben el teléfono del contratante.
+    contractor_contact = (
+        "" if role == "member" else f" ({_h(contractor_phone) or 'Sin teléfono'})"
+    )
+
+    event_summary = f"Chivapp: {booking.event_type} - {musician_name}"
+    description_lines = [
+        f"<b>Reserva confirmada en Chivapp</b> (#{str(booking.id)[:8]})",
+        "<br>",
+        f"<b>Músico:</b> {_h(musician_name)} ({_h(musician_phone) or 'Sin teléfono'})",
+        f"<b>Contratista:</b> {_h(contractor_name)}{contractor_contact}",
+        "<br>",
+        f"<b>Lugar:</b> {_h(booking.location_address)}, {_h(booking.location_reference)}, {_h(booking.location_city)}",
+        "<br>",
+        "<b>Nota:</b> Evento de agenda sincronizado desde Chivapp.",
+    ]
+
+    lima_tz = ZoneInfo("America/Lima")
+    start_dt_tz = start_dt.replace(tzinfo=lima_tz)
+    end_dt_tz = end_dt.replace(tzinfo=lima_tz)
+
+    event_body: dict[str, Any] = {
+        "summary": event_summary,
+        "location": f"{booking.location_address}, {booking.location_reference or ''}, {booking.location_city or ''}",
+        "description": "".join(description_lines),
+        "attendees": attendees,
+        "reminders": {
+            "useDefault": False,
+            "overrides": [
+                {"method": "email", "minutes": 24 * 60},
+                {"method": "popup", "minutes": 120},
+            ],
+        },
+        "start": {
+            "dateTime": start_dt_tz.isoformat(),
+            "timeZone": "America/Lima",
+        },
+        "end": {
+            "dateTime": end_dt_tz.isoformat(),
+            "timeZone": "America/Lima",
+        },
+    }
+
+    calendar_id = "primary"
+    user_id_str = str(target_user.id)
+    try:
+        from googleapiclient.errors import HttpError
+
+        existing_event_id = get_booking_calendar_event_id_for_viewer(
+            booking, role=role, user_id=user_id_str
+        )
+        if existing_event_id:
+            try:
+                event = service.events().update(
+                    calendarId=calendar_id,
+                    eventId=existing_event_id,
+                    body=event_body,
+                    sendUpdates="all",
+                ).execute()
+                return event.get("id")
+            except HttpError as he:
+                if he.resp.status in (404, 410):
+                    logger.warning(
+                        "Evento %s no encontrado en Google Calendar de %s. Creando uno nuevo.",
+                        existing_event_id,
+                        role,
+                    )
+                    set_booking_calendar_event_id_for_viewer(
+                        booking, None, role=role, user_id=user_id_str
+                    )
+                    existing_event_id = None
+                else:
+                    raise he
+
+        event = service.events().insert(
+            calendarId=calendar_id,
+            body=event_body,
+            sendUpdates="all",
+        ).execute()
+        new_id = event.get("id")
+        set_booking_calendar_event_id_for_viewer(
+            booking, new_id, role=role, user_id=user_id_str
+        )
+        db.commit()
+        return new_id
+    except Exception as exc:
+        logger.error("Error sincronizando evento en Google Calendar (%s): %s", role, exc)
+        if _is_revoked_token_error(exc):
+            try:
+                target_user.google_calendar_refresh_token = None
                 db.commit()
             except Exception:  # noqa: BLE001
                 db.rollback()
