@@ -12,3 +12,4 @@ def test_security_headers_present_in_responses(client):
     assert response.headers.get("X-XSS-Protection") == "1; mode=block"
     assert response.headers.get("Referrer-Policy") == "strict-origin-when-cross-origin"
     assert "camera=()" in response.headers.get("Permissions-Policy", "")
+    assert "microphone=(self)" in response.headers.get("Permissions-Policy", "")

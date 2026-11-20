@@ -12,7 +12,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     - X-Frame-Options: DENY (anti-clickjacking)
     - X-XSS-Protection: 1; mode=block
     - Referrer-Policy: strict-origin-when-cross-origin
-    - Permissions-Policy: camera=(), microphone=(), geolocation=(self)
+    - Permissions-Policy: camera=(), microphone=(self), geolocation=(self)
     - Strict-Transport-Security (HSTS) en HTTPS o si está habilitado en configuración.
     """
 
@@ -23,7 +23,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["X-XSS-Protection"] = "1; mode=block"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(self)"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(self), geolocation=(self)"
 
         if request.url.scheme == "https" or getattr(settings, "ENABLE_HSTS", False):
             response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
