@@ -282,3 +282,39 @@ def test_heuristic_takes_the_district_after_the_address():
     assert out["location_address"].startswith("Jr. Lima 450")
     assert out["location_city"] == "Comas"
     assert "location_city" not in _extract_fields_heuristic("Será en Jr. Lima 450, con 7 integrantes")
+
+
+def test_voice_dictation_extraction_ranges_and_spoken_numbers():
+    out = extract_booking_fields_from_text_or_audio(
+        text=(
+            "Cerré con Carlos (987654321) un cumpleaños el 2026-12-20 de 8pm a 10pm "
+            "en Av. Mariscal Cáceres 820 Huamanga por S/ 800, pidió Las Mañanitas"
+        ),
+        audio_base64=None,
+    )
+    assert out["client_fullname"] == "Carlos"
+    assert out["client_phone"] == "987654321"
+    assert out["event_type"] == "Cumpleaños"
+    assert out["event_date"] == "2026-12-20"
+    assert out["start_time"] == "20:00"
+    assert out["end_time"] == "22:00"
+    assert out["location_address"] == "Av. Mariscal Cáceres 820"
+    assert out["location_city"] == "Huamanga"
+    assert out["price"] == 800.0
+    assert "Las Mañanitas" in (out["event_description"] or "")
+
+    spoken = _extract_fields_heuristic(
+        "Serenata para Juan Pérez celular 999888777 mañana de ocho de la noche a diez de la noche "
+        "en Jirón Lima 450 Ayacucho por ochocientos soles",
+        today=date(2026, 11, 20),
+    )
+    assert spoken["event_type"] == "Serenata"
+    assert spoken["client_fullname"] == "Juan Pérez"
+    assert spoken["client_phone"] == "999888777"
+    assert spoken["event_date"] == "2026-11-21"
+    assert spoken["start_time"] == "20:00"
+    assert spoken["end_time"] == "22:00"
+    assert spoken["location_address"] == "Jirón Lima 450"
+    assert spoken["location_city"] == "Ayacucho"
+    assert spoken["price"] == 800.0
+

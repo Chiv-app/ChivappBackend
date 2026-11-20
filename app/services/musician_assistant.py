@@ -517,10 +517,83 @@ _EVENT_TYPES_KEYWORDS = [
 ]
 
 
+_SPOKEN_NUMBERS_MAP = [
+    (r"\bdos\s+mil\b", "2000"),
+    (r"\bmil\s+quinientos\b", "1500"),
+    (r"\bmil\s+doscientos\b", "1200"),
+    (r"\bmil\b", "1000"),
+    (r"\bnovecientos\b", "900"),
+    (r"\bochocientos\b", "800"),
+    (r"\bsetecientos\b", "700"),
+    (r"\bseiscientos\b", "600"),
+    (r"\bquinientos\b", "500"),
+    (r"\bcuatrocientos\b", "400"),
+    (r"\btrescientos\b", "300"),
+    (r"\bdoscientos\b", "200"),
+    (r"\bcien\b", "100"),
+]
+
+_SPOKEN_SMALL_NUMBERS = {
+    "una": 1,
+    "uno": 1,
+    "un": 1,
+    "dos": 2,
+    "tres": 3,
+    "cuatro": 4,
+    "cinco": 5,
+    "seis": 6,
+    "siete": 7,
+    "ocho": 8,
+    "nueve": 9,
+    "diez": 10,
+    "once": 11,
+    "doce": 12,
+}
+
+_PERU_CITIES_REGEX = (
+    r"huamanga|ayacucho|san\s+juan\s+bautista|carmen\s+alto|jes[uú]s\s+nazareno|andahuaylas|huanta|quinua|"
+    r"miraflores|surco|santiago\s+de\s+surco|san\s+isidro|la\s+molina|san\s+borja|barranco|lince|"
+    r"jes[uú]s\s+mar[ií]a|magdalena|pueblo\s+libre|san\s+miguel|chorrillos|ate|santa\s+anita|los\s+olivos|"
+    r"comas|independencia|san\s+mart[ií]n\s+de\s+porres|san\s+juan\s+de\s+lurigancho|san\s+juan\s+de\s+miraflores|"
+    r"villa\s+mar[ií]a\s+del\s+triunfo|villa\s+el\s+salvador|bre[ñn]a|la\s+victoria|r[ií]mac|el\s+agustino|"
+    r"puente\s+piedra|carabayllo|lur[ií]n|pachac[aá]mac|cieneguilla|chaclacayo|chosica|ventanilla|"
+    r"lima|callao|cusco|arequipa|trujillo|huancayo|piura|chiclayo|ica|tacna|puno|cajamarca|chimbote|"
+    r"iquitos|tarapoto|pucallpa|hu[aá]nuco|tumbes|moquegua|abancay|juliaca|chincha|ca[ñn]ete|huacho|huaraz"
+)
+
+
+def _normalize_spoken_numbers(text: str) -> str:
+    res = text
+    for pattern, repl in _SPOKEN_NUMBERS_MAP:
+        res = re.sub(pattern, repl, res, flags=re.IGNORECASE)
+    # Convertir horas habladas seguidas de meridiano ("a las ocho de la noche" -> "a las 8 de la noche")
+    for word, num in _SPOKEN_SMALL_NUMBERS.items():
+        res = re.sub(
+            rf"\b{word}\b(?=\s*(?:am|pm|a\.m\.|p\.m\.|de\s+la\s+(?:noche|tarde|ma[ñn]ana|madrugada)|horas?|hr|hrs|integrantes|m[uú]sicos|mariachis))",
+            str(num),
+            res,
+            flags=re.IGNORECASE,
+        )
+    return res
+
+
+def _parse_hour_meridiem(hr_str: str, mn_str: str | None, mer_str: str | None) -> str | None:
+    hr = int(hr_str)
+    mn = int(mn_str or 0)
+    mer = (mer_str or "").lower()
+    if any(k in mer for k in ("pm", "p.m", "noche", "tarde")) and hr < 12:
+        hr += 12
+    elif any(k in mer for k in ("am", "a.m", "madrugada", "mañana", "manana")) and hr == 12:
+        hr = 0
+    if 0 <= hr <= 23 and 0 <= mn <= 59:
+        return f"{hr:02d}:{mn:02d}"
+    return None
+
+
 def _extract_fields_heuristic(text: str, today: date | None = None) -> dict[str, Any]:
     """Extrae fecha, hora, duración, integrantes, evento, dirección, cliente, teléfono y precio desde texto en español."""
     base_today = today or get_lima_now().date()
-    raw = (text or "").strip()
+    raw = _normalize_spoken_numbers((text or "").strip())
     lower = raw.lower()
     out: dict[str, Any] = {}
 
@@ -597,22 +670,31 @@ def _extract_fields_heuristic(text: str, today: date | None = None) -> dict[str,
         if said_date.weekday() != weekday_idx:
             out["date_conflict"] = {"weekday": spoken_weekday.group(1), "date": out.pop("event_date")}
 
-    # 2. Hora (ej. "10 pm", "10:30pm", "a las 22:00", "a las 11 de la noche")
+    # 2. Hora o rango de horas (ej. "de 8pm a 10pm", "de 8 a 10 pm", "10 pm", "a las 22:00", "a las 11 de la noche")
+    mer_pat = r"(?:am|pm|a\.m\.|p\.m\.|de\s+la\s+noche|de\s+la\s+tarde|de\s+la\s+ma[ñn]ana|de\s+la\s+madrugada)"
+    range_match = re.search(
+        rf"\bde\s+(\d{{1,2}})(?::(\d{{2}}))?\s*({mer_pat})?\s*(?:a|hasta(?:\s+las)?|-)\s*(\d{{1,2}})(?::(\d{{2}}))?\s*({mer_pat})?\b",
+        lower,
+    )
     time_match = re.search(
-        r"\b(?:a\s+las\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.|de\s+la\s+noche|de\s+la\s+tarde|de\s+la\s+ma[ñn]ana|de\s+la\s+madrugada)\b",
+        rf"\b(?:a\s+las\s+)?(\d{{1,2}})(?::(\d{{2}}))?\s*({mer_pat})\b",
         lower,
     )
     time_24_match = re.search(r"\b(?:a\s+las\s+)?([01]?\d|2[0-3]):([0-5]\d)\b", lower)
-    if time_match:
-        hr = int(time_match.group(1))
-        mn = int(time_match.group(2) or 0)
-        mer = time_match.group(3)
-        if any(k in mer for k in ("pm", "p.m", "noche", "tarde")) and hr < 12:
-            hr += 12
-        elif any(k in mer for k in ("am", "a.m", "madrugada", "mañana", "manana")) and hr == 12:
-            hr = 0
-        if 0 <= hr <= 23 and 0 <= mn <= 59:
-            out["start_time"] = f"{hr:02d}:{mn:02d}"
+
+    if range_match and (range_match.group(3) or range_match.group(6) or range_match.group(2) or range_match.group(5)):
+        mer1 = range_match.group(3) or range_match.group(6) or "pm"
+        mer2 = range_match.group(6) or range_match.group(3) or "pm"
+        st_parsed = _parse_hour_meridiem(range_match.group(1), range_match.group(2), mer1)
+        et_parsed = _parse_hour_meridiem(range_match.group(4), range_match.group(5), mer2)
+        if st_parsed:
+            out["start_time"] = st_parsed
+        if et_parsed:
+            out["end_time"] = et_parsed
+    elif time_match:
+        st_parsed = _parse_hour_meridiem(time_match.group(1), time_match.group(2), time_match.group(3))
+        if st_parsed:
+            out["start_time"] = st_parsed
     elif time_24_match:
         hr = int(time_24_match.group(1))
         mn = int(time_24_match.group(2))
@@ -628,12 +710,25 @@ def _extract_fields_heuristic(text: str, today: date | None = None) -> dict[str,
             if 0.5 <= val <= 12:
                 out["duration_hours"] = val
 
-    if out.get("start_time") and out.get("duration_hours"):
+    if out.get("start_time") and out.get("duration_hours") and not out.get("end_time"):
         try:
             st_parts = [int(x) for x in out["start_time"].split(":")]
             st_dt = datetime.combine(base_today, time(st_parts[0], st_parts[1]))
             end_dt = st_dt + timedelta(minutes=int(round(float(out["duration_hours"]) * 60)))
             out["end_time"] = end_dt.time().strftime("%H:%M")
+        except Exception:
+            pass
+    elif out.get("start_time") and out.get("end_time") and not out.get("duration_hours"):
+        try:
+            st_parts = [int(x) for x in out["start_time"].split(":")]
+            et_parts = [int(x) for x in out["end_time"].split(":")]
+            st_dt = datetime.combine(base_today, time(st_parts[0], st_parts[1]))
+            et_dt = datetime.combine(base_today, time(et_parts[0], et_parts[1]))
+            if et_dt <= st_dt:
+                et_dt += timedelta(days=1)
+            diff_hrs = round((et_dt - st_dt).total_seconds() / 3600.0, 2)
+            if 0.5 <= diff_hrs <= 12:
+                out["duration_hours"] = diff_hrs
         except Exception:
             pass
 
@@ -655,55 +750,91 @@ def _extract_fields_heuristic(text: str, today: date | None = None) -> dict[str,
 
     # 6. Dirección y ciudad/distrito
     addr_match = re.search(
-        r"\b((?:jr\.?|jir[oó]n|av\.?|avenida|calle|psje\.?|pasaje|urb\.?|urbanizaci[oó]n|asoc\.?|mz\.?)\s+[^,.;\n]{4,80})",
+        r"\b((?:jr\.?|jir[oó]n|av\.?|avenida|calle|ca\.?|psje\.?|pje\.?|pasaje|prol\.?|prolongaci[oó]n|urb\.?|urbanizaci[oó]n|asoc\.?|mz\.?|local|sal[oó]n|salon|club| quinta)\s+[^,.;\n]{3,80})",
         raw,
         flags=re.IGNORECASE,
     )
     if addr_match:
-        out["location_address"] = addr_match.group(1).strip(" .,")
+        cand_addr = addr_match.group(1).strip(" .,")
+        # Cortar sufijos como "por S/ 800", "por 800 soles", "pidió ...", "para ...", "a las ..."
+        cand_addr = re.split(
+            r"\s+(?:por\s+(?:s/?\.?\s*\d|\d)|(?:\b(?:precio|quedamos|acordamos|pidi[oó]|quiere|canciones|repertorio|cliente|celular|tel[eé]fono)\b)|\ba\s+las\s+\d|\bde\s+\d{1,2}\s*(?:am|pm|:))",
+            cand_addr,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0].strip(" .,")
+        out["location_address"] = cand_addr
 
     city_match = re.search(
-        r"\b(?:distrito\s+de\s+|en\s+)(huamanga|ayacucho|san\s+juan\s+bautista|carmen\s+alto|jes[uú]s\s+nazareno|andahuaylas|huanta|quinua|miraflores|surco|san\s+isidro|la\s+molina|san\s+borja|barranco|lima|callao|cusco|arequipa|trujillo)\b",
+        rf"\b(?:distrito\s+de\s+|en\s+)({_PERU_CITIES_REGEX})\b",
         lower,
     )
     if city_match:
-        out["location_city"] = city_match.group(1).title()
-    elif addr_match:
-        # «Jr Lima 450, Comas»: lo que sigue a la dirección tras una coma es el distrito.
-        tail = re.match(r"\s*,\s*([A-Za-zÁÉÍÓÚÑáéíóúñ ]{3,40}?)\s*(?:[,.;\n]|$)", raw[addr_match.end(1) :])
-        if tail and tail.group(1).split()[0].lower() not in _NOT_A_PLACE_WORDS:
-            out["location_city"] = tail.group(1).strip().title()
+        out["location_city"] = city_match.group(1).strip().title()
+        if out.get("location_address"):
+            city_in_addr = re.search(rf"\b(\d{{1,5}})\s+{re.escape(city_match.group(1))}\s*$", out["location_address"], flags=re.IGNORECASE)
+            if city_in_addr:
+                out["location_address"] = out["location_address"][: city_in_addr.end(1)].strip(" .,-")
+    elif out.get("location_address"):
+        city_after_num = re.search(
+            rf"\b(\d{{1,5}})\s+({_PERU_CITIES_REGEX})\s*$",
+            out["location_address"],
+            flags=re.IGNORECASE,
+        )
+        if city_after_num:
+            out["location_city"] = city_after_num.group(2).strip().title()
+            out["location_address"] = out["location_address"][: city_after_num.end(1)].strip(" .,-")
+        elif addr_match:
+            # «Jr Lima 450, Comas»: lo que sigue a la dirección tras una coma es el distrito.
+            tail = re.match(r"\s*,\s*([A-Za-zÁÉÍÓÚÑáéíóúñ ]{3,40}?)\s*(?:[,.;\n]|$)", raw[addr_match.end(1) :])
+            if tail and tail.group(1).split()[0].lower() not in _NOT_A_PLACE_WORDS:
+                out["location_city"] = tail.group(1).strip().title()
 
-    # 7. Teléfono (Perú 9 dígitos o internacional)
+    # 7. Teléfono (Perú 9 dígitos o internacional) y DNI/RUC
     phone_match = re.search(r"(?:\+?51\s*)?(9\d{2}[\s-]?\d{3}[\s-]?\d{3})\b", raw)
     if phone_match:
         out["client_phone"] = re.sub(r"[\s-]", "", phone_match.group(1))
+
+    dni_match = re.search(r"\b(?:dni|documento|ruc)\s*[:#-]?\s*(\d{8}|\d{11})\b", lower)
+    if dni_match:
+        out["client_document_number"] = dni_match.group(1)
 
     # 8. Correo electrónico
     email_match = re.search(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", raw)
     if email_match:
         out["client_email"] = email_match.group(0).lower()
 
-    # 9. Nombre del cliente
+    # 9. Nombre del cliente ("cerré con Carlos", "para María López", "a nombre de Juan", "cliente Pedro")
     name_match = re.search(
-        r"(?:a\s+nombre\s+de|cliente|para\s+(?:el\s+sr\.?|la\s+sra\.?|don|do[ñn]a)|mi\s+nombre\s+es|soy)\s+([A-ZÁÉÍÓÚÑa-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑa-záéíóúñ]+){0,3})",
+        r"(?:cerr[eé]\s+con|qued[eé]\s+con|acord[eé]\s+con|trato\s+con|a\s+nombre\s+de|cliente\s*[:=-]?|se\s+llama|"
+        r"para\s+(?:el\s+sr\.?|la\s+sra\.?|don|do[ñn]a)|"
+        r"para(?=\s+(?!un\b|una\b|el\b|la\b|los\b|las\b|mi\b|hoy\b|ma[ñn]ana\b|este\b|esta\b|cotizar\b|saber\b|preguntar\b|\d))|"
+        r"mi\s+nombre\s+es|soy)\s+([A-ZÁÉÍÓÚÑa-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑa-záéíóúñ]+){0,3})",
         raw,
         flags=re.IGNORECASE,
     )
     if name_match:
-        candidate_name = name_match.group(1).strip(" .,")
-        stop_words = {"para", "por", "el", "la", "en", "con", "celular", "telefono", "teléfono", "correo", "dni"}
+        candidate_name = name_match.group(1).strip(" .,()")
+        stop_words = {
+            "para", "por", "el", "la", "los", "las", "un", "una", "en", "con", "de", "del",
+            "celular", "cel", "telefono", "teléfono", "whatsapp", "correo", "dni", "ruc",
+            "cumpleaños", "cumpleanos", "cumple", "boda", "matrimonio", "serenata", "aniversario",
+            "quinceañero", "quinceanero", "evento", "mañana", "manana", "hoy", "sábado", "sabado",
+            "domingo", "viernes", "lunes", "martes", "miércoles", "miercoles", "jueves",
+        }
         name_words = []
         for w in candidate_name.split():
-            if w.lower() in stop_words:
+            clean_w = w.strip(" .,():;-")
+            if not clean_w or clean_w.lower() in stop_words or any(ch.isdigit() for ch in clean_w):
                 break
-            name_words.append(w)
+            name_words.append(clean_w)
         if name_words:
             out["client_fullname"] = " ".join(name_words).title()
 
-    # 10. Precio explícito (ej. "S/ 480", "500 soles", "quedamos en 450")
+    # 10. Precio explícito (ej. "S/ 480", "500 soles", "por S/ 800", "quedamos en 450", "por 800")
     price_match = re.search(
-        r"(?:s/\s*(\d{2,5}(?:\.\d{1,2})?)|(\d{2,5}(?:\.\d{1,2})?)\s*soles|(?:quedamos\s+en|precio|por)\s+s/?\s*(\d{3,5}(?:\.\d{1,2})?))",
+        r"(?:s/\.?\s*(\d{2,5}(?:\.\d{1,2})?)|(\d{2,5}(?:\.\d{1,2})?)\s*(?:soles|pen)|"
+        r"(?:quedamos\s+en|acordamos\s+en|precio(?:\s+de)?|costo(?:\s+de)?|cobr[eé]|pag[oó]|depositaron|por)\s*(?:s/\.?\s*)?(\d{2,5}(?:\.\d{1,2})?)\b)",
         lower,
     )
     if price_match:
@@ -712,6 +843,17 @@ def _extract_fields_heuristic(text: str, today: date | None = None) -> dict[str,
             val_num = float(val_str)
             if 10.0 <= val_num <= 50000.0:
                 out["price"] = val_num
+
+    # 10b. Canciones / repertorio pedido / notas para la banda
+    rep_match = re.search(
+        r"(?:pidi[oó]|quiere\s+que\s+toquemos|canciones(?:\s+pedidas)?|repertorio|temas(?:\s+pedidos)?|notas?)\s*[:=-]?\s*([^.;\n]{3,160})",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if rep_match:
+        rep_text = rep_match.group(1).strip(" .,")
+        if rep_text:
+            out["event_description"] = f"Pedido del cliente: {rep_text}"
 
     # 11. Detección de regateo / solicitud de descuento
     if any(
@@ -739,6 +881,43 @@ def _extract_fields_heuristic(text: str, today: date | None = None) -> dict[str,
     return out
 
 
+def _build_generate_content_fallback_payload(
+    *,
+    system_instruction: str,
+    user_content: list[dict[str, Any]] | str,
+    response_schema: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    parts: list[dict[str, Any]] = []
+    if isinstance(user_content, str):
+        parts.append({"text": user_content})
+    elif isinstance(user_content, list):
+        for turn in user_content:
+            for item in turn.get("content") or []:
+                if item.get("type") == "audio" and item.get("data"):
+                    parts.append(
+                        {
+                            "inline_data": {
+                                "mime_type": item.get("mime_type") or "audio/webm",
+                                "data": item["data"],
+                            }
+                        }
+                    )
+                elif item.get("type") == "text" and item.get("text"):
+                    parts.append({"text": item["text"]})
+    if not parts:
+        parts.append({"text": "Extrae los datos solicitados."})
+
+    gen_config: dict[str, Any] = {"temperature": 0.1}
+    if response_schema is not None:
+        gen_config["responseMimeType"] = "application/json"
+
+    return {
+        "system_instruction": {"parts": [{"text": system_instruction}]},
+        "contents": [{"role": "user", "parts": parts}],
+        "generationConfig": gen_config,
+    }
+
+
 def _call_gemini_interaction(
     *,
     system_instruction: str,
@@ -749,7 +928,9 @@ def _call_gemini_interaction(
     usage_user_id: Any = None,
     has_audio: bool = False,
 ) -> dict[str, Any] | None:
-    """Llama a Gemini Interactions API (`POST /v1beta/interactions` con `gemini-3.8-flash`).
+    """Llama a Gemini Interactions API (`POST /v1beta/interactions` con `gemini-3.8-flash`) y, si la clave
+    estándar de Google AI Studio no tiene habilitado `/v1beta/interactions`, hace fallback automático a
+    `POST /v1beta/models/gemini-2.5-flash:generateContent`.
 
     Chivapp paga cada llamada, así que antes se descuenta del cupo del músico y del tope global
     (`assistant_usage`). Sin `usage_db` y `usage_user_id` no se llama al modelo (falla cerrado).
@@ -792,24 +973,48 @@ def _call_gemini_interaction(
                 },
                 json=payload,
             )
-            if resp.status_code >= 400:
-                logger.warning("Gemini Interactions API status=%s body=%s", resp.status_code, resp.text[:300])
+            if resp.status_code < 400:
+                data = resp.json()
+                output_text = data.get("output_text")
+                if not output_text:
+                    steps = data.get("steps") or []
+                    text_parts: list[str] = []
+                    for step in steps:
+                        if step.get("type") == "model_output":
+                            for item in step.get("content") or []:
+                                if item.get("type") == "text" and item.get("text"):
+                                    text_parts.append(item["text"])
+                    output_text = "\n".join(text_parts).strip()
+                return {"output_text": output_text, "raw": data}
+
+            logger.warning("Gemini Interactions API status=%s body=%s; intentando generateContent fallback", resp.status_code, resp.text[:200])
+            fallback_payload = _build_generate_content_fallback_payload(
+                system_instruction=system_instruction,
+                user_content=user_content,
+                response_schema=response_schema,
+            )
+            fb_resp = client.post(
+                "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+                headers={
+                    "x-goog-api-key": api_key,
+                    "Content-Type": "application/json",
+                },
+                json=fallback_payload,
+            )
+            if fb_resp.status_code >= 400:
+                logger.warning("Gemini generateContent fallback status=%s body=%s", fb_resp.status_code, fb_resp.text[:200])
                 return None
-            data = resp.json()
-            # Extraer el texto del último model_output step
-            output_text = data.get("output_text")
-            if not output_text:
-                steps = data.get("steps") or []
-                text_parts: list[str] = []
-                for step in steps:
-                    if step.get("type") == "model_output":
-                        for item in step.get("content") or []:
-                            if item.get("type") == "text" and item.get("text"):
-                                text_parts.append(item["text"])
-                output_text = "\n".join(text_parts).strip()
-            return {"output_text": output_text, "raw": data}
+            fb_data = fb_resp.json()
+            candidates = fb_data.get("candidates") or []
+            fb_parts: list[str] = []
+            for cand in candidates:
+                content = cand.get("content") or {}
+                for part in content.get("parts") or []:
+                    if part.get("text"):
+                        fb_parts.append(part["text"])
+            return {"output_text": "\n".join(fb_parts).strip(), "raw": fb_data}
     except Exception as exc:
-        logger.warning("Fallo al invocar Gemini Interactions API: %s", exc)
+        logger.warning("Fallo al invocar Gemini API: %s", exc)
         return None
 
 
