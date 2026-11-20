@@ -62,10 +62,10 @@ class BookingBatchCreate(BaseModel):
 class MusicianBookingCreate(BaseModel):
     """Reserva/contrata creada por el músico.
 
-    Obligatorios: nombre del cliente, fecha, hora, tipo, ubicación y precio total.
+    Obligatorios: teléfono o nombre del cliente, fecha, hora, tipo, ubicación y precio total.
     """
 
-    contractor_fullname: str = Field(min_length=2, max_length=120)
+    contractor_fullname: str | None = Field(default=None, max_length=120)
     contractor_email: EmailStr | None = None
     contractor_phone: str | None = Field(default=None, max_length=40)
     document_type: str | None = Field(default=None, max_length=40)
@@ -81,10 +81,12 @@ class MusicianBookingCreate(BaseModel):
     location_reference: str | None = Field(default=None, max_length=120)
     event_type: str = Field(min_length=2, max_length=120)
     event_description: str | None = Field(default=None, max_length=2000)
+    requested_repertoire: list[dict | str] | None = None
 
     price_agreed: Decimal = Field(ge=Decimal("10.00"), le=Decimal("50000.00"), decimal_places=2)
     musician_quote_notes: str | None = Field(default=None, max_length=2000)
-
+    already_paid: bool = False
+    ensemble_member_ids: list[UUID] | None = None
 
     @field_validator("contractor_email", mode="before")
     @classmethod
@@ -96,7 +98,17 @@ class MusicianBookingCreate(BaseModel):
         return value
 
     @model_validator(mode="after")
-    def validate_time_order(self):
+    def validate_time_order_and_client(self):
+        clean_name = (self.contractor_fullname or "").strip()
+        clean_phone = (self.contractor_phone or "").strip()
+        if not clean_name and not clean_phone:
+            raise ValueError("Debes indicar al menos el teléfono o el nombre del cliente")
+        if clean_name and len(clean_name) < 2:
+            raise ValueError("El nombre del cliente debe tener al menos 2 caracteres")
+        if not clean_name:
+            self.contractor_fullname = f"Cliente ({clean_phone})"
+        else:
+            self.contractor_fullname = clean_name
         if self.end_time is not None and self.start_time is not None:
             if self.end_time == self.start_time:
                 raise ValueError("La hora de fin no puede ser igual a la hora de inicio")

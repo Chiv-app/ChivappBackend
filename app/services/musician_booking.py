@@ -211,10 +211,22 @@ def create_musician_booking(
         )
 
     if contract_html_text_length(musician.contract_template_body) < 50:
-        raise HTTPException(
-            status_code=400,
-            detail="Configura tu plantilla de contrato antes de crear contratas",
-        )
+        if payload.already_paid:
+            from app.services.contract_pdf import (
+                DEFAULT_CONTRACT_TEMPLATE_TITLE,
+                build_default_contract_template_body,
+            )
+
+            musician.contract_template_title = (
+                musician.contract_template_title or DEFAULT_CONTRACT_TEMPLATE_TITLE
+            )
+            musician.contract_template_body = build_default_contract_template_body()
+            db.flush()
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Configura tu plantilla de contrato antes de crear contratas",
+            )
 
     if payload.event_date < get_lima_today():
         raise HTTPException(400, "La fecha del evento no puede ser anterior a hoy")
@@ -236,7 +248,7 @@ def create_musician_booking(
 
     contractor, contractor_user = resolve_or_create_contractor_client(
         db,
-        fullname=payload.contractor_fullname,
+        fullname=payload.contractor_fullname or f"Cliente ({payload.contractor_phone or ''})",
         email=str(payload.contractor_email) if payload.contractor_email else None,
         phone=payload.contractor_phone,
         document_type=payload.document_type,
@@ -244,6 +256,12 @@ def create_musician_booking(
         address=payload.contractor_address,
         city=payload.contractor_city,
         musician_id=musician.id,
+    )
+
+    initial_status = (
+        BookingStatus.payment_retained
+        if payload.already_paid
+        else BookingStatus.accepted
     )
 
     booking = Booking(
@@ -257,10 +275,11 @@ def create_musician_booking(
         location_reference=payload.location_reference,
         event_type=payload.event_type.strip(),
         event_description=payload.event_description,
+        requested_repertoire=payload.requested_repertoire,
         price_agreed=payload.price_agreed,
         musician_quote_notes=payload.musician_quote_notes,
         quoted_at=datetime.utcnow(),
-        status=BookingStatus.accepted,
+        status=initial_status,
     )
     db.add(booking)
     db.flush()
@@ -268,7 +287,11 @@ def create_musician_booking(
     from types import SimpleNamespace
     from app.services.platform_payment import sync_booking_platform_fee
 
-    sync_booking_platform_fee(db, booking, use_current_settings=True)
+    if payload.already_paid:
+        booking.platform_fee_percent = Decimal("0.00")
+        booking.platform_fee_amount = Decimal("0.00")
+    else:
+        sync_booking_platform_fee(db, booking, use_current_settings=True)
 
     transient_doc = normalize_document_number(payload.document_number)
     reused_existing = bool(getattr(contractor, "_reused_existing_account", False))
@@ -326,7 +349,82 @@ def create_musician_booking(
             contractor.document_number = None
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    if (
+        payload.already_paid
+        and payload.ensemble_member_ids
+        and (musician.profile_type or "solo") == "group"
+    ):
+        from app.models.ensemble_member import (
+            BookingMemberInvite,
+            BookingMemberInviteStatus,
+            EnsembleMember,
+            EnsembleMemberStatus,
+        )
+        from app.services.booking_notifications import notify_user
+        from app.services.ensemble_members import _hash_setup_token, new_token
+        from app.services.musician_profiles import member_belongs_to_profile
+
+        seen_member_ids = set()
+        for member_id in payload.ensemble_member_ids:
+            if member_id in seen_member_ids:
+                continue
+            seen_member_ids.add(member_id)
+            member = (
+                db.query(EnsembleMember)
+                .filter(
+                    EnsembleMember.id == member_id,
+                    EnsembleMember.leader_user_id == musician_user.id,
+                )
+                .first()
+            )
+            if (
+                not member
+                or member.status != EnsembleMemberStatus.active
+                or not member_belongs_to_profile(member, musician)
+            ):
+                continue
+            token_hash = _hash_setup_token(new_token())
+            invite = BookingMemberInvite(
+                booking_id=booking.id,
+                ensemble_member_id=member.id,
+                status=BookingMemberInviteStatus.pending,
+                response_token=token_hash,
+                invited_at=datetime.utcnow(),
+            )
+            db.add(invite)
+            db.flush()
+            if member.member_user_id:
+                member_user = db.get(User, member.member_user_id)
+                if member_user:
+                    group_label = musician.stage_name or musician_user.fullname or "tu agrupación"
+                    notify_user(
+                        db,
+                        user=member_user,
+                        type="booking_member_invited",
+                        title=f"Nueva convocatoria: {booking.event_type}",
+                        message=(
+                            f"{group_label} te convocó para {booking.event_type} "
+                            f"el {booking.event_date} a las {str(booking.start_time)[:5]}."
+                        ),
+                        booking_id=str(booking.id),
+                        meta={"ensemble_member_id": str(member.id)},
+                    )
+
     db.commit()
     db.refresh(booking)
+
+    if payload.already_paid:
+        try:
+            from app.services.calendar_service import sync_booking_calendar
+
+            sync_booking_calendar(
+                db,
+                str(booking.id),
+                include_contractor=False,
+                ensemble_member_ids=[str(m) for m in (payload.ensemble_member_ids or [])],
+            )
+        except Exception:
+            pass
+
     return booking
 

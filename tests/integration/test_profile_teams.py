@@ -338,3 +338,80 @@ def test_owned_profile_endpoint_also_returns_members_and_plays_with(
     assert me_solo.status_code == 200, me_solo.text
     assert me_solo.json()["plays_with"] == [{"name": "Mariachi América", "slug": group.slug}]
 
+
+def test_nueva_contrata_already_paid_invites_members_consumes_solo_profile_and_allows_draft_contractor_claim(
+    client: TestClient, db_session: Session
+):
+    leader = _user(db_session, "Director Grupo")
+    group = _profile(db_session, leader, "Orquesta Estelar", kind="group")
+    group.signature_image_url = "/uploads/private/firma.png"
+
+    friend = _user(db_session, "Marco Solista")
+    # El integrante tiene tanto un perfil de grupo como uno de solista; siempre se consume el de solista.
+    _profile(db_session, friend, "Banda de Marco", kind="group", primary=True)
+    friend_solo = _profile(db_session, friend, "Marco Trompeta", kind="solo", primary=False)
+    member = _member(db_session, leader, group, friend, "Marco Solista")
+    db_session.commit()
+
+    _login(client, leader, group)
+    members_res = client.get("/api/v1/musician/members?status=active")
+    assert members_res.status_code == 200, members_res.text
+    assert members_res.json()[0]["profile_slug"] == friend_solo.slug
+
+    # Crear Nueva Contrata ya pagada por fuera (solo teléfono obligatorio del cliente + convocatoria automática)
+    create_res = client.post(
+        "/api/v1/bookings/musician-created",
+        json={
+            "contractor_phone": "999111222",
+            "document_type": "DNI",
+            "document_number": "44556677",
+            "event_date": (now_peru().date() + timedelta(days=10)).isoformat(),
+            "start_time": "20:00:00",
+            "end_time": "22:00:00",
+            "location_address": "Av. Arequipa 1200",
+            "location_city": "Lima",
+            "event_type": "Cumpleaños",
+            "event_description": "Pidió repertorio bailable",
+            "price_agreed": "1200.00",
+            "already_paid": True,
+            "ensemble_member_ids": [str(member.id)],
+        },
+    )
+    assert create_res.status_code == 201, create_res.text
+    booking_data = create_res.json()
+    booking_id = booking_data["id"]
+    assert booking_data["status"] == "payment_retained"
+    assert float(booking_data["platform_fee_amount"] or 0) == 0.0
+
+    # La convocatoria al integrante se creó automáticamente
+    invites_res = client.get(f"/api/v1/bookings/{booking_id}/member-invites")
+    assert invites_res.status_code == 200
+    assert len(invites_res.json()) == 1
+    assert invites_res.json()[0]["ensemble_member_id"] == str(member.id)
+
+    # El reparto a integrantes ya está activo desde payment_retained sin botón intermedio ni reseña previa
+    payout_res = client.put(
+        f"/api/v1/bookings/{booking_id}/member-payouts",
+        json={"items": [{"ensemble_member_id": str(member.id), "amount": "300.00"}], "lock": False},
+    )
+    assert payout_res.status_code == 200, payout_res.text
+
+    # Cuando el cliente ingresa más adelante a Chivapp y se registra con su celular, reclama sus reservas en borrador
+    client.cookies.clear()
+    reg_res = client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": "cliente.nuevo.contrata@test.com",
+            "fullname": "Cliente Real",
+            "phone": "999111222",
+            "password": "StrongPassword123!",
+            "role": "contractor",
+            "accepted_terms": True,
+        },
+    )
+    assert reg_res.status_code == 201, reg_res.text
+    my_bookings = client.get("/api/v1/bookings")
+    assert my_bookings.status_code == 200
+    assert any(b["id"] == booking_id for b in my_bookings.json())
+
+

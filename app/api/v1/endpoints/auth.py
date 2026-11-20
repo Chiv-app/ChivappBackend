@@ -419,10 +419,9 @@ def register_user(
     response: Response,
     db: Session = Depends(deps.get_db),
 ):
-    email = assert_email_unique(db, payload.email)
-    if not email:
-        raise HTTPException(400, "El correo electrónico es obligatorio")
-    phone = assert_phone_unique(db, payload.phone)
+    from sqlalchemy import func
+    from app.models.booking import Booking
+    from app.services.uniqueness import normalize_email, normalize_phone
 
     if payload.role not in (UserRole.contractor.value, UserRole.musician.value):
         raise HTTPException(400, "Rol inválido")
@@ -432,27 +431,118 @@ def register_user(
 
     _assert_strong_password(payload.password)
 
+    raw_email = normalize_email(payload.email)
+    if not raw_email:
+        raise HTTPException(400, "El correo electrónico es obligatorio")
+
+    existing_by_email = db.query(User).filter(func.lower(User.email) == raw_email).first()
+    can_claim_draft_contractor = bool(
+        existing_by_email is not None
+        and payload.role == UserRole.contractor.value
+        and existing_by_email.role == UserRole.contractor
+        and existing_by_email.password_hash is None
+        and not existing_by_email.is_verified
+        and existing_by_email.email_verified_at is None
+    )
+
+    if can_claim_draft_contractor:
+        email = raw_email
+        phone = assert_phone_unique(
+            db, payload.phone, exclude_user_id=existing_by_email.id
+        )
+    else:
+        email = assert_email_unique(db, payload.email)
+        if not email:
+            raise HTTPException(400, "El correo electrónico es obligatorio")
+        phone = assert_phone_unique(db, payload.phone)
+
     normalized_username: str | None = None
     if payload.username and payload.username.strip():
-        normalized_username = assert_username_unique(db, payload.username)
+        normalized_username = assert_username_unique(
+            db,
+            payload.username,
+            exclude_user_id=existing_by_email.id if can_claim_draft_contractor else None,
+        )
 
     cleaned_fullname: str | None = (
         payload.fullname.strip() if payload.fullname and payload.fullname.strip() else None
     )
 
-    user = User(
-        email=email,
-        username=normalized_username,
-        fullname=cleaned_fullname,
-        password_hash=hash_password(payload.password),
-        role=UserRole(payload.role),
-        phone=phone,
-        terms_accepted_at=datetime.utcnow(),
-        terms_accepted_ip=_client_ip(request),
-    )
-    db.add(user)
-    db.flush()
-    _create_role_profile(db, user)
+    if can_claim_draft_contractor and existing_by_email is not None:
+        user = existing_by_email
+        user.username = normalized_username or user.username
+        if cleaned_fullname:
+            user.fullname = cleaned_fullname
+        user.password_hash = hash_password(payload.password)
+        if phone:
+            user.phone = phone
+        user.is_active = True
+        user.terms_accepted_at = datetime.utcnow()
+        user.terms_accepted_ip = _client_ip(request)
+        _revoke_sessions(user)
+        db.flush()
+        contractor_prof = (
+            db.query(ContractorProfile)
+            .filter(ContractorProfile.user_id == user.id)
+            .first()
+        )
+        if not contractor_prof:
+            _create_role_profile(db, user)
+            db.flush()
+    else:
+        user = User(
+            email=email,
+            username=normalized_username,
+            fullname=cleaned_fullname,
+            password_hash=hash_password(payload.password),
+            role=UserRole(payload.role),
+            phone=phone,
+            terms_accepted_at=datetime.utcnow(),
+            terms_accepted_ip=_client_ip(request),
+        )
+        db.add(user)
+        db.flush()
+        _create_role_profile(db, user)
+        db.flush()
+
+    # Si el contratista tenía reservas en borrador creadas por un músico con su celular (@guest.local),
+    # vincularlas automáticamente a su nueva cuenta y conservar datos de borrador faltantes.
+    if user.role == UserRole.contractor and phone:
+        target_profile = (
+            db.query(ContractorProfile)
+            .filter(ContractorProfile.user_id == user.id)
+            .first()
+        )
+        if target_profile:
+            guest_users = (
+                db.query(User)
+                .filter(
+                    User.id != user.id,
+                    User.role == UserRole.contractor,
+                    User.email.like("%@guest.local"),
+                    User.phone == phone,
+                )
+                .all()
+            )
+            for g_user in guest_users:
+                g_prof = (
+                    db.query(ContractorProfile)
+                    .filter(ContractorProfile.user_id == g_user.id)
+                    .first()
+                )
+                if g_prof:
+                    if g_prof.city and not target_profile.city:
+                        target_profile.city = g_prof.city
+                    if g_prof.address and not target_profile.address:
+                        target_profile.address = g_prof.address
+                    if g_prof.document_type and not target_profile.document_type:
+                        target_profile.document_type = g_prof.document_type
+                    db.query(Booking).filter(Booking.contractor_id == g_prof.id).update(
+                        {Booking.contractor_id: target_profile.id},
+                        synchronize_session=False,
+                    )
+            db.flush()
+
     send_welcome_email(db, user)
     send_email_verification(db, user)
     _issue_login(response, user)

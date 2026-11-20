@@ -82,8 +82,10 @@ INVITE_STATUSES = {
     BookingStatus.payment_released,
 }
 
-# Fase de evento / cierre: se puede pagar a integrantes tras reseña al contratista.
+# Reserva confirmada / evento / cierre: se puede gestionar el reparto a integrantes desde que está confirmada.
 PAYOUT_ELIGIBLE_STATUSES = {
+    BookingStatus.payment_retained,
+    BookingStatus.change_pending,
     BookingStatus.in_progress,
     BookingStatus.payment_released,
     BookingStatus.completed,
@@ -152,12 +154,7 @@ def _assert_can_manage_member_payouts(
     if booking.status not in PAYOUT_ELIGIBLE_STATUSES:
         raise HTTPException(
             400,
-            "Solo puedes pagar a tus integrantes después de finalizar el show",
-        )
-    if not _has_musician_contractor_review(db, booking):
-        raise HTTPException(
-            400,
-            "Primero deja tu reseña al contratista para habilitar los pagos a integrantes",
+            "Solo puedes gestionar el reparto de integrantes en una reserva confirmada",
         )
 
 

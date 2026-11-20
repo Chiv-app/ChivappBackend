@@ -55,7 +55,11 @@ def parse_event_coords(booking: Booking) -> tuple[float | None, float | None]:
 
 
 def assert_event_phase(db: Session, booking: Booking) -> None:
-    if booking.status != BookingStatus.in_progress:
+    if booking.status not in {
+        BookingStatus.payment_retained,
+        BookingStatus.in_progress,
+        BookingStatus.payment_released,
+    }:
         raise HTTPException(
             400,
             "La ubicación en vivo solo está disponible en la fase de evento "

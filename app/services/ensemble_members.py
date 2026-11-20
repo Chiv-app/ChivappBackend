@@ -134,6 +134,23 @@ def serialize_member(member: EnsembleMember, *, include_invite_url: bool = False
     group_name = (profile.stage_name if profile and profile.stage_name else None) or (
         leader.fullname if leader else None
     )
+    solo_slug: str | None = None
+    db = object_session(member)
+    if db is not None and member.member_user_id and linked and linked.is_verified:
+        solo_profile = (
+            db.query(MusicianProfile.slug)
+            .filter(
+                MusicianProfile.user_id == member.member_user_id,
+                MusicianProfile.profile_type == "solo",
+                MusicianProfile.is_ensemble_only.is_(False),
+                MusicianProfile.status == ProfileStatus.published,
+                MusicianProfile.slug.isnot(None),
+            )
+            .order_by(MusicianProfile.is_primary.desc(), MusicianProfile.created_at.asc())
+            .first()
+        )
+        if solo_profile and solo_profile[0]:
+            solo_slug = solo_profile[0]
     return {
         "id": member.id,
         "email": member.email,
@@ -149,6 +166,7 @@ def serialize_member(member: EnsembleMember, *, include_invite_url: bool = False
         "invite_expired": invite_expired,
         "member_user_id": None,
         "leader_name": group_name,
+        "profile_slug": solo_slug,
         "invited_at": member.invited_at,
         "joined_at": member.joined_at,
         "ended_by": member.ended_by,

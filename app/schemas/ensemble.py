@@ -97,6 +97,7 @@ class EnsembleMemberOut(BaseModel):
     invite_expired: bool = False
     member_user_id: UUID | None
     leader_name: str | None = None
+    profile_slug: str | None = None
     invited_at: datetime | None
     joined_at: datetime | None
     ended_by: str | None = None

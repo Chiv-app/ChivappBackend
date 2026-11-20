@@ -493,8 +493,11 @@ def checkout_booking_link(
         )
     is_editable_prefill = (link.source or "manual") in (
         "assistant_whatsapp",
+        "whatsapp_ai",
         "assistant_simulator",
+        "simulator",
         "voice_autocomplete",
+        "voice_dictation",
     )
     if not is_editable_prefill:
         if link.event_date and payload.event_date != link.event_date:

@@ -1279,13 +1279,32 @@ def complete_booking(
         .first()
     )
     from app.models.booking_complaint import BookingComplaint
+    from app.models.payment import Payment, PaymentStatus
 
     complaint = (
         db.query(BookingComplaint)
         .filter(BookingComplaint.booking_id == booking.id)
         .first()
     )
-    if not (has_valid_contractor_review and musician_rec) and not complaint:
+    has_custody_payment = (
+        db.query(Payment.id)
+        .filter(
+            Payment.booking_id == booking.id,
+            Payment.status.in_([PaymentStatus.retained, PaymentStatus.released]),
+        )
+        .first()
+        is not None
+    )
+    is_external_musician_booking = (
+        not has_custody_payment
+        and Decimal(str(booking.platform_fee_amount or 0)) == Decimal("0.00")
+        and current_user.role == UserRole.musician
+    )
+    if (
+        not (has_valid_contractor_review and musician_rec)
+        and not complaint
+        and not is_external_musician_booking
+    ):
         raise HTTPException(
             400,
             "Para cerrar la reserva es necesario que tanto el contratista como el músico hayan registrado su reseña final (o exista una queja registrada).",
