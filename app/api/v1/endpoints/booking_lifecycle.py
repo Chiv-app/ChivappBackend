@@ -1279,6 +1279,7 @@ def complete_booking(
         .first()
     )
     from app.models.booking_complaint import BookingComplaint
+    from app.models.contract import Contract
     from app.models.payment import Payment, PaymentStatus
 
     complaint = (
@@ -1295,9 +1296,16 @@ def complete_booking(
         .first()
         is not None
     )
-    is_external_musician_booking = (
+    contract_row = (
+        db.query(Contract).filter(Contract.booking_id == booking.id).first()
+    )
+    is_external_musician_booking = bool(
         not has_custody_payment
-        and Decimal(str(booking.platform_fee_amount or 0)) == Decimal("0.00")
+        and booking.platform_fee_amount is not None
+        and Decimal(str(booking.platform_fee_amount)) == Decimal("0.00")
+        and contract_row is not None
+        and isinstance(contract_row.context, dict)
+        and contract_row.context.get("__already_paid_external__") is True
         and current_user.role == UserRole.musician
     )
     if (

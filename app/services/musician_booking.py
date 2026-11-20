@@ -334,7 +334,7 @@ def create_musician_booking(
             else:
                 if not keep_doc_in_profile and transient_doc:
                     contractor.document_number = transient_doc
-                create_booking_contract(
+                contract = create_booking_contract(
                     db,
                     booking,
                     musician,
@@ -344,6 +344,11 @@ def create_musician_booking(
                 )
                 if not keep_doc_in_profile:
                     contractor.document_number = None
+            if payload.already_paid and contract is not None:
+                contract.context = {
+                    **(contract.context or {}),
+                    "__already_paid_external__": True,
+                }
     except ValueError as exc:
         if not reused_existing and not keep_doc_in_profile:
             contractor.document_number = None
