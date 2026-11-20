@@ -674,6 +674,7 @@ def sync_booking_calendar(db, booking_id: str, include_contractor: bool, ensembl
     try:
         from googleapiclient.errors import HttpError
         existing_event_id = get_booking_calendar_event_id_for_viewer(booking, role="owner")
+        synced_owner_id: str | None = None
         if existing_event_id:
             try:
                 event = service.events().update(
@@ -682,7 +683,7 @@ def sync_booking_calendar(db, booking_id: str, include_contractor: bool, ensembl
                     body=event_body, 
                     sendUpdates='all'
                 ).execute()
-                return event.get('id')
+                synced_owner_id = event.get('id')
             except HttpError as he:
                 if he.resp.status == 404 or he.resp.status == 410:
                     logger.warning(f"Evento {existing_event_id} no encontrado en Google Calendar. Creando uno nuevo.")
@@ -697,9 +698,31 @@ def sync_booking_calendar(db, booking_id: str, include_contractor: bool, ensembl
                 body=event_body, 
                 sendUpdates='all'
             ).execute()
-            set_booking_calendar_event_id_for_viewer(booking, event.get('id'), role="owner")
+            synced_owner_id = event.get('id')
+            set_booking_calendar_event_id_for_viewer(booking, synced_owner_id, role="owner")
             db.commit()
-            return event.get('id')
+
+        if musician_user and ensemble_member_ids:
+            for mid in ensemble_member_ids:
+                em = (
+                    db.query(EnsembleMember)
+                    .filter(
+                        EnsembleMember.id == mid,
+                        EnsembleMember.leader_user_id == musician_user.id,
+                    )
+                    .first()
+                )
+                if em and em.member_user_id:
+                    m_user = db.query(User).filter(User.id == em.member_user_id).first()
+                    if m_user and getattr(m_user, "google_calendar_refresh_token", None):
+                        try:
+                            sync_participant_booking_calendar(
+                                db, str(booking.id), m_user, role="member"
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
+
+        return synced_owner_id
     except Exception as e:
         logger.error(f"Error sincronizando evento en Google Calendar: {e}")
         if _is_revoked_token_error(e):
