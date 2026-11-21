@@ -221,15 +221,15 @@ def test_completing_these_fields_does_not_send_a_published_profile_back_to_revie
 
 
 def test_changing_the_bio_still_sends_a_published_profile_back_to_review(client: TestClient, db_session: Session):
-    # Control: la regla de revisión sigue vigente para el contenido que ve el cliente.
+    # Con la verificación automática, editar la biografía mantiene el perfil publicado.
     user, profile = _musician(db_session, status=ProfileStatus.published)
     _login(client, user)
 
-    res = _put(client, {"bio": "Una biografía nueva que debe revisar el equipo antes de verse."})
+    res = _put(client, {"bio": "Una biografía nueva que se publica automáticamente sin revisión manual."})
 
     assert res.status_code == 200, res.text
     db_session.expire_all()
-    assert db_session.get(MusicianProfile, profile.id).status == ProfileStatus.draft
+    assert db_session.get(MusicianProfile, profile.id).status == ProfileStatus.published
 
 
 def test_the_public_profile_and_the_listing_expose_type_size_and_details(client: TestClient, db_session: Session):

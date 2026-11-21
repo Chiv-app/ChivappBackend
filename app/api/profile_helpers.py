@@ -121,7 +121,7 @@ def auto_verify_musician_profile_if_complete(db: Session, profile: MusicianProfi
             exclude_profile_id=profile.id,
         )
 
-    if contract_html_text_length(profile.contract_template_body) < 50:
+    if not (profile.contract_template_body or "").strip():
         profile.contract_template_title = profile.contract_template_title or DEFAULT_CONTRACT_TEMPLATE_TITLE
         profile.contract_template_body = build_default_contract_template_body()
 
