@@ -841,7 +841,7 @@ def run_startup_seeds() -> None:
             if not locked:
                 return
         ensure_role_profiles(db)
-        ensure_email_templates(db)
+        ensure_email_templates(db, update_existing=True)
         backfill_musician_slugs(db)
         backfill_user_usernames(db)
     except Exception:

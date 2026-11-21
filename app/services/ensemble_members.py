@@ -249,14 +249,26 @@ def find_password_setup_member(db: Session, token: str) -> EnsembleMember:
         and member.password_setup_expires_at < datetime.utcnow()
     ):
         raise HTTPException(410, "El enlace expiró. Pide al líder que reenvíe la invitación")
+    if not member.member_user_id and member.email:
+        existing_user = (
+            db.query(User)
+            .filter(func.lower(User.email) == member.email.lower().strip())
+            .first()
+        )
+        if existing_user:
+            member.member_user_id = existing_user.id
+            db.flush()
     if not member.member_user_id:
         raise HTTPException(400, "La invitación no está vinculada a una cuenta")
     return member
 
 
 def activate_member_after_password(db: Session, member: EnsembleMember) -> None:
+    member.status = EnsembleMemberStatus.active
+    member.joined_at = member.joined_at or datetime.utcnow()
     member.password_setup_token = None
     member.password_setup_expires_at = None
+    notify_leader_member_joined(db, member)
 
 
 def notify_leader_member_joined(db: Session, member: EnsembleMember) -> None:

@@ -136,17 +136,17 @@ def test_a_contractor_email_looks_like_any_other_invitation(client: TestClient, 
     assert res.status_code == 201, res.text
     body = res.json()
     assert body["status"] == "invited"
-    # No se vincula ni se avisa a esa cuenta, y la respuesta no delata nada.
+    # La respuesta no delata nada, pero sí envía el correo de invitación al destinatario.
     assert body["member_user_id"] is None and body["has_password"] is False
-    send.assert_not_called()
+    assert send.called
     member = db_session.get(EnsembleMember, uuid.UUID(body["id"]))
     assert member.member_user_id is None
 
-    # Reenviar responde igual que siempre, sin enviar nada.
+    # Reenviar envía nuevamente el correo de invitación.
     with patch("app.services.email.auth_emails.send_templated_email") as send:
         again = client.post(f"/api/v1/musician/members/{body['id']}/resend-invite")
     assert again.status_code == 200, again.text
-    send.assert_not_called()
+    assert send.called
 
 
 def test_responses_do_not_reveal_whether_the_email_has_an_account(client: TestClient, db_session: Session):

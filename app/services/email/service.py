@@ -41,9 +41,11 @@ def ensure_email_templates(db: Session, update_existing: bool = False) -> None:
             existing.html_body = item["html_body"]
             existing.text_body = item["text_body"]
             existing.available_variables = item["available_variables"]
+            existing.enabled = True
             existing.updated_at = datetime.utcnow()
         else:
             existing.available_variables = item["available_variables"]
+            existing.enabled = True
     db.commit()
 
 
@@ -159,6 +161,11 @@ def send_templated_email(
         status = "sent" if provider_id else "skipped"
         error = None if provider_id else "Envío omitido (EMAIL_ENABLED o BREVO_API_KEY)"
     except EmailDeliveryError as exc:
+        import logging
+
+        logging.getLogger(__name__).error(
+            "Error enviando correo (%s) a %s: %s", slug, recipient, exc
+        )
         status = "failed"
         provider_id = None
         error = str(exc)

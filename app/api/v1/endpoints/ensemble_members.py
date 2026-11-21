@@ -291,7 +291,7 @@ def create_member(
     db.flush()
 
     invite_url = None
-    if managed:
+    if managed or member_user is None:
         token = issue_password_setup_token(member)
         invite_url = password_setup_url(token)
 
@@ -327,6 +327,17 @@ def create_member(
             )
         else:
             _email_join_request(db, member, member_user, current_user, profile)
+    elif member_user is None and email and not email.endswith("@guest.local") and email != (current_user.email or "").lower().strip():
+        send_ensemble_invite_email(
+            db,
+            member_email=email,
+            member_name=member.fullname,
+            leader_name=leader_label,
+            invite_url=invite_url or f"{settings.FRONTEND_URL.rstrip('/')}/musician",
+            specialties=list(member.specialties or []),
+            user_id=None,
+            expires_days=PASSWORD_SETUP_TTL_DAYS,
+        )
 
     db.commit()
     db.refresh(member)
@@ -494,8 +505,21 @@ def resend_invite(
     leader_label = _leader_display_name(current_user, getattr(member, "profile", None) or profile)
     user = db.get(User, member.member_user_id) if member.member_user_id else None
     if user is None:
-        # Sin cuenta vinculada (correo que no puede ser integrante): se responde igual que siempre.
+        token = issue_password_setup_token(member)
+        member.status = EnsembleMemberStatus.invited
         member.invited_at = datetime.utcnow()
+        invite_url = password_setup_url(token)
+        if member.email and not member.email.endswith("@guest.local"):
+            send_ensemble_invite_email(
+                db,
+                member_email=member.email,
+                member_name=member.fullname,
+                leader_name=leader_label,
+                invite_url=invite_url,
+                specialties=list(member.specialties or []),
+                user_id=None,
+                expires_days=PASSWORD_SETUP_TTL_DAYS,
+            )
         db.commit()
         db.refresh(member)
         return serialize_member(member, include_invite_url=True)
@@ -881,15 +905,22 @@ def resend_booking_invite_email(
         )
         .first()
     )
-    if not invite:
-        raise HTTPException(404, "No existe una convocatoria para este integrante en esta reserva")
-    if invite.status != BookingMemberInviteStatus.pending:
-        raise HTTPException(400, f"No se puede reenviar porque la convocatoria ya fue {invite.status.value}")
-        
-    # Generate new token
     raw_token = new_token()
-    invite.response_token = _hash_setup_token(raw_token)
-    invite.invited_at = datetime.utcnow()
+    if not invite:
+        invite = BookingMemberInvite(
+            booking_id=booking_id,
+            ensemble_member_id=member.id,
+            status=BookingMemberInviteStatus.pending,
+            response_token=_hash_setup_token(raw_token),
+            invited_at=datetime.utcnow(),
+        )
+        db.add(invite)
+    else:
+        if invite.status == BookingMemberInviteStatus.declined:
+            invite.status = BookingMemberInviteStatus.pending
+            invite.responded_at = None
+        invite.response_token = _hash_setup_token(raw_token)
+        invite.invited_at = datetime.utcnow()
     db.flush()
     
     # Send email ALWAYS
