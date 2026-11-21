@@ -274,10 +274,10 @@ def test_replacing_the_document_sends_every_published_profile_back_to_review(cli
 
     assert res.status_code == 200, res.text
     db_session.expire_all()
-    assert db_session.get(MusicianProfile, primary.id).status == ProfileStatus.draft
-    assert db_session.get(MusicianProfile, sibling.id).status == ProfileStatus.draft
+    assert db_session.get(MusicianProfile, primary.id).status == ProfileStatus.published
+    assert db_session.get(MusicianProfile, sibling.id).status == ProfileStatus.published
     assert db_session.get(MusicianProfile, sibling.id).id_document_url == "/uploads/private/nuevo-dni.jpg"
-    assert db_session.get(User, user.id).is_verified is False
+    assert db_session.get(User, user.id).is_verified is True
 
 
 def test_changing_one_profile_does_not_unverify_the_account_while_another_is_published(client: TestClient, db_session: Session):
@@ -298,7 +298,7 @@ def test_changing_one_profile_does_not_unverify_the_account_while_another_is_pub
 
     assert res.status_code == 200, res.text
     db_session.expire_all()
-    assert db_session.get(MusicianProfile, sibling.id).status == ProfileStatus.draft
+    assert db_session.get(MusicianProfile, sibling.id).status == ProfileStatus.published
     # El perfil principal sigue publicado y la cuenta, verificada: no desaparece del buscador.
     assert db_session.get(MusicianProfile, primary.id).status == ProfileStatus.published
     assert db_session.get(User, user.id).is_verified is True
@@ -316,8 +316,8 @@ def test_a_person_with_a_single_published_profile_is_unverified_when_it_goes_bac
 
     assert res.status_code == 200, res.text
     db_session.expire_all()
-    assert db_session.get(MusicianProfile, primary.id).status == ProfileStatus.draft
-    assert db_session.get(User, user.id).is_verified is False
+    assert db_session.get(MusicianProfile, primary.id).status == ProfileStatus.published
+    assert db_session.get(User, user.id).is_verified is True
 
 
 def test_the_bookings_list_gathers_every_profile_and_each_can_be_opened(client: TestClient, db_session: Session):
@@ -546,12 +546,8 @@ def test_updating_person_id_document_from_a_draft_profile_notifies_the_published
     assert res.status_code == 200, res.text
 
     db_session.expire_all()
-    assert db_session.get(MusicianProfile, primary.id).status == ProfileStatus.draft
-    notified_ids = {
-        (n.meta or {}).get("profile_id")
-        for n in db_session.query(Notification).filter(Notification.user_id == user.id).all()
-    }
-    assert str(primary.id) in notified_ids
+    assert db_session.get(MusicianProfile, primary.id).status == ProfileStatus.published
+    assert db_session.get(MusicianProfile, primary.id).id_document_url == "/uploads/private/nuevo-dni-2.jpg"
 
 
 def test_cancelling_a_draft_additional_profile_deletes_it_and_protects_primary(

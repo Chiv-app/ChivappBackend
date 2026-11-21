@@ -8,6 +8,8 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.api import deps
 from app.api.profile_helpers import (
+    auto_verify_contractor_profile_if_complete,
+    auto_verify_musician_profile_if_complete,
     demote_published_profile_if_changed,
     get_or_create_contractor_profile,
     get_or_create_musician_profile,
@@ -398,7 +400,11 @@ def get_my_musician_profile(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Solo los músicos pueden acceder a su perfil de músico",
         )
-    return _get_musician_profile_or_404(db, current_user)
+    profile = _get_musician_profile_or_404(db, current_user)
+    if profile.status != ProfileStatus.published and auto_verify_musician_profile_if_complete(db, profile):
+        db.commit()
+        db.refresh(profile)
+    return _with_public_team(db, profile)
 
 
 @router.get(
@@ -413,6 +419,9 @@ def get_my_musician_profile_status(
     if current_user.role != UserRole.musician:
         raise HTTPException(status_code=403, detail="Solo los músicos pueden acceder")
     profile = _get_musician_profile_or_404(db, current_user)
+    if profile.status != ProfileStatus.published and auto_verify_musician_profile_if_complete(db, profile):
+        db.commit()
+        db.refresh(profile)
     return _validation_out(validate_musician_profile(db, profile))
 
 
@@ -440,16 +449,12 @@ def submit_musician_profile(
             detail=f"Completa tu perfil antes de enviarlo. Faltan: {', '.join(validation.missing_fields)}",
         )
 
-    profile.status = ProfileStatus.pending_review
-    profile.submitted_at = datetime.utcnow()
+    now = datetime.utcnow()
+    profile.status = ProfileStatus.published
+    profile.submitted_at = profile.submitted_at or now
+    profile.published_at = now
     profile.rejection_reason = None
-    notify_profile_submitted(
-        db,
-        user=current_user,
-        profile_role="musician",
-        profile_id=str(profile.id),
-        display_name=profile.stage_name or current_user.fullname,
-    )
+    current_user.is_verified = True
     db.commit()
     db.refresh(profile)
     return _with_public_team(db, profile)
@@ -546,6 +551,8 @@ def create_musician_profile(
     )
 
     db.add(profile)
+    db.flush()
+    auto_verify_musician_profile_if_complete(db, profile)
     db.commit()
     db.refresh(profile)
 
@@ -846,18 +853,15 @@ def update_musician_profile(
     person_updates = {k: v for k, v in updates.items() if k in PERSON_FIELDS}
     if person_updates:
         for sibling in sibling_profiles(db, profile):
-            if demote_published_profile_if_changed(sibling, person_updates):
-                notify_profile_needs_resubmit(
-                    db,
-                    user=current_user,
-                    profile_role="musician",
-                    profile_id=str(sibling.id),
-                )
+            demote_published_profile_if_changed(sibling, person_updates)
+            auto_verify_musician_profile_if_complete(db, sibling)
 
     videos = profile.videos or []
     showreel = getattr(profile, "showreel_video_url", None)
     if showreel and showreel not in videos:
         profile.showreel_video_url = None
+
+    auto_verify_musician_profile_if_complete(db, profile)
 
     db.commit()
     db.refresh(profile)
@@ -908,21 +912,9 @@ def onboard_musician_profile(
             detail=f"Completa tu perfil antes de enviarlo. Faltan: {format_missing_fields(missing_onboard)}",
         )
 
-    # El perfil solo pasa a pending_review si cumple todos los requisitos de publicación;
+    # Si cumple todos los requisitos de publicación, se verifica y publica automáticamente;
     # de lo contrario permanece en borrador (FE3-04).
-    validation = validate_musician_profile(db, profile)
-    if validation.can_submit:
-        profile.status = ProfileStatus.pending_review
-        profile.submitted_at = datetime.utcnow()
-        profile.rejection_reason = None
-        notify_profile_submitted(
-            db,
-            user=current_user,
-            profile_role="musician",
-            profile_id=str(profile.id),
-            display_name=profile.stage_name or current_user.fullname,
-        )
-    else:
+    if not auto_verify_musician_profile_if_complete(db, profile):
         profile.status = ProfileStatus.draft
     db.commit()
     db.refresh(profile)
@@ -1033,7 +1025,11 @@ def get_my_contractor_profile(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Solo los contratistas pueden acceder a su perfil",
         )
-    return _get_contractor_profile_or_404(db, current_user)
+    profile = _get_contractor_profile_or_404(db, current_user)
+    if profile.status != ProfileStatus.published and auto_verify_contractor_profile_if_complete(db, profile):
+        db.commit()
+        db.refresh(profile)
+    return profile
 
 
 @router.get(
@@ -1048,6 +1044,9 @@ def get_my_contractor_profile_status(
     if current_user.role != UserRole.contractor:
         raise HTTPException(status_code=403, detail="Solo los contratistas pueden acceder")
     profile = _get_contractor_profile_or_404(db, current_user)
+    if profile.status != ProfileStatus.published and auto_verify_contractor_profile_if_complete(db, profile):
+        db.commit()
+        db.refresh(profile)
     return _validation_out(validate_contractor_profile(profile))
 
 
@@ -1071,16 +1070,12 @@ def submit_contractor_profile(
             detail=f"Completa tu perfil antes de enviarlo. Faltan: {', '.join(validation.missing_fields)}",
         )
 
-    profile.status = ProfileStatus.pending_review
-    profile.submitted_at = datetime.utcnow()
+    now = datetime.utcnow()
+    profile.status = ProfileStatus.published
+    profile.submitted_at = profile.submitted_at or now
+    profile.published_at = now
     profile.rejection_reason = None
-    notify_profile_submitted(
-        db,
-        user=current_user,
-        profile_role="contractor",
-        profile_id=str(profile.id),
-        display_name=current_user.fullname,
-    )
+    current_user.is_verified = True
     db.commit()
     db.refresh(profile)
     return profile
@@ -1130,6 +1125,8 @@ def create_contractor_profile(
     )
 
     db.add(profile)
+    db.flush()
+    auto_verify_contractor_profile_if_complete(db, profile)
     db.commit()
     db.refresh(profile)
 
@@ -1201,14 +1198,8 @@ def update_contractor_profile(
         from app.services.uploads import assert_private_upload_owned
         assert_private_upload_owned(db, updates["id_document_url"], current_user.id, "documento de identidad")
 
-    demoted = demote_published_profile_if_changed(profile, updates)
-    if demoted:
-        notify_profile_needs_resubmit(
-            db,
-            user=current_user,
-            profile_role="contractor",
-            profile_id=str(profile.id),
-        )
+    demote_published_profile_if_changed(profile, updates)
+    auto_verify_contractor_profile_if_complete(db, profile)
 
     db.commit()
     db.refresh(profile)

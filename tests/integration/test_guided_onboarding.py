@@ -110,8 +110,9 @@ def test_submitting_without_a_custom_contract_uses_the_default_one(client: TestC
 
     res = client.post("/api/v1/profiles/musician/submit")
     assert res.status_code == 200, res.text
-    assert res.json()["status"] == "pending_review"
+    assert res.json()["status"] == "published"
 
     db_session.expire_all()
     saved = db_session.get(MusicianProfile, profile.id)
     assert contract_html_text_length(saved.contract_template_body) >= 50
+    assert db_session.get(User, user.id).is_verified is True

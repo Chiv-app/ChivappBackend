@@ -359,6 +359,8 @@ def create_musician_booking(
         and payload.ensemble_member_ids
         and (musician.profile_type or "solo") == "group"
     ):
+        from app.api.v1.endpoints.ensemble_members import _generate_ics_attachment
+        from app.core.config import settings
         from app.models.ensemble_member import (
             BookingMemberInvite,
             BookingMemberInviteStatus,
@@ -366,8 +368,29 @@ def create_musician_booking(
             EnsembleMemberStatus,
         )
         from app.services.booking_notifications import notify_user
-        from app.services.ensemble_members import _hash_setup_token, new_token
+        from app.services.email.auth_emails import send_booking_member_invite_email
+        from app.services.ensemble_members import (
+            _hash_setup_token,
+            booking_respond_url,
+            is_leader_managed_account,
+            new_token,
+        )
         from app.services.musician_profiles import member_belongs_to_profile
+
+        group_label = (
+            (musician.stage_name or "").strip()
+            or (musician_user.fullname or "").strip()
+            or "Tu agrupación"
+        )
+        event_time = str(booking.start_time or "Por confirmar")
+        if booking.end_time:
+            event_time = f"{booking.start_time or '?'} - {booking.end_time}"
+        location_parts = [
+            part for part in (booking.location_address, booking.location_city) if part
+        ]
+        event_location = ", ".join(location_parts) or "Por confirmar"
+        ics_file = _generate_ics_attachment(booking, group_label)
+        extra_atts = [ics_file] if ics_file else None
 
         seen_member_ids = set()
         for member_id in payload.ensemble_member_ids:
@@ -384,11 +407,13 @@ def create_musician_booking(
             )
             if (
                 not member
-                or member.status != EnsembleMemberStatus.active
+                or member.status == EnsembleMemberStatus.inactive
                 or not member_belongs_to_profile(member, musician)
             ):
                 continue
-            token_hash = _hash_setup_token(new_token())
+            linked_user = db.get(User, member.member_user_id) if member.member_user_id else None
+            raw_token = new_token()
+            token_hash = _hash_setup_token(raw_token)
             invite = BookingMemberInvite(
                 booking_id=booking.id,
                 ensemble_member_id=member.id,
@@ -398,22 +423,36 @@ def create_musician_booking(
             )
             db.add(invite)
             db.flush()
-            if member.member_user_id:
-                member_user = db.get(User, member.member_user_id)
-                if member_user:
-                    group_label = musician.stage_name or musician_user.fullname or "tu agrupación"
-                    notify_user(
-                        db,
-                        user=member_user,
-                        type="booking_member_invited",
-                        title=f"Nueva convocatoria: {booking.event_type}",
-                        message=(
-                            f"{group_label} te convocó para {booking.event_type} "
-                            f"el {booking.event_date} a las {str(booking.start_time)[:5]}."
-                        ),
-                        booking_id=str(booking.id),
-                        meta={"ensemble_member_id": str(member.id)},
-                    )
+            if linked_user:
+                notify_user(
+                    db,
+                    user=linked_user,
+                    type="booking_member_invite",
+                    title=f"Nueva convocatoria: {booking.event_type}",
+                    message=(
+                        f"{group_label} te convocó para {booking.event_type} "
+                        f"el {booking.event_date} a las {str(booking.start_time)[:5]}."
+                    ),
+                    booking_id=str(booking.id),
+                    meta={"ensemble_member_id": str(member.id)},
+                )
+            if member.email and not member.email.endswith("@guest.local"):
+                respond_url = booking_respond_url(raw_token)
+                final_respond_url = respond_url or f"{settings.FRONTEND_URL.rstrip('/')}/musician"
+                send_booking_member_invite_email(
+                    db,
+                    member_email=member.email,
+                    member_name=member.fullname,
+                    leader_name=group_label,
+                    event_type=booking.event_type,
+                    event_date=str(booking.event_date),
+                    event_time=event_time,
+                    event_location=event_location,
+                    respond_url=final_respond_url,
+                    user_id=member.member_user_id,
+                    booking_id=str(booking.id),
+                    extra_attachments=extra_atts,
+                )
 
     db.commit()
     db.refresh(booking)

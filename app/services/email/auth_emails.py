@@ -90,13 +90,23 @@ def send_payout_data_changed_email(db: Session, user: User, changed_fields: list
     )
 
 
+def _display_user_name(user: User) -> str:
+    if user.fullname and user.fullname.strip():
+        return user.fullname.strip()
+    if user.username and user.username.strip():
+        return user.username.strip()
+    if user.email and "@" in user.email:
+        return user.email.split("@", 1)[0]
+    return "Usuario"
+
+
 def send_welcome_email(db: Session, user: User) -> None:
     send_templated_email(
         db,
         slug="welcome",
         to=user.email,
         context={
-            "user_name": user.fullname,
+            "user_name": _display_user_name(user),
             "user_email": user.email,
             "app_name": APP_NAME,
             "login_url": _frontend_url("/"),
@@ -131,7 +141,7 @@ def send_email_verification(db: Session, user: User) -> bool:
         slug="email_verification",
         to=user.email,
         context={
-            "user_name": user.fullname,
+            "user_name": _display_user_name(user),
             "user_email": user.email,
             "app_name": APP_NAME,
             "action_url": _frontend_url(f"/verify-email?token={token}"),
@@ -149,7 +159,7 @@ def send_password_reset_email(db: Session, user: User) -> None:
         slug="password_reset",
         to=user.email,
         context={
-            "user_name": user.fullname,
+            "user_name": _display_user_name(user),
             "user_email": user.email,
             "app_name": APP_NAME,
             "action_url": _frontend_url(f"/reset-password?token={token}"),

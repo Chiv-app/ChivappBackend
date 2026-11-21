@@ -66,7 +66,7 @@ Si no creaste esta cuenta, ignora este mensaje.
             lead_text="Para activar tu cuenta en {{app_name}} y mantenerla protegida, confirma que esta dirección de correo te pertenece pulsando el siguiente botón:",
             cta_label="Verificar mi correo",
             cta_url="{{action_url}}",
-            secondary_note="â³ Este enlace expira en {{expires_hours}} horas. Si no creaste una cuenta, puedes ignorar este mensaje.",
+            secondary_note="⏳ Este enlace expira en {{expires_hours}} horas. Si no creaste una cuenta, puedes ignorar este mensaje.",
         ),
         "text_body": """
 Hola {{user_name}},
@@ -99,7 +99,7 @@ Si no creaste una cuenta, ignora este mensaje.
             lead_text="Recibimos una solicitud para restablecer la contraseña asociada a <strong>{{user_email}}</strong>. Haz clic en el botón para crear tu nueva contraseña:",
             cta_label="Crear nueva contraseña",
             cta_url="{{action_url}}",
-            secondary_note="â³ El enlace expira en {{expires_hours}} horas. Si tú no solicitaste este cambio, no te preocupes; tu cuenta sigue segura y puedes ignorar este mensaje.",
+            secondary_note="⏳ El enlace expira en {{expires_hours}} horas. Si tú no solicitaste este cambio, no te preocupes; tu cuenta sigue segura y puedes ignorar este mensaje.",
         ),
         "text_body": """
 Hola {{user_name}},
@@ -138,7 +138,7 @@ Si no solicitaste este cambio, ignora este mensaje.
             ],
             cta_label="Crear mi contraseña y unirme",
             cta_url="{{action_url}}",
-            secondary_note="â³ El enlace de invitación expira en {{expires_days}} días.",
+            secondary_note="⏳ El enlace de invitación expira en {{expires_days}} días.",
         ),
         "text_body": """
 Hola {{member_name}},

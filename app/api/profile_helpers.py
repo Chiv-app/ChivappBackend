@@ -87,38 +87,100 @@ SELF_SERVICE_FIELDS = frozenset({"profile_type", "group_size", "details"})
 
 
 def demote_published_profile_if_changed(profile, updates: dict) -> bool:
-    """If a published profile receives real changes, return it to draft for re-review."""
-    was_published = profile.status == ProfileStatus.published
-    changed = False
+    """Applies updates to the profile without demoting published profiles to manual review."""
     for field, value in updates.items():
-        current = getattr(profile, field, None)
-        if not _profile_values_equal(current, value):
-            if field not in NON_DEMOTING_FIELDS and field not in SELF_SERVICE_FIELDS:
-                changed = True
         setattr(profile, field, value)
+    return False
 
-    if changed and was_published:
-        profile.status = ProfileStatus.draft
-        profile.published_at = None
+
+def demote_published_profile(profile) -> bool:
+    """Media changes no longer demote a published profile to manual review."""
+    return False
+
+
+def auto_verify_musician_profile_if_complete(db: Session, profile: MusicianProfile) -> bool:
+    """Si el perfil de músico tiene todos sus campos obligatorios completos, lo publica y verifica automáticamente."""
+    from datetime import datetime
+    from app.services.contract_pdf import (
+        DEFAULT_CONTRACT_TEMPLATE_TITLE,
+        build_default_contract_template_body,
+        contract_html_text_length,
+    )
+    from app.services.profile_validation import validate_musician_profile
+    from app.services.uniqueness import next_available_handle
+
+    if getattr(profile, "is_ensemble_only", False):
+        return False
+
+    user = getattr(profile, "user", None) or db.get(User, profile.user_id)
+    if user and not (user.username or "").strip() and (profile.stage_name or "").strip():
+        user.username = profile.slug or next_available_handle(
+            db,
+            profile.stage_name,
+            exclude_user_id=user.id,
+            exclude_profile_id=profile.id,
+        )
+
+    if contract_html_text_length(profile.contract_template_body) < 50:
+        profile.contract_template_title = profile.contract_template_title or DEFAULT_CONTRACT_TEMPLATE_TITLE
+        profile.contract_template_body = build_default_contract_template_body()
+
+    validation = validate_musician_profile(db, profile)
+    if validation.can_submit:
+        was_never_published = (
+            profile.published_at is None
+            and profile.status != ProfileStatus.published
+        )
+        now = datetime.utcnow()
+        profile.status = ProfileStatus.published
+        profile.submitted_at = profile.submitted_at or now
+        profile.published_at = profile.published_at or now
         profile.rejection_reason = None
-        if getattr(profile, "user", None) is not None:
-            # La cuenta sigue verificada mientras la persona tenga otro perfil publicado.
-            profile.user.is_verified = user_has_other_published_profile(profile.user, profile)
+        if user is not None:
+            user.is_verified = True
+            if was_never_published and profile.id is not None:
+                from app.services.booking_notifications import notify_profile_approved
+
+                notify_profile_approved(
+                    db,
+                    user=user,
+                    profile_role="musician",
+                    profile_id=str(profile.id),
+                )
         return True
     return False
 
 
+def auto_verify_contractor_profile_if_complete(db: Session, profile: ContractorProfile) -> bool:
+    """Si el perfil de contratista tiene todos sus campos obligatorios completos, lo publica y verifica automáticamente."""
+    from datetime import datetime
+    from app.services.profile_validation import validate_contractor_profile
 
-def demote_published_profile(profile) -> bool:
-    """Force a published profile back to draft (e.g. media changes)."""
-    if profile.status != ProfileStatus.published:
-        return False
-    profile.status = ProfileStatus.draft
-    profile.published_at = None
-    profile.rejection_reason = None
-    if getattr(profile, "user", None) is not None:
-        profile.user.is_verified = user_has_other_published_profile(profile.user, profile)
-    return True
+    user = getattr(profile, "user", None) or db.get(User, profile.user_id)
+    validation = validate_contractor_profile(profile)
+    if validation.can_submit:
+        was_never_published = (
+            profile.published_at is None
+            and profile.status != ProfileStatus.published
+        )
+        now = datetime.utcnow()
+        profile.status = ProfileStatus.published
+        profile.submitted_at = profile.submitted_at or now
+        profile.published_at = profile.published_at or now
+        profile.rejection_reason = None
+        if user is not None:
+            user.is_verified = True
+            if was_never_published and profile.id is not None:
+                from app.services.booking_notifications import notify_profile_approved
+
+                notify_profile_approved(
+                    db,
+                    user=user,
+                    profile_role="contractor",
+                    profile_id=str(profile.id),
+                )
+        return True
+    return False
 
 
 def fix_unverified_published_profiles(db: Session) -> None:

@@ -136,6 +136,16 @@ def _ics_text(value) -> str:
     return " ".join(text.replace("\r", " ").replace("\n", " ").split())
 
 
+def _leader_display_name(leader: User | None, profile: MusicianProfile | None = None) -> str:
+    if profile and profile.stage_name and profile.stage_name.strip():
+        return profile.stage_name.strip()
+    if leader and leader.fullname and leader.fullname.strip():
+        return leader.fullname.strip()
+    if leader and leader.username and leader.username.strip():
+        return leader.username.strip()
+    return "Tu agrupación"
+
+
 def _has_musician_contractor_review(db: Session, booking: Booking) -> bool:
     return (
         db.query(ContractorRecommendation.id)
@@ -285,6 +295,7 @@ def create_member(
         token = issue_password_setup_token(member)
         invite_url = password_setup_url(token)
 
+    leader_label = _leader_display_name(current_user, profile)
     if member_user is not None and member_user.id != current_user.id:
         notify_user(
             db,
@@ -292,7 +303,7 @@ def create_member(
             type="ensemble_invite",
             title="Te invitaron a una agrupación",
             message=(
-                f"{current_user.fullname} te agregó como integrante. "
+                f"{leader_label} te agregó como integrante. "
                 + (
                     "Crea tu contraseña con el enlace de invitación para continuar."
                     if managed
@@ -308,14 +319,14 @@ def create_member(
                 db,
                 member_email=email,
                 member_name=member.fullname,
-                leader_name=current_user.fullname,
+                leader_name=leader_label,
                 invite_url=invite_url,
                 specialties=list(member.specialties or []),
                 user_id=member_user.id,
                 expires_days=PASSWORD_SETUP_TTL_DAYS,
             )
         else:
-            _email_join_request(db, member, member_user, current_user)
+            _email_join_request(db, member, member_user, current_user, profile)
 
     db.commit()
     db.refresh(member)
@@ -476,10 +487,11 @@ def resend_invite(
     db: Session = Depends(deps.get_db),
     current_user: User = Depends(deps.get_current_user),
 ):
-    get_leader_musician_or_403(db, current_user)
+    profile = get_leader_musician_or_403(db, current_user)
     member = get_member_for_leader(
         db, leader_id=current_user.id, member_id=member_id
     )
+    leader_label = _leader_display_name(current_user, getattr(member, "profile", None) or profile)
     user = db.get(User, member.member_user_id) if member.member_user_id else None
     if user is None:
         # Sin cuenta vinculada (correo que no puede ser integrante): se responde igual que siempre.
@@ -496,10 +508,10 @@ def resend_invite(
             user=user,
             type="ensemble_invite",
             title="Recordatorio de invitación",
-            message=f"{current_user.fullname} te recuerda su invitación a la agrupación. Responde desde tu panel.",
+            message=f"{leader_label} te recuerda su invitación a la agrupación. Responde desde tu panel.",
             meta={"ensemble_member_id": str(member.id)},
         )
-        _email_join_request(db, member, user, current_user)
+        _email_join_request(db, member, user, current_user, getattr(member, "profile", None) or profile)
         db.commit()
         db.refresh(member)
         return serialize_member(member, include_invite_url=False)
@@ -515,14 +527,14 @@ def resend_invite(
             user=user,
             type="ensemble_invite",
             title="Reenvío de invitación",
-            message=f"{current_user.fullname} te reenvió el enlace para crear tu contraseña.",
+            message=f"{leader_label} te reenvió el enlace para crear tu contraseña.",
             meta={"ensemble_member_id": str(member.id)},
         )
         send_ensemble_invite_email(
             db,
             member_email=member.email,
             member_name=member.fullname,
-            leader_name=current_user.fullname,
+            leader_name=leader_label,
             invite_url=invite_url,
             specialties=list(member.specialties or []),
             user_id=user.id if user else None,
@@ -551,7 +563,13 @@ def _deactivate_member_record(db: Session, member: EnsembleMember, *, ended_by: 
         pending.status = BookingMemberInviteStatus.declined
 
 
-def _email_join_request(db: Session, member: EnsembleMember, member_user: User, leader: User) -> None:
+def _email_join_request(
+    db: Session,
+    member: EnsembleMember,
+    member_user: User,
+    leader: User,
+    profile: MusicianProfile | None = None,
+) -> None:
     """Correo a un músico con cuenta. Un fallo de envío no bloquea la invitación."""
     try:
         from app.core.config import settings as _settings
@@ -563,7 +581,7 @@ def _email_join_request(db: Session, member: EnsembleMember, member_user: User, 
             db,
             member_email=member_user.email,
             member_name=member.fullname,
-            leader_name=leader.fullname or "Un músico",
+            leader_name=_leader_display_name(leader, profile),
             action_url=f"{_settings.FRONTEND_URL.rstrip('/')}/musician",
             specialties=list(member.specialties or []),
             user_id=member_user.id,
@@ -696,6 +714,7 @@ def create_booking_invites(
             add_attendee_to_booking_event(booking.calendar_event_id, member.email)
 
         respond_url = booking_respond_url(raw_token)
+        leader_label = _leader_display_name(current_user, booking_profile)
 
         # In-app notification ONLY if the user is registered
         if member.member_user_id:
@@ -707,7 +726,7 @@ def create_booking_invites(
                     type="booking_member_invite",
                     title="Nueva convocatoria a un evento",
                     message=(
-                        f"{current_user.fullname} te convocó a "
+                        f"{leader_label} te convocó a "
                         f"{booking.event_type} el {booking.event_date}."
                     ),
                     booking_id=str(booking.id),
@@ -725,7 +744,7 @@ def create_booking_invites(
                 part for part in (booking.location_address, booking.location_city) if part
             ]
             
-            ics_file = _generate_ics_attachment(booking, current_user.fullname)
+            ics_file = _generate_ics_attachment(booking, leader_label)
             extra_atts = [ics_file] if ics_file else None
 
             from app.core.config import settings
@@ -735,7 +754,7 @@ def create_booking_invites(
                 db,
                 member_email=member.email,
                 member_name=member.fullname,
-                leader_name=current_user.fullname,
+                leader_name=leader_label,
                 event_type=booking.event_type,
                 event_date=str(booking.event_date),
                 event_time=str(event_time),
@@ -880,11 +899,12 @@ def resend_booking_invite_email(
     raw_token = new_token()
     invite.response_token = _hash_setup_token(raw_token)
     invite.invited_at = datetime.utcnow()
-    db.commit()
-    db.refresh(invite)
+    db.flush()
     
     # Send email ALWAYS
     respond_url = booking_respond_url(raw_token)
+    booking_profile = db.get(MusicianProfile, booking.musician_id)
+    leader_label = _leader_display_name(current_user, booking_profile)
     if member.email:
         event_time = booking.start_time or "Por confirmar"
         if booking.end_time:
@@ -893,7 +913,7 @@ def resend_booking_invite_email(
             part for part in (booking.location_address, booking.location_city) if part
         ]
         
-        ics_file = _generate_ics_attachment(booking, current_user.fullname)
+        ics_file = _generate_ics_attachment(booking, leader_label)
         extra_atts = [ics_file] if ics_file else None
         
         from app.core.config import settings
@@ -904,7 +924,7 @@ def resend_booking_invite_email(
             db,
             member_email=member.email,
             member_name=member.fullname,
-            leader_name=current_user.fullname,
+            leader_name=leader_label,
             event_type=booking.event_type,
             event_date=str(booking.event_date),
             event_time=str(event_time),
@@ -914,7 +934,9 @@ def resend_booking_invite_email(
             booking_id=str(booking.id),
             extra_attachments=extra_atts,
         )
-            
+
+    db.commit()
+    db.refresh(invite)
     return serialize_booking_invite(invite)
 
 
@@ -985,6 +1007,10 @@ def _apply_booking_invite_response(
 
     member = invite.ensemble_member
     member_user = db.get(User, member.member_user_id) if member and member.member_user_id else None
+    if action == "accept" and member and member.status == EnsembleMemberStatus.invited:
+        member.status = EnsembleMemberStatus.active
+        member.joined_at = member.joined_at or datetime.utcnow()
+        db.add(member)
 
     # REMOVE FROM CALENDAR IF DECLINED
     if action == "decline" and booking.calendar_event_id and member:
@@ -1030,10 +1056,11 @@ def _apply_booking_invite_response(
             
             # Email to leader
             if leader.email:
+                booking_profile = db.get(MusicianProfile, booking.musician_id)
                 send_booking_member_accepted_to_leader_email(
                     db,
                     leader_email=leader.email,
-                    leader_name=leader.fullname,
+                    leader_name=_leader_display_name(leader, booking_profile),
                     member_name=member.fullname,
                     event_type=booking.event_type,
                     event_date=str(booking.event_date),

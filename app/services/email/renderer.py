@@ -12,7 +12,8 @@ def render_template(template: str, context: dict[str, str], *, escape_html: bool
 
     def replace(match: re.Match[str]) -> str:
         key = match.group(1)
-        value = context.get(key, "")
-        return html.escape(str(value), quote=True) if escape_html else str(value)
+        raw_val = context.get(key)
+        value = "" if raw_val is None else str(raw_val)
+        return html.escape(value, quote=True) if escape_html else value
 
     return _PLACEHOLDER.sub(replace, template)

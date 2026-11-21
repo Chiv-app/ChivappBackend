@@ -383,11 +383,34 @@ def test_nueva_contrata_already_paid_invites_members_consumes_solo_profile_and_a
     assert booking_data["status"] == "payment_retained"
     assert float(booking_data["platform_fee_amount"] or 0) == 0.0
 
-    # La convocatoria al integrante se creó automáticamente
+    # La convocatoria al integrante se creó automáticamente y se registró su correo de invitación
     invites_res = client.get(f"/api/v1/bookings/{booking_id}/member-invites")
     assert invites_res.status_code == 200
     assert len(invites_res.json()) == 1
     assert invites_res.json()[0]["ensemble_member_id"] == str(member.id)
+
+    from app.models.email_log import EmailLog
+
+    member_email_log = (
+        db_session.query(EmailLog)
+        .filter(
+            EmailLog.template_slug == "booking_member_invite",
+            EmailLog.recipient == member.email,
+        )
+        .first()
+    )
+    assert member_email_log is not None
+    assert "Orquesta Estelar" in member_email_log.subject
+
+    musician_confirm_log = (
+        db_session.query(EmailLog)
+        .filter(
+            EmailLog.template_slug == "booking_confirmed_musician",
+            EmailLog.recipient == leader.email,
+        )
+        .first()
+    )
+    assert musician_confirm_log is not None
 
     # El reparto a integrantes ya está activo desde payment_retained sin botón intermedio ni reseña previa
     payout_res = client.put(
