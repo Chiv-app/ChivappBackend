@@ -671,15 +671,6 @@ def create_booking_invites(
             )
         if member.status == EnsembleMemberStatus.inactive:
             continue
-        linked_user = db.get(User, member.member_user_id) if member.member_user_id else None
-        if member.status == EnsembleMemberStatus.invited and (
-            linked_user is None or not is_leader_managed_account(linked_user)
-        ):
-            raise HTTPException(
-                400,
-                f"{member.fullname} aún no aceptó tu invitación a la agrupación. "
-                "Podrás convocarlo cuando acepte.",
-            )
 
         invite = (
             db.query(BookingMemberInvite)

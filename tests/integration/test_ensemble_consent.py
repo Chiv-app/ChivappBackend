@@ -185,6 +185,10 @@ def test_the_leader_cannot_convoke_a_member_who_has_not_accepted(client: TestCli
     db_session.commit()
 
     member_id = _add_member(client, leader, target).json()["id"]
-    res = client.post(f"/api/v1/bookings/{booking.id}/member-invites", json={"ensemble_member_ids": [member_id]})
-    assert res.status_code == 400, res.text
-    assert "aceptó" in res.json()["detail"]
+    with patch("app.services.email.auth_emails.send_templated_email") as send:
+        res = client.post(f"/api/v1/bookings/{booking.id}/member-invites", json={"ensemble_member_ids": [member_id]})
+    assert res.status_code == 201, res.text
+    assert len(res.json()) == 1
+    assert res.json()[0]["status"] == "pending"
+    assert send.called
+    assert send.call_args.kwargs["slug"] == "booking_member_invite"
