@@ -2,8 +2,8 @@ import uuid
 import enum
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, Column, String, Date, Time, Numeric, Enum, ForeignKey, Text, Integer, JSON, text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import CheckConstraint, Column, String, Date, Time, Numeric, Enum, ForeignKey, Text, Integer, text
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
 
 from app.db.session import Base
@@ -53,7 +53,7 @@ class BookingLink(Base):
     last_activity_at = Column(UTCDateTime, nullable=True)
     current_step = Column(Integer, nullable=False, default=0, server_default=text("0"))
     max_step_reached = Column(Integer, nullable=False, default=0, server_default=text("0"))
-    draft_data = Column(JSON, nullable=False, default=dict)
+    draft_data = Column(JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb"))
 
     created_at = Column(UTCDateTime, default=datetime.utcnow)
     updated_at = Column(UTCDateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
