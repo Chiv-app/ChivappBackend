@@ -432,6 +432,8 @@ def list_bookings(
     db: Session = Depends(deps.get_db),
 ):
     if current_user.role == UserRole.contractor:
+        from app.services.booking_lifecycle import expire_stale_quote_bookings
+
         contractor = get_contractor_profile_or_400(db, current_user)
         bookings = (
             db.query(Booking)
@@ -440,6 +442,7 @@ def list_bookings(
             .order_by(Booking.created_at.desc())
             .all()
         )
+        expire_stale_quote_bookings(db, bookings)
         fee_pct = (
             _preview_requested_fee_percent(db)
             if any(
@@ -457,6 +460,8 @@ def list_bookings(
         ]
 
     if current_user.role == UserRole.musician:
+        from app.services.booking_lifecycle import expire_stale_quote_bookings
+
         get_musician_profile_or_400(db, current_user)
         # La lista reúne las reservas de todos los perfiles de la persona.
         owned = (
@@ -465,6 +470,7 @@ def list_bookings(
             .filter(Booking.musician_id.in_(user_profile_ids(db, current_user)))
             .all()
         )
+        expire_stale_quote_bookings(db, owned)
         owned_ids = {b.id for b in owned}
 
         member_ids = list_member_booking_ids(db, current_user)
@@ -515,8 +521,11 @@ def get_booking(
     current_user: User = Depends(deps.get_current_user),
     db: Session = Depends(deps.get_db),
 ):
+    from app.services.booking_lifecycle import expire_stale_quote_bookings
+
     booking = _get_booking_with_parties(db, booking_id)
     viewer_role = assert_booking_viewer(db, booking, current_user)
+    expire_stale_quote_bookings(db, [booking])
     invite_status = (
         resolve_member_invite_status(db, booking, current_user)
         if viewer_role == "member"
@@ -764,8 +773,16 @@ def accept_quote(
     current_user: User = Depends(deps.get_current_user),
     db: Session = Depends(deps.get_db),
 ):
+    from app.services.booking_lifecycle import expire_stale_quote_bookings
+
     booking = get_booking_or_404(db, booking_id)
     contractor = assert_booking_contractor_owner(db, booking, current_user)
+
+    if expire_stale_quote_bookings(db, [booking]):
+        raise HTTPException(
+            status_code=400,
+            detail="Esta cotización venció tras superar las 48 horas sin confirmación y la reserva fue cancelada automáticamente.",
+        )
 
     assert_can_execute_action(booking, BookingAction.ACCEPT_QUOTE, current_user)
     if not is_pre_event(booking):

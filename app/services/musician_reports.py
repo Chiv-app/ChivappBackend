@@ -133,6 +133,9 @@ def build_musician_reports(
         bookings_q = bookings_q.filter(Booking.status == status_enum)
 
     bookings = bookings_q.all()
+    from app.services.booking_lifecycle import expire_stale_quote_bookings
+
+    expire_stale_quote_bookings(db, bookings)
     booking_ids = [b.id for b in bookings]
 
     payments = (
@@ -207,7 +210,11 @@ def build_musician_reports(
         elif booking.status != BookingStatus.requested:
             bookings_active += 1
 
-        price = float(booking.price_agreed or 0)
+        price = (
+            float(booking.price_agreed or 0)
+            if booking.status != BookingStatus.cancelled
+            else 0.0
+        )
         revenue_quoted += price
 
         retained_gross = sum(

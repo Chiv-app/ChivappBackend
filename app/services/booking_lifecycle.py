@@ -187,3 +187,87 @@ def apply_commitment_fields(
             booking,
             use_current_settings=db is not None,
         )
+
+
+QUOTE_EXPIRATION_HOURS = 48
+QUOTE_STAGE_STATUSES = {
+    BookingStatus.accepted,
+    BookingStatus.contract_pending,
+}
+
+
+def is_quote_stage_expired(
+    booking: Booking,
+    *,
+    now_utc: datetime | None = None,
+    hours: int = QUOTE_EXPIRATION_HOURS,
+) -> bool:
+    if booking.status not in QUOTE_STAGE_STATUSES:
+        return False
+    ref_dt = booking.quoted_at or booking.updated_at or booking.created_at
+    if ref_dt is None:
+        return False
+    from datetime import timezone as _tz
+
+    if ref_dt.tzinfo is not None:
+        ref_dt = ref_dt.astimezone(_tz.utc).replace(tzinfo=None)
+    current_utc = now_utc or datetime.utcnow()
+    if current_utc.tzinfo is not None:
+        current_utc = current_utc.astimezone(_tz.utc).replace(tzinfo=None)
+    return current_utc >= (ref_dt + timedelta(hours=hours))
+
+
+def expire_stale_quote_bookings(
+    db: Session,
+    bookings: list[Booking],
+    *,
+    commit: bool = True,
+) -> list[Booking]:
+    """Cancela automáticamente las reservas que llevan más de 48h en etapa de Cotización y acuerdo."""
+    from app.models.booking_link import BookingLink, BookingLinkStatus
+
+    candidates = [b for b in bookings if is_quote_stage_expired(b)]
+    if not candidates:
+        return []
+
+    candidate_ids = [b.id for b in candidates]
+    paid_booking_ids = {
+        row[0]
+        for row in db.query(Payment.booking_id)
+        .filter(
+            Payment.booking_id.in_(candidate_ids),
+            Payment.payment_type.is_distinct_from("refund"),
+            Payment.status.in_([PaymentStatus.retained, PaymentStatus.released]),
+        )
+        .all()
+    }
+
+    expired: list[Booking] = []
+    for booking in candidates:
+        if booking.id in paid_booking_ids:
+            continue
+        booking.status = BookingStatus.cancelled
+        booking.cancelled_by = "system"
+        booking.rejection_reason = (
+            "Cancelada automáticamente por superar las 48 horas en etapa de cotización y acuerdo sin confirmación."
+        )
+        booking.cancellation_refund_percent = 0
+        booking.cancellation_refund_amount = Decimal("0.00")
+        booking.cancellation_refund_status = "not_applicable"
+        expired.append(booking)
+
+    if expired:
+        expired_ids = [b.id for b in expired]
+        for bl in (
+            db.query(BookingLink)
+            .filter(BookingLink.booking_id.in_(expired_ids))
+            .all()
+        ):
+            if bl.status != BookingLinkStatus.completed:
+                bl.status = BookingLinkStatus.expired
+        if commit:
+            db.commit()
+            for b in expired:
+                db.refresh(b)
+
+    return expired

@@ -165,6 +165,9 @@ def build_contractor_operations(
         .order_by(Booking.event_date.desc())
         .all()
     )
+    from app.services.booking_lifecycle import expire_stale_quote_bookings
+
+    expire_stale_quote_bookings(db, bookings)
 
     total_quoted = Decimal("0.00")
     bookings_active = 0

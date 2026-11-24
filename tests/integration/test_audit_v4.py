@@ -1178,3 +1178,56 @@ def test_booking_link_progress_autosave_and_open_tracking(client, db_session):
     assert my_link["draft_data"]["client_phone"] == "999111222"
 
 
+def test_quote_48h_auto_cancellation_and_cancelled_excluded_from_quoted(
+    client, db_session
+):
+    """Las reservas en Cotización y acuerdo (accepted/contract_pending) >48h se cancelan automáticamente y no suman en Cotizado."""
+    _, musician_user, musician, _, contractor = _setup_users(db_session)
+    now_utc = datetime.utcnow()
+    ev_date = (now_peru() + timedelta(days=10)).date()
+
+    b_expired_quote = Booking(
+        musician_id=musician.id,
+        contractor_id=contractor.id,
+        event_date=ev_date,
+        start_time=time(18, 0),
+        end_time=time(20, 0),
+        event_type="Boda",
+        location_city="Lima",
+        location_address="Av. Javier Prado 500",
+        status=BookingStatus.accepted,
+        price_agreed=Decimal("700.00"),
+        quoted_at=now_utc - timedelta(hours=49),
+        created_at=now_utc - timedelta(hours=50),
+    )
+    b_active_quote = Booking(
+        musician_id=musician.id,
+        contractor_id=contractor.id,
+        event_date=ev_date + timedelta(days=1),
+        start_time=time(19, 0),
+        end_time=time(21, 0),
+        event_type="Cumpleaños",
+        location_city="Lima",
+        location_address="Av. Arequipa 800",
+        status=BookingStatus.accepted,
+        price_agreed=Decimal("500.00"),
+        quoted_at=now_utc - timedelta(hours=10),
+        created_at=now_utc - timedelta(hours=12),
+    )
+    db_session.add_all([b_expired_quote, b_active_quote])
+    db_session.commit()
+
+    _auth_cookie(client, musician_user)
+    list_res = client.get("/api/v1/bookings")
+    assert list_res.status_code == 200
+    by_id = {row["id"]: row for row in list_res.json()}
+    assert by_id[str(b_expired_quote.id)]["status"] == "cancelled"
+    assert by_id[str(b_active_quote.id)]["status"] == "accepted"
+
+    # Verificar que en musician/earnings y en musician/reports la reserva cancelada NO suma en Cotizado
+    earn_res = client.get("/api/v1/payments/musician/earnings")
+    assert earn_res.status_code == 200
+    assert earn_res.json()["total_quoted"] == 500.0
+
+
+

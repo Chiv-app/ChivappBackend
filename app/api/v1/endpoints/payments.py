@@ -152,10 +152,12 @@ def compute_musician_earnings(
     from app.services.booking_lifecycle import (
         REVIEW_GRACE_HOURS,
         booking_event_end_datetime,
+        expire_stale_quote_bookings,
         is_event_finished,
         is_review_grace_period_expired,
     )
 
+    expire_stale_quote_bookings(db, bookings)
     booking_by_id = {booking.id: booking for booking in bookings}
 
     review_rows = (
@@ -721,6 +723,13 @@ def create_mercadopago_preference(
     if not booking:
         raise HTTPException(404, detail="Reserva no encontrada")
     assert_booking_contractor_owner(db, booking, current_user)
+    from app.services.booking_lifecycle import expire_stale_quote_bookings
+
+    if expire_stale_quote_bookings(db, [booking]):
+        raise HTTPException(
+            400,
+            detail="Esta cotización venció tras superar las 48 horas en etapa de cotización y acuerdo y la reserva fue cancelada automáticamente.",
+        )
     if booking.musician_id:
         db.query(MusicianProfile).filter(
             MusicianProfile.id == booking.musician_id
@@ -892,6 +901,13 @@ def process_mercadopago_direct_payment(
     if not booking:
         raise HTTPException(404, detail="Reserva no encontrada")
     assert_booking_contractor_owner(db, booking, current_user)
+    from app.services.booking_lifecycle import expire_stale_quote_bookings
+
+    if expire_stale_quote_bookings(db, [booking]):
+        raise HTTPException(
+            400,
+            detail="Esta cotización venció tras superar las 48 horas en etapa de cotización y acuerdo y la reserva fue cancelada automáticamente.",
+        )
     if booking.musician_id:
         db.query(MusicianProfile).filter(
             MusicianProfile.id == booking.musician_id
