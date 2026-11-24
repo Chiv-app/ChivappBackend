@@ -21,6 +21,9 @@ class BookingLinkCreate(BaseModel):
     client_document_number: Optional[str] = Field(default=None, max_length=20)
     event_description: Optional[str] = Field(default=None, max_length=2000)
     source: Optional[str] = Field(default="manual", max_length=32)
+    payment_mode: Literal["platform", "direct"] = "platform"
+    advance_amount: Optional[float] = Field(default=None, ge=0.0, le=50000.0)
+    booking_id: Optional[UUID] = None
 
     @field_validator("client_email", mode="before")
     @classmethod
@@ -226,6 +229,11 @@ class BookingLinkIdentityResponse(BaseModel):
 
 class BookingLinkOtpRequest(BaseModel):
     email: EmailStr
+
+
+class BookingLinkModeSwitch(BaseModel):
+    payment_mode: Literal["platform", "direct"] = "direct"
+    advance_amount: Optional[float] = Field(default=None, ge=0.0, le=50000.0)
 
 
 class BookingLinkAutocompleteRequest(BaseModel):

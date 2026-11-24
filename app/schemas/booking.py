@@ -474,8 +474,11 @@ class BookingOut(BaseModel):
     # Counterparty preview (optional; filled by serializers)
     musician_name: str | None = None
     musician_image_url: str | None = None
+    musician_phone: str | None = None
     contractor_name: str | None = None
     contractor_image_url: str | None = None
+    contractor_phone: str | None = None
+    contractor_is_guest: bool = False
     # "owner" = lead musician / contractor; "member" = integrante asociado
     viewer_role: str | None = None
     # Estado de convocatoria del integrante (pending/accepted/declined)

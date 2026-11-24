@@ -41,6 +41,7 @@ from app.schemas.booking_link import (
     BookingLinkAutocompleteOut,
     BookingLinkProgressUpdate,
     BookingLinkProgressOut,
+    BookingLinkModeSwitch,
 )
 
 router = APIRouter()
@@ -109,24 +110,40 @@ def create_booking_link(
             raise HTTPException(status_code=400, detail="La hora del evento ya pasó.")
         
     token = secrets.token_urlsafe(16)
-    
+    target_booking = None
+    if payload.booking_id:
+        target_booking = db.get(Booking, payload.booking_id)
+        if not target_booking or target_booking.musician_id != musician_profile.id:
+            raise HTTPException(status_code=404, detail="Reserva vinculada no encontrada.")
+
+    initial_draft = {
+        "payment_mode": payload.payment_mode or "platform",
+        "advance_amount": (
+            float(payload.advance_amount)
+            if payload.advance_amount is not None and payload.advance_amount > 0
+            else None
+        ),
+    }
+
     booking_link = BookingLink(
         token=token,
         musician_id=musician_profile.id,
         price=payload.price,
-        event_date=payload.event_date,
-        start_time=payload.start_time,
-        end_time=payload.end_time,
-        event_type=(payload.event_type or "").strip() or None,
-        location_address=(payload.location_address or "").strip() or None,
-        location_city=(payload.location_city or "").strip() or None,
-        location_reference=(payload.location_reference or "").strip() or None,
+        event_date=payload.event_date or (target_booking.event_date if target_booking else None),
+        start_time=payload.start_time or (target_booking.start_time if target_booking else None),
+        end_time=payload.end_time or (target_booking.end_time if target_booking else None),
+        event_type=(payload.event_type or (target_booking.event_type if target_booking else "") or "").strip() or None,
+        location_address=(payload.location_address or (target_booking.location_address if target_booking else "") or "").strip() or None,
+        location_city=(payload.location_city or (target_booking.location_city if target_booking else "") or "").strip() or None,
+        location_reference=(payload.location_reference or (target_booking.location_reference if target_booking else "") or "").strip() or None,
         client_fullname=(payload.client_fullname or "").strip() or None,
         client_phone=(payload.client_phone or "").strip() or None,
         client_email=payload.client_email,
         client_document_number=(payload.client_document_number or "").strip() or None,
-        event_description=(payload.event_description or "").strip() or None,
+        event_description=(payload.event_description or (target_booking.event_description if target_booking else "") or "").strip() or None,
         source=(payload.source or "manual").strip() or "manual",
+        booking_id=target_booking.id if target_booking else None,
+        draft_data=initial_draft,
         expires_at=datetime.utcnow() + timedelta(hours=24)
     )
     
@@ -295,10 +312,17 @@ def get_booking_link(
         for r in reviews_query
     ]
         
-    # Calculate platform fee for public display
-    settings_obj = get_or_create_platform_payment_settings(db)
-    fee_amount = compute_platform_fee_amount(link.price, settings_obj.platform_fee_percent)
-    total_payable = compute_contractor_payable_total(link.price, settings_obj.platform_fee_percent)
+    # Calculate platform fee for public display (0 if direct mode)
+    is_direct_mode = (link.draft_data or {}).get("payment_mode") == "direct"
+    if is_direct_mode:
+        fee_percent_val = 0.0
+        fee_amount = 0.0
+        total_payable = float(link.price)
+    else:
+        settings_obj = get_or_create_platform_payment_settings(db)
+        fee_percent_val = float(settings_obj.platform_fee_percent)
+        fee_amount = compute_platform_fee_amount(link.price, settings_obj.platform_fee_percent)
+        total_payable = compute_contractor_payable_total(link.price, settings_obj.platform_fee_percent)
 
     from app.services.contract_pdf import (
         DEFAULT_CONTRACT_TEMPLATE_BODY,
@@ -317,7 +341,7 @@ def get_booking_link(
     return BookingLinkPublicOut(
         token=link.token,
         price=float(link.price),
-        fee_percent=float(settings_obj.platform_fee_percent),
+        fee_percent=fee_percent_val,
         fee_amount=float(fee_amount),
         total_payable=float(total_payable),
         event_date=link.event_date,
@@ -582,7 +606,9 @@ def checkout_booking_link(
             status_code=403,
             detail="Este link de pago fue emitido exclusivamente para otro correo electrónico.",
         )
-    is_editable_prefill = (link.source or "manual") in (
+    is_direct_mode = (link.draft_data or {}).get("payment_mode") == "direct"
+    direct_advance_amount = (link.draft_data or {}).get("advance_amount")
+    is_editable_prefill = is_direct_mode or (link.source or "manual") in (
         "assistant_whatsapp",
         "whatsapp_ai",
         "assistant_simulator",
@@ -740,8 +766,8 @@ def checkout_booking_link(
                 db.flush()
 
     reuse_existing = False
-    if existing_booking and booking_is_unpaid:
-        if existing_booking.contractor_id != contractor.id:
+    if existing_booking and (booking_is_unpaid or is_direct_mode):
+        if not is_direct_mode and existing_booking.contractor_id != contractor.id:
             raise HTTPException(
                 status_code=409,
                 detail="Este link de pago ya está siendo procesado por otro cliente.",
@@ -756,6 +782,7 @@ def checkout_booking_link(
         exclude_booking_id=existing_booking.id if reuse_existing else None,
     )
 
+    from decimal import Decimal
     from app.services.platform_payment import sync_booking_platform_fee
     from app.services.uploads import assert_private_upload_owned, save_data_url_upload
 
@@ -781,9 +808,20 @@ def checkout_booking_link(
         if payload.event_description and payload.event_description.strip()
         else link.event_description
     )
-    # 2. Reuse existing unpaid Booking or create a new Booking
+    direct_notes = None
+    if is_direct_mode and direct_advance_amount is not None and float(direct_advance_amount) > 0:
+        direct_notes = f"Adelanto recibido: S/ {float(direct_advance_amount):.2f}"
+
+    target_status = (
+        BookingStatus.payment_retained
+        if is_direct_mode
+        else (BookingStatus.contract_signed if saved_sig_url else BookingStatus.contract_pending)
+    )
+
+    # 2. Reuse existing Booking or create a new Booking
     if reuse_existing:
         booking = existing_booking
+        booking.contractor_id = contractor.id
         booking.event_date = effective_date
         booking.start_time = effective_start
         booking.end_time = effective_end
@@ -793,7 +831,9 @@ def checkout_booking_link(
         booking.location_reference = payload.location_reference
         booking.event_description = effective_description
         booking.price_agreed = link.price
-        booking.status = BookingStatus.contract_signed if saved_sig_url else BookingStatus.contract_pending
+        if direct_notes and not booking.musician_quote_notes:
+            booking.musician_quote_notes = direct_notes
+        booking.status = target_status
     else:
         booking = Booking(
             musician_id=link.musician_id,
@@ -807,14 +847,21 @@ def checkout_booking_link(
             location_reference=payload.location_reference,
             event_description=effective_description,
             price_agreed=link.price,
-            status=BookingStatus.contract_signed if saved_sig_url else BookingStatus.contract_pending,
+            musician_quote_notes=direct_notes,
+            status=target_status,
         )
         db.add(booking)
-    sync_booking_platform_fee(db, booking, use_current_settings=True)
+    if is_direct_mode:
+        booking.platform_fee_percent = Decimal("0.00")
+        booking.platform_fee_amount = Decimal("0.00")
+    else:
+        sync_booking_platform_fee(db, booking, use_current_settings=True)
     db.flush()
     
-    # 3. Link the booking to the payment link (keep link active until payment is approved)
+    # 3. Link the booking to the payment link
     link.booking_id = booking.id
+    if is_direct_mode:
+        link.status = BookingLinkStatus.completed
     now_checkout = datetime.utcnow()
     link.last_activity_at = now_checkout
     link.current_step = 4
@@ -880,7 +927,16 @@ def checkout_booking_link(
             contract.contractor_signed = True
             contract.contractor_sign_timestamp = datetime.utcnow()
             contract.contractor_sign_ip = client_ip
-            booking.status = BookingStatus.contract_signed
+            booking.status = (
+                BookingStatus.payment_retained
+                if is_direct_mode
+                else BookingStatus.contract_signed
+            )
+        if is_direct_mode:
+            contract.context = {
+                **(contract.context or {}),
+                "__already_paid_external__": True,
+            }
     except ValueError as e:
         db.rollback()
         error_msg = str(e)
@@ -894,11 +950,50 @@ def checkout_booking_link(
     _issue_login(response, user)
     
     return {
-        "message": "Reserva creada exitosamente",
+        "message": (
+            "Reserva confirmada exitosamente"
+            if is_direct_mode
+            else "Reserva creada exitosamente"
+        ),
         "booking_id": booking.id,
+        "direct_confirmed": bool(is_direct_mode),
         "signature_image_url": saved_sig_url,
         "contract_body_sha256": (contract.context or {}).get("__signed_body_sha256__"),
     }
+
+
+@router.post("/{token}/switch-mode", response_model=BookingLinkOut)
+def switch_booking_link_mode(
+    token: str,
+    payload: BookingLinkModeSwitch,
+    db: Session = Depends(deps.get_db),
+    current_user: User = Depends(deps.get_current_user),
+):
+    """
+    Permite al músico cambiar un link activo entre modalidad 'platform' (con pasarela)
+    y 'direct' (pago directo por fuera / 0% comisión, solo para llenar datos y firmar).
+    """
+    link = db.query(BookingLink).filter(BookingLink.token == token).first()
+    if not link:
+        raise HTTPException(status_code=404, detail="Link de pago no encontrado.")
+    if link.musician.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="No autorizado.")
+    if link.status == BookingLinkStatus.completed:
+        raise HTTPException(status_code=400, detail="Este link ya fue completado.")
+
+    draft = dict(link.draft_data or {})
+    draft["payment_mode"] = payload.payment_mode
+    if payload.advance_amount is not None:
+        draft["advance_amount"] = (
+            float(payload.advance_amount) if payload.advance_amount > 0 else None
+        )
+    link.draft_data = draft
+    if link.status == BookingLinkStatus.expired:
+        link.status = BookingLinkStatus.active
+        link.expires_at = datetime.utcnow() + timedelta(hours=24)
+    db.commit()
+    db.refresh(link)
+    return link
 
 @router.post("/{token}/reset-expiration", response_model=BookingLinkOut)
 def reset_link_expiration(

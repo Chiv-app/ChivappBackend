@@ -23,7 +23,7 @@ BookingViewerRole = Literal["owner", "member"]
 
 def booking_parties_load_options():
     return (
-        joinedload(Booking.musician),
+        joinedload(Booking.musician).joinedload(MusicianProfile.user),
         joinedload(Booking.contractor).joinedload(ContractorProfile.user),
         joinedload(Booking.complaint),
     )
@@ -37,13 +37,31 @@ def serialize_booking_out(
     viewer_user: User | None = None,
 ) -> BookingOut:
     """Map ORM booking + optional party preview fields."""
+    from app.models.booking import BookingStatus
     from app.services.calendar_service import get_booking_calendar_event_id_for_viewer
 
     base = BookingOut.model_validate(booking)
     musician = booking.musician
+    musician_user = musician.user if musician and hasattr(musician, "user") else None
     contractor = booking.contractor
     contractor_user = contractor.user if contractor else None
     complaint = getattr(booking, "complaint", None)
+    is_guest_contractor = bool(
+        contractor_user
+        and contractor_user.email
+        and contractor_user.email.endswith("@guest.local")
+    )
+    is_confirmed_stage = getattr(booking, "status", None) in (
+        BookingStatus.payment_retained,
+        BookingStatus.change_pending,
+        BookingStatus.in_progress,
+        BookingStatus.payment_released,
+        BookingStatus.completed,
+    )
+    can_see_contractor_phone = bool(
+        viewer_role != "member" and (is_guest_contractor or is_confirmed_stage)
+    )
+    can_see_musician_phone = bool(viewer_role != "member" and is_confirmed_stage)
     if viewer_role == "member":
         cal_role = "member"
     elif viewer_user is not None and viewer_user.role == UserRole.contractor:
@@ -81,12 +99,23 @@ def serialize_booking_out(
             "musician_image_url": (
                 musician.profile_image_url if musician else None
             ),
+            "musician_phone": (
+                musician_user.phone
+                if musician_user and can_see_musician_phone
+                else None
+            ),
             "contractor_name": (
                 contractor_user.fullname if contractor_user else None
             ),
             "contractor_image_url": (
                 contractor_user.profile_picture_url if contractor_user else None
             ),
+            "contractor_phone": (
+                contractor_user.phone
+                if contractor_user and can_see_contractor_phone
+                else None
+            ),
+            "contractor_is_guest": is_guest_contractor,
             "viewer_role": viewer_role,
             "member_invite_status": member_invite_status,
             "complaint_status": (
