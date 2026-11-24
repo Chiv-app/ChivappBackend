@@ -455,6 +455,54 @@ def test_review_24h_grace_period_unlocks_payout_and_allows_late_reviews(
     )
     assert late_rec.status_code == 200, late_rec.text
 
+    # 4. Si existe una queja abierta (BookingComplaint), NO se desbloquea el cobro aunque hayan pasado >24h
+    from app.models.booking_complaint import BookingComplaint, BookingComplaintStatus
+
+    b_disputed = Booking(
+        musician_id=musician.id,
+        contractor_id=contractor.id,
+        event_date=expired_date,
+        start_time=time(14, 0),
+        end_time=time(16, 0),
+        event_type="Boda",
+        location_city="Lima",
+        location_address="Av. Sol 300",
+        status=BookingStatus.payment_retained,
+        price_agreed=Decimal("600.00"),
+        platform_fee_percent=Decimal("0.00"),
+        platform_fee_amount=Decimal("0.00"),
+    )
+    db_session.add(b_disputed)
+    db_session.flush()
+    db_session.add_all(
+        [
+            Payment(
+                booking_id=b_disputed.id,
+                amount=contractor_payable_total(b_disputed),
+                currency="PEN",
+                payment_type="full",
+                status=PaymentStatus.retained,
+                retained_at=datetime.utcnow() - timedelta(days=2),
+            ),
+            BookingComplaint(
+                booking_id=b_disputed.id,
+                opened_by_user_id=contractor_user.id,
+                reason="Incumplimiento reportado",
+                status=BookingComplaintStatus.open,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    earn_disp_res = client.get("/api/v1/payments/musician/earnings")
+    assert earn_disp_res.status_code == 200
+    disp_item = next(
+        (d for d in earn_disp_res.json()["debts"] if d["booking_id"] == str(b_disputed.id)),
+        None,
+    )
+    assert disp_item is not None
+    assert disp_item["debt_state"] == "disputed"
+
 
 def test_bug4_06_cancellation_policy_at_15_days_is_100_percent(client):
     """Decisión 2 (FE4-04 / BUG4-06): a exactamente 15 días calendario el reembolso es 100 %."""

@@ -135,7 +135,7 @@ def compute_musician_earnings(
     if require_verified and not current_user.is_verified:
         raise HTTPException(403, "Tu perfil de músico debe estar verificado para esta acción")
 
-    from app.models.booking_complaint import BookingComplaint
+    from app.models.booking_complaint import BookingComplaint, BookingComplaintStatus
     from app.services.platform_payment import musician_portion_of_paid
     from app.services.settlement import settlement_state_for_booking
 
@@ -555,7 +555,7 @@ def release_payment(
     Exige reserva con evento finalizado, sin queja abierta ni mediación activa, y delega en
     `release_retained_payments` para mantener un único camino de liberación.
     """
-    from app.models.booking_complaint import BookingComplaint, BookingComplaintStatus
+    from app.models.booking_complaint import BookingComplaint, BookingComplaintStatus, BookingComplaintStatus
     from app.services.booking_lifecycle import is_event_finished
     from app.services.settlement import booking_has_gateway_mediation, release_retained_payments
 
