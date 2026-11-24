@@ -40,6 +40,7 @@ from app.services.booking_lifecycle import (
     clear_pending_changes,
     is_event_finished,
     is_pre_event,
+    is_review_grace_period_expired,
 )
 from app.services.booking_notifications import (
     notify_booking_change_accepted,
@@ -451,17 +452,15 @@ def create_booking_review(
     booking = get_booking_or_404(db, booking_id)
     assert_booking_contractor_owner(db, booking, current_user)
 
-    if booking.status == BookingStatus.completed:
-        raise HTTPException(
-            400,
-            "Esta reserva finalizada es solo de lectura",
-        )
-
+    is_final = bool(payload.is_final)
+    if booking.status == BookingStatus.completed and not is_final:
+        raise HTTPException(400, "Esta reserva finalizada es solo de lectura")
     if booking.status not in {
         BookingStatus.payment_retained,
         BookingStatus.change_pending,
         BookingStatus.in_progress,
         BookingStatus.payment_released,
+        BookingStatus.completed,
     }:
         raise HTTPException(
             400,
@@ -475,7 +474,6 @@ def create_booking_review(
         clear_pending_changes(booking)
         booking.status = BookingStatus.in_progress
 
-    is_final = bool(payload.is_final)
     comment = (payload.comment or "").strip()
     if is_final:
         assert_event_finished(
@@ -524,7 +522,7 @@ def create_booking_review(
     is_post_event_review = is_event_finished(booking) and (is_final or not payload.emoji)
     if (
         is_post_event_review
-        and has_musician_rec
+        and (has_musician_rec or is_review_grace_period_expired(booking))
         and booking.status
         in {
             BookingStatus.payment_retained,
@@ -676,8 +674,9 @@ def create_final_booking_review(
         .first()
         is not None
     )
+    can_auto_complete = has_musician_rec or is_review_grace_period_expired(booking)
     if existing_final:
-        if has_musician_rec and booking.status != BookingStatus.completed:
+        if can_auto_complete and booking.status != BookingStatus.completed:
             booking.status = BookingStatus.completed
             disable_booking_share(booking)
             db.commit()
@@ -700,7 +699,7 @@ def create_final_booking_review(
         db,
     )
     booking = get_booking_or_404(db, booking_id)
-    if has_musician_rec and booking.status != BookingStatus.completed:
+    if can_auto_complete and booking.status != BookingStatus.completed:
         booking.status = BookingStatus.completed
         disable_booking_share(booking)
         musician_user = _musician_user(db, booking)
@@ -1180,7 +1179,7 @@ def recommend_contractor(
     )
     if (
         is_event_finished(booking)
-        and has_contractor_review
+        and (has_contractor_review or is_review_grace_period_expired(booking))
         and booking.status
         in {
             BookingStatus.payment_retained,
@@ -1308,14 +1307,16 @@ def complete_booking(
         and contract_row.context.get("__already_paid_external__") is True
         and current_user.role == UserRole.musician
     )
+    grace_expired = is_review_grace_period_expired(booking)
     if (
         not (has_valid_contractor_review and musician_rec)
+        and not grace_expired
         and not complaint
         and not is_external_musician_booking
     ):
         raise HTTPException(
             400,
-            "Para cerrar la reserva es necesario que tanto el contratista como el músico hayan registrado su reseña final (o exista una queja registrada).",
+            "Para cerrar la reserva antes de las 24h de finalizado el show es necesario que tanto el contratista como el músico hayan registrado su reseña final (o exista una queja registrada).",
         )
 
     # Funds stay retained in the platform as app debt until an admin settles.

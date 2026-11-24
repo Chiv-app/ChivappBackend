@@ -39,6 +39,8 @@ from app.schemas.booking_link import (
     CancellationPolicyPublicOut,
     BookingLinkAutocompleteRequest,
     BookingLinkAutocompleteOut,
+    BookingLinkProgressUpdate,
+    BookingLinkProgressOut,
 )
 
 router = APIRouter()
@@ -355,6 +357,95 @@ def get_booking_link(
         ),
         contract_template_title=raw_title,
         contract_template_body=sanitize_contract_html(raw_body),
+        open_count=int(link.open_count or 0),
+        first_opened_at=link.first_opened_at,
+        last_opened_at=link.last_opened_at,
+        last_activity_at=link.last_activity_at,
+        current_step=int(link.current_step or 0),
+        max_step_reached=int(link.max_step_reached or 0),
+        draft_data=dict(link.draft_data or {}),
+    )
+
+
+@router.patch("/{token}/progress", response_model=BookingLinkProgressOut)
+@router.post("/{token}/progress", response_model=BookingLinkProgressOut, include_in_schema=False)
+def update_booking_link_progress(
+    token: str,
+    payload: BookingLinkProgressUpdate,
+    db: Session = Depends(deps.get_db),
+):
+    """
+    Registra aperturas reales del link, el paso actual del cliente y auto-guarda
+    (o guarda manualmente) el borrador de los campos ingresados.
+    """
+    link = db.query(BookingLink).filter(BookingLink.token == token).first()
+    if not link:
+        raise HTTPException(status_code=404, detail="Link de pago no encontrado.")
+
+    now = datetime.utcnow()
+    if link.expires_at and link.expires_at < now and link.status == BookingLinkStatus.active:
+        raise HTTPException(status_code=400, detail="Este link de pago ha expirado.")
+    if link.status == BookingLinkStatus.expired:
+        raise HTTPException(status_code=400, detail="Este link de pago ha expirado.")
+
+    if payload.record_open:
+        link.open_count = int(link.open_count or 0) + 1
+        if not link.first_opened_at:
+            link.first_opened_at = now
+        link.last_opened_at = now
+        if int(link.current_step or 0) == 0:
+            link.current_step = 1
+            link.max_step_reached = max(int(link.max_step_reached or 0), 1)
+
+    if payload.current_step is not None:
+        link.current_step = payload.current_step
+        link.max_step_reached = max(int(link.max_step_reached or 0), payload.current_step)
+
+    draft = dict(link.draft_data or {})
+    draft_fields = (
+        "event_date",
+        "start_time",
+        "end_time",
+        "event_type",
+        "location_address",
+        "location_city",
+        "location_reference",
+        "event_description",
+        "client_fullname",
+        "client_phone",
+        "client_email",
+        "client_document_number",
+    )
+    for field_name in draft_fields:
+        val = getattr(payload, field_name, None)
+        if val is not None:
+            cleaned = val.strip() if isinstance(val, str) else val
+            draft[field_name] = cleaned or None
+
+    if payload.has_signature is not None:
+        draft["has_signature"] = bool(payload.has_signature)
+    if payload.payment_modal_opened is not None:
+        draft["payment_modal_opened"] = bool(payload.payment_modal_opened)
+        if payload.payment_modal_opened:
+            link.current_step = 4
+            link.max_step_reached = max(int(link.max_step_reached or 0), 4)
+
+    draft["updated_at"] = now.isoformat()
+    link.draft_data = draft
+    link.last_activity_at = now
+
+    db.commit()
+    db.refresh(link)
+
+    return BookingLinkProgressOut(
+        open_count=int(link.open_count or 0),
+        first_opened_at=link.first_opened_at,
+        last_opened_at=link.last_opened_at,
+        last_activity_at=link.last_activity_at,
+        current_step=int(link.current_step or 0),
+        max_step_reached=int(link.max_step_reached or 0),
+        draft_data=dict(link.draft_data or {}),
+        saved_at=now,
     )
 
 
@@ -724,6 +815,31 @@ def checkout_booking_link(
     
     # 3. Link the booking to the payment link (keep link active until payment is approved)
     link.booking_id = booking.id
+    now_checkout = datetime.utcnow()
+    link.last_activity_at = now_checkout
+    link.current_step = 4
+    link.max_step_reached = max(int(link.max_step_reached or 0), 4)
+    checkout_draft = dict(link.draft_data or {})
+    checkout_draft.update(
+        {
+            "event_date": str(effective_date),
+            "start_time": str(effective_start)[:5],
+            "end_time": str(effective_end)[:5] if effective_end else None,
+            "event_type": payload.event_type,
+            "location_address": payload.location_address,
+            "location_city": payload.location_city,
+            "location_reference": payload.location_reference,
+            "event_description": effective_description,
+            "client_fullname": payload.fullname,
+            "client_email": email,
+            "client_phone": norm_phone or payload.phone,
+            "client_document_number": norm_doc or payload.document_number,
+            "has_signature": bool(saved_sig_url),
+            "payment_modal_opened": True,
+            "updated_at": now_checkout.isoformat(),
+        }
+    )
+    link.draft_data = checkout_draft
     
     # Generate contract
     db.flush()

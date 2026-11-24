@@ -182,6 +182,7 @@ class MusicianDebtItem(BaseModel):
     debt_state: str
     has_contractor_review: bool = False
     has_musician_review: bool = False
+    review_grace_ends_at: datetime | None = None
     complaint_status: str | None = None
     complaint_reason: str | None = None
     admin_musician_amount: float | None = None

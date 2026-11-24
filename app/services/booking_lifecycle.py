@@ -20,6 +20,7 @@ CONFIRMED_LIKE = {
 
 
 DEFAULT_EVENT_DURATION_MINUTES = 120
+REVIEW_GRACE_HOURS = 24
 
 
 def booking_event_datetime(booking: Booking) -> datetime:
@@ -67,6 +68,24 @@ def is_event_finished(
     else:
         current = now.astimezone(PERU_TIMEZONE)
     return current >= end_dt
+
+
+def is_review_grace_period_expired(
+    booking: Booking,
+    *,
+    now: datetime | None = None,
+    hours: int = REVIEW_GRACE_HOURS,
+) -> bool:
+    if not is_event_finished(booking, now=now):
+        return False
+    end_dt = booking_event_end_datetime(booking)
+    if now is None:
+        current = now_peru()
+    elif now.tzinfo is None:
+        current = now.replace(tzinfo=PERU_TIMEZONE)
+    else:
+        current = now.astimezone(PERU_TIMEZONE)
+    return current >= (end_dt + timedelta(hours=hours))
 
 
 def assert_event_started(

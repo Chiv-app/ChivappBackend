@@ -818,6 +818,13 @@ MIGRATION_STATEMENTS += ASSISTANT_TRAINING_STATEMENTS
 # `alembic/versions/20261117_d0e1f2a3b4c5_*`; el UPDATE de filas existentes vive solo en Alembic (aquí correría en cada arranque).
 ASSISTANT_ENSEMBLE_DEFAULT_STATEMENTS = [
     "ALTER TABLE musician_whatsapp_channel ALTER COLUMN ignore_ensemble_members SET DEFAULT FALSE",
+    "ALTER TABLE booking_link ADD COLUMN IF NOT EXISTS open_count INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE booking_link ADD COLUMN IF NOT EXISTS first_opened_at TIMESTAMP",
+    "ALTER TABLE booking_link ADD COLUMN IF NOT EXISTS last_opened_at TIMESTAMP",
+    "ALTER TABLE booking_link ADD COLUMN IF NOT EXISTS last_activity_at TIMESTAMP",
+    "ALTER TABLE booking_link ADD COLUMN IF NOT EXISTS current_step INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE booking_link ADD COLUMN IF NOT EXISTS max_step_reached INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE booking_link ADD COLUMN IF NOT EXISTS draft_data JSONB NOT NULL DEFAULT '{}'::jsonb",
 ]
 MIGRATION_STATEMENTS += ASSISTANT_ENSEMBLE_DEFAULT_STATEMENTS
 

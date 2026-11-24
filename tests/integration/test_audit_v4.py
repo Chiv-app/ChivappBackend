@@ -308,19 +308,37 @@ def test_bug4_05_event_passed_blocks_payment_and_flags_late_webhook(
     assert late_res.gateway_metadata.get("needs_refund_reason") == "event_passed"
 
 
+def _recent_finished_event_window():
+    """Devuelve (event_date, start_time, end_time) de un evento que finalizó hace ~2 horas (< 24h)."""
+    now = now_peru()
+    end_dt = now - timedelta(hours=2)
+    start_dt = end_dt - timedelta(hours=2)
+    # Si cruzó la medianoche entre start y end, fijamos una ventana de 1 hora en la misma fecha de end_dt
+    if start_dt.date() != end_dt.date():
+        ev_date = end_dt.date()
+        end_t = time(max(1, end_dt.hour), 0)
+        start_t = time(0, 0)
+        return ev_date, start_t, end_t
+    return (
+        end_dt.date(),
+        time(start_dt.hour, start_dt.minute),
+        time(end_dt.hour, end_dt.minute),
+    )
+
+
 def test_sec4_04_bug4_04_booking_closes_only_when_both_parties_review(
     client, db_session
 ):
-    """Decisión 3 (SEC4-04 / BUG4-04): la reserva solo pasa a completed cuando contratista Y músico reseñan."""
+    """Decisión 3 (SEC4-04 / BUG4-04): antes de las 24h post-evento, la reserva solo pasa a completed cuando contratista Y músico reseñan."""
     _, musician_user, musician, contractor_user, contractor = _setup_users(db_session)
-    past_date = (now_peru() - timedelta(days=1)).date()
+    ev_date, st_time, et_time = _recent_finished_event_window()
 
     booking = Booking(
         musician_id=musician.id,
         contractor_id=contractor.id,
-        event_date=past_date,
-        start_time=time(10, 0),
-        end_time=time(12, 0),
+        event_date=ev_date,
+        start_time=st_time,
+        end_time=et_time,
         event_type="Serenata",
         location_city="Lima",
         location_address="Av. Brasil 200",
@@ -342,7 +360,7 @@ def test_sec4_04_bug4_04_booking_closes_only_when_both_parties_review(
     db_session.add(emoji_rev)
     db_session.commit()
 
-    # 2. Músico recomienda al contratista primero; luego intenta /complete (debe fallar porque falta reseña final del contratista)
+    # 2. Músico recomienda al contratista primero; luego intenta /complete antes de 24h (debe fallar porque falta reseña final del contratista)
     _auth_cookie(client, musician_user)
     res_rec = client.post(
         f"/api/v1/bookings/{booking.id}/recommend-contractor",
@@ -357,7 +375,7 @@ def test_sec4_04_bug4_04_booking_closes_only_when_both_parties_review(
     db_session.refresh(booking)
     assert booking.status == BookingStatus.in_progress
 
-    # 3. Contratista publica su reseña final -> ahora están ambas y se cierra la reserva
+    # 3. Contratista publica su reseña final -> ahora están ambas y se cierra la reserva al instante
     _auth_cookie(client, contractor_user)
     res_final = client.post(
         f"/api/v1/bookings/{booking.id}/final-review",
@@ -366,6 +384,76 @@ def test_sec4_04_bug4_04_booking_closes_only_when_both_parties_review(
     assert res_final.status_code == 200
     db_session.refresh(booking)
     assert booking.status == BookingStatus.completed
+
+
+def test_review_24h_grace_period_unlocks_payout_and_allows_late_reviews(
+    client, db_session
+):
+    """Tras 24h de finalizado el show sin queja abierta, el cobro se desbloquea aunque falten reseñas, y aún se permite reseñar después."""
+    _, musician_user, musician, contractor_user, contractor = _setup_users(db_session)
+    expired_date = (now_peru() - timedelta(days=2)).date()
+
+    b_unlocked = Booking(
+        musician_id=musician.id,
+        contractor_id=contractor.id,
+        event_date=expired_date,
+        start_time=time(18, 0),
+        end_time=time(20, 0),
+        event_type="Cumpleaños",
+        location_city="Lima",
+        location_address="Av. Arequipa 1200",
+        status=BookingStatus.payment_retained,
+        price_agreed=Decimal("450.00"),
+        platform_fee_percent=Decimal("0.00"),
+        platform_fee_amount=Decimal("0.00"),
+    )
+    db_session.add(b_unlocked)
+    db_session.flush()
+    db_session.add(
+        Payment(
+            booking_id=b_unlocked.id,
+            amount=contractor_payable_total(b_unlocked),
+            currency="PEN",
+            payment_type="full",
+            status=PaymentStatus.retained,
+            retained_at=datetime.utcnow() - timedelta(days=2),
+        )
+    )
+    db_session.commit()
+
+    # 1. Aunque ni el músico ni la contratista dejaron reseña, tras >24h figura como payable en musician/earnings
+    _auth_cookie(client, musician_user)
+    earn_res = client.get("/api/v1/payments/musician/earnings")
+    assert earn_res.status_code == 200
+    earn_body = earn_res.json()
+    debt_item = next(
+        (d for d in earn_body["debts"] if d["booking_id"] == str(b_unlocked.id)),
+        None,
+    )
+    assert debt_item is not None
+    assert debt_item["debt_state"] == "payable"
+    assert earn_body["total_app_debt"] == 450.0
+
+    # 2. El músico puede solicitar retiro y la reserva pasa a completed
+    payout_res = client.post("/api/v1/payments/musician/request-payout")
+    assert payout_res.status_code == 200, payout_res.text
+    db_session.refresh(b_unlocked)
+    assert b_unlocked.status == BookingStatus.completed
+
+    # 3. Aun estando completed tras el desbloqueo por 24h, tanto la contratista como el músico pueden dejar su reseña una vez
+    _auth_cookie(client, contractor_user)
+    late_rev = client.post(
+        f"/api/v1/bookings/{b_unlocked.id}/final-review",
+        json={"rating": 5, "comment": "Dejé mi reseña al día siguiente del show, todo genial."},
+    )
+    assert late_rev.status_code == 200, late_rev.text
+
+    _auth_cookie(client, musician_user)
+    late_rec = client.post(
+        f"/api/v1/bookings/{b_unlocked.id}/recommend-contractor",
+        json={"rating": 5, "comment": "Excelente cliente, muy buena coordinación."},
+    )
+    assert late_rec.status_code == 200, late_rec.text
 
 
 def test_bug4_06_cancellation_policy_at_15_days_is_100_percent(client):
@@ -397,6 +485,7 @@ def test_sec4_03_bug4_02_payout_process_releases_only_linked_bookings(
 
     admin, musician_user, musician, contractor_user, contractor = _setup_users(db_session)
     past_date = (now_peru() - timedelta(days=5)).date()
+    b2_date, b2_start, b2_end = _recent_finished_event_window()
 
     b1 = Booking(
         musician_id=musician.id,
@@ -415,9 +504,9 @@ def test_sec4_03_bug4_02_payout_process_releases_only_linked_bookings(
     b2 = Booking(
         musician_id=musician.id,
         contractor_id=contractor.id,
-        event_date=past_date,
-        start_time=time(18, 0),
-        end_time=time(20, 0),
+        event_date=b2_date,
+        start_time=b2_start,
+        end_time=b2_end,
         event_type="Evento 2",
         location_city="Lima",
         location_address="Calle 2",
@@ -965,4 +1054,79 @@ def test_fe5_04_unauthenticated_resend_verification_by_email(client, db_session)
     assert mock_send.called
     db_session.refresh(unverified)
     assert unverified.email_verification_token is not None
+
+
+def test_booking_link_progress_autosave_and_open_tracking(client, db_session):
+    """El link registra aperturas, paso actual y borrador auto-guardado visible para el cliente y el músico."""
+    from app.models.booking_link import BookingLink, BookingLinkStatus
+
+    _, musician_user, musician, _, _ = _setup_users(db_session)
+    musician.signature_image_url = "/uploads/private/mus_sig.png"
+    link = BookingLink(
+        token="test-token-progress-v1",
+        musician_id=musician.id,
+        price=Decimal("480.00"),
+        status=BookingLinkStatus.active,
+        expires_at=datetime.utcnow() + timedelta(hours=24),
+    )
+    db_session.add(link)
+    db_session.commit()
+
+    # 1. El cliente abre el link por primera vez y está en el paso 1
+    client.cookies.clear()
+    r1 = client.patch(
+        f"/api/v1/booking-links/{link.token}/progress",
+        json={
+            "record_open": True,
+            "current_step": 1,
+            "event_date": "2026-12-20",
+            "start_time": "20:00",
+            "event_type": "Cumpleaños",
+        },
+    )
+    assert r1.status_code == 200, r1.text
+    b1 = r1.json()
+    assert b1["open_count"] == 1
+    assert b1["current_step"] == 1
+    assert b1["max_step_reached"] == 1
+    assert b1["draft_data"]["event_type"] == "Cumpleaños"
+
+    # 2. El cliente avanza al paso 2 y guarda sus datos personales (y luego recarga el link)
+    r2 = client.patch(
+        f"/api/v1/booking-links/{link.token}/progress",
+        json={
+            "record_open": True,
+            "current_step": 2,
+            "location_address": "Av. Larco 800",
+            "client_fullname": "Carlos Cliente",
+            "client_phone": "999111222",
+            "client_email": "carlos.cliente@test.com",
+        },
+    )
+    assert r2.status_code == 200, r2.text
+    b2 = r2.json()
+    assert b2["open_count"] == 2
+    assert b2["current_step"] == 2
+    assert b2["max_step_reached"] == 2
+
+    # 3. Al consultar el link público, el cliente recupera su borrador y paso
+    pub_res = client.get(f"/api/v1/booking-links/{link.token}")
+    assert pub_res.status_code == 200
+    pub_json = pub_res.json()
+    assert pub_json["open_count"] == 2
+    assert pub_json["current_step"] == 2
+    assert pub_json["draft_data"]["client_fullname"] == "Carlos Cliente"
+    assert pub_json["draft_data"]["location_address"] == "Av. Larco 800"
+
+    # 4. El músico consulta GET /api/v1/booking-links/me y ve las aperturas, paso y campos guardados
+    _auth_cookie(client, musician_user)
+    me_res = client.get("/api/v1/booking-links/me")
+    assert me_res.status_code == 200
+    my_link = next((x for x in me_res.json() if x["token"] == link.token), None)
+    assert my_link is not None
+    assert my_link["open_count"] == 2
+    assert my_link["current_step"] == 2
+    assert my_link["max_step_reached"] == 2
+    assert my_link["draft_data"]["client_phone"] == "999111222"
+
 

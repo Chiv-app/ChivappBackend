@@ -2,7 +2,7 @@ import uuid
 import enum
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, Column, String, Date, Time, Numeric, Enum, ForeignKey, Text, text
+from sqlalchemy import CheckConstraint, Column, String, Date, Time, Numeric, Enum, ForeignKey, Text, Integer, JSON, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -45,6 +45,15 @@ class BookingLink(Base):
     
     # Once completed, it creates a real booking
     booking_id = Column(UUID(as_uuid=True), ForeignKey("booking.id"), nullable=True)
+
+    # Progress & real-time auto-save tracking
+    open_count = Column(Integer, nullable=False, default=0, server_default=text("0"))
+    first_opened_at = Column(UTCDateTime, nullable=True)
+    last_opened_at = Column(UTCDateTime, nullable=True)
+    last_activity_at = Column(UTCDateTime, nullable=True)
+    current_step = Column(Integer, nullable=False, default=0, server_default=text("0"))
+    max_step_reached = Column(Integer, nullable=False, default=0, server_default=text("0"))
+    draft_data = Column(JSON, nullable=False, default=dict)
 
     created_at = Column(UTCDateTime, default=datetime.utcnow)
     updated_at = Column(UTCDateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

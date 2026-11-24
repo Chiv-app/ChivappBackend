@@ -1,6 +1,6 @@
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -149,7 +149,12 @@ def compute_musician_earnings(
 
     from app.models.booking import BookingReview
     from app.models.contractor_recommendation import ContractorRecommendation
-    from app.services.booking_lifecycle import is_event_finished
+    from app.services.booking_lifecycle import (
+        REVIEW_GRACE_HOURS,
+        booking_event_end_datetime,
+        is_event_finished,
+        is_review_grace_period_expired,
+    )
 
     booking_by_id = {booking.id: booking for booking in bookings}
 
@@ -191,20 +196,43 @@ def compute_musician_earnings(
         else set()
     )
 
+    complaints = (
+        db.query(BookingComplaint)
+        .filter(
+            BookingComplaint.booking_id.in_(booking_by_id.keys())
+            if booking_by_id
+            else False
+        )
+        .all()
+        if booking_by_id
+        else []
+    )
+    complaint_by_booking = {c.booking_id: c for c in complaints}
+
     # Determinar el estado efectivo sin mutar la base de datos en un GET (BUG-14).
-    # Una reserva se considera cerrada cuando el contratista dejó su reseña Y el músico dejó la suya.
+    # Una reserva se considera cerrada cuando ambas partes dejaron su reseña tras el evento,
+    # o cuando han transcurrido 24 horas desde el fin del evento sin queja abierta.
     effective_status_by_id: dict = {}
     for booking in bookings:
+        complaint = complaint_by_booking.get(booking.id)
+        has_open_complaint = bool(
+            complaint and complaint.status != BookingComplaintStatus.settled
+        )
+        has_both_reviews = (
+            booking.id in contractor_review_booking_ids
+            and booking.id in musician_review_booking_ids
+        )
         if (
             booking.status
             in {
                 BookingStatus.in_progress,
                 BookingStatus.payment_retained,
+                BookingStatus.change_pending,
                 BookingStatus.payment_released,
             }
             and is_event_finished(booking)
-            and booking.id in contractor_review_booking_ids
-            and booking.id in musician_review_booking_ids
+            and not has_open_complaint
+            and (has_both_reviews or is_review_grace_period_expired(booking))
         ):
             effective_status_by_id[booking.id] = BookingStatus.completed
         else:
@@ -235,19 +263,6 @@ def compute_musician_earnings(
         if booking_by_id
         else []
     )
-
-    complaints = (
-        db.query(BookingComplaint)
-        .filter(
-            BookingComplaint.booking_id.in_(booking_by_id.keys())
-            if booking_by_id
-            else False
-        )
-        .all()
-        if booking_by_id
-        else []
-    )
-    complaint_by_booking = {c.booking_id: c for c in complaints}
 
     payments_by_booking: dict = {}
     for payment in payments:
@@ -393,6 +408,10 @@ def compute_musician_earnings(
                 debt_state=state,
                 has_contractor_review=has_contractor_rev,
                 has_musician_review=has_musician_rev,
+                review_grace_ends_at=(
+                    booking_event_end_datetime(booking)
+                    + timedelta(hours=REVIEW_GRACE_HOURS)
+                ),
                 complaint_status=complaint.status.value if complaint else None,
                 complaint_reason=complaint.reason if complaint else None,
                 admin_musician_amount=(
@@ -1314,6 +1333,7 @@ def request_payout(
         Booking.status.in_(
             [
                 BookingStatus.payment_retained,
+                BookingStatus.change_pending,
                 BookingStatus.in_progress,
                 BookingStatus.payment_released,
                 BookingStatus.completed,
@@ -1358,16 +1378,17 @@ def request_payout(
         if awaiting_reviews:
             raise HTTPException(
                 400,
-                "Aún no tienes reservas listas para cobrar. Verifica que el evento haya culminado y que tanto el contratista como tú hayan dejado su reseña.",
+                "Aún no tienes reservas listas para cobrar. El cobro se habilita al instante cuando ambas partes dejan su reseña tras el evento, o automáticamente 24 horas después de finalizado el show (sin queja abierta).",
             )
         raise HTTPException(
             400,
-            "No tienes saldo disponible para retirar. Solo se pueden cobrar reservas culminadas donde tanto el contratista como tú hayan dejado su reseña (o reservas canceladas con retención a tu favor).",
+            "No tienes saldo disponible para retirar. Solo se pueden cobrar reservas culminadas (con ambas reseñas o tras 24h de finalizado el show sin queja abierta) o reservas canceladas con retención a tu favor.",
         )
 
-    # Persistir el paso a 'completed' de las reservas elegibles que ya cuentan con ambas reseñas (SEC2-05)
+    # Persistir el paso a 'completed' de las reservas elegibles (con ambas reseñas o >24h post-evento) (SEC2-05)
     eligible_ids = [d.booking_id for d in eligible_debts]
     if eligible_ids:
+        from app.services.booking_lifecycle import clear_pending_changes
         from app.services.booking_share import disable_booking_share
 
         bookings_to_promote = (
@@ -1378,6 +1399,7 @@ def request_payout(
                     [
                         BookingStatus.in_progress,
                         BookingStatus.payment_retained,
+                        BookingStatus.change_pending,
                         BookingStatus.payment_released,
                     ]
                 ),
@@ -1385,6 +1407,8 @@ def request_payout(
             .all()
         )
         for b_row in bookings_to_promote:
+            if b_row.status == BookingStatus.change_pending:
+                clear_pending_changes(b_row)
             b_row.status = BookingStatus.completed
             disable_booking_share(b_row)
 

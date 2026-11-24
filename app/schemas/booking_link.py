@@ -1,5 +1,5 @@
 from datetime import date, datetime, time
-from typing import List, Optional, Literal
+from typing import Any, Dict, List, Optional, Literal
 from uuid import UUID
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
@@ -65,6 +65,13 @@ class BookingLinkOut(BaseModel):
     status: BookingLinkStatus
     expires_at: datetime
     booking_id: Optional[UUID] = None
+    open_count: int = 0
+    first_opened_at: Optional[datetime] = None
+    last_opened_at: Optional[datetime] = None
+    last_activity_at: Optional[datetime] = None
+    current_step: int = 0
+    max_step_reached: int = 0
+    draft_data: Optional[Dict[str, Any]] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
 
@@ -131,6 +138,43 @@ class BookingLinkPublicOut(BaseModel):
     )
     contract_template_title: Optional[str] = None
     contract_template_body: Optional[str] = None
+    open_count: int = 0
+    first_opened_at: Optional[datetime] = None
+    last_opened_at: Optional[datetime] = None
+    last_activity_at: Optional[datetime] = None
+    current_step: int = 0
+    max_step_reached: int = 0
+    draft_data: Optional[Dict[str, Any]] = Field(default_factory=dict)
+
+
+class BookingLinkProgressUpdate(BaseModel):
+    record_open: bool = False
+    current_step: Optional[int] = Field(default=None, ge=1, le=4)
+    event_date: Optional[str] = Field(default=None, max_length=20)
+    start_time: Optional[str] = Field(default=None, max_length=20)
+    end_time: Optional[str] = Field(default=None, max_length=20)
+    event_type: Optional[str] = Field(default=None, max_length=120)
+    location_address: Optional[str] = Field(default=None, max_length=300)
+    location_city: Optional[str] = Field(default=None, max_length=120)
+    location_reference: Optional[str] = Field(default=None, max_length=255)
+    event_description: Optional[str] = Field(default=None, max_length=2000)
+    client_fullname: Optional[str] = Field(default=None, max_length=120)
+    client_phone: Optional[str] = Field(default=None, max_length=40)
+    client_email: Optional[str] = Field(default=None, max_length=255)
+    client_document_number: Optional[str] = Field(default=None, max_length=20)
+    has_signature: Optional[bool] = None
+    payment_modal_opened: Optional[bool] = None
+
+
+class BookingLinkProgressOut(BaseModel):
+    open_count: int = 0
+    first_opened_at: Optional[datetime] = None
+    last_opened_at: Optional[datetime] = None
+    last_activity_at: Optional[datetime] = None
+    current_step: int = 0
+    max_step_reached: int = 0
+    draft_data: Dict[str, Any] = Field(default_factory=dict)
+    saved_at: datetime
 
 
 class BookingLinkCheckout(BaseModel):
