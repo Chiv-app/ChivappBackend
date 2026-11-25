@@ -748,7 +748,23 @@ def _extract_fields_heuristic(text: str, today: date | None = None) -> dict[str,
             out["event_type"] = label
             break
 
-    # 6. Dirección y ciudad/distrito
+    # 6. Dirección, coordenadas GPS (WhatsApp / Google Maps) y ciudad/distrito
+    coord_url_match = re.search(
+        r"(?:!3d(-?\d{1,2}\.\d{3,})!4d(-?\d{1,3}\.\d{3,})|(?:[?&](?:q|query|ll|center|daddr)=|@)(-?\d{1,2}\.\d{3,})\s*,\s*\+?(-?\d{1,3}\.\d{3,})|(?<!\d)(-?\d{1,2}\.\d{4,})\s*,\s*\+?(-?\d{1,3}\.\d{4,})(?!\d))",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if coord_url_match:
+        c_lat = coord_url_match.group(1) or coord_url_match.group(3) or coord_url_match.group(5)
+        c_lng = coord_url_match.group(2) or coord_url_match.group(4) or coord_url_match.group(6)
+        try:
+            lat_f = float(c_lat)
+            lng_f = float(c_lng)
+            if -90.0 <= lat_f <= 90.0 and -180.0 <= lng_f <= 180.0:
+                out["location_reference"] = f"{lat_f:.6f},{lng_f:.6f}"
+        except Exception:
+            pass
+
     addr_match = re.search(
         r"\b((?:jr\.?|jir[oó]n|av\.?|avenida|calle|ca\.?|psje\.?|pje\.?|pasaje|prol\.?|prolongaci[oó]n|urb\.?|urbanizaci[oó]n|asoc\.?|mz\.?|local|sal[oó]n|salon|club| quinta)\s+[^,.;\n]{3,80})",
         raw,
