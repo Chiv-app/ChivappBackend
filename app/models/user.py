@@ -89,6 +89,9 @@ class User(Base):
     @property
     def registration_type(self) -> str:
         if self.oauth_accounts:
-            return str(self.oauth_accounts[0].provider.value)
+            provider = self.oauth_accounts[0].provider
+            return str(getattr(provider, "value", provider))
+        if self.email and self.email.endswith("@guest.local"):
+            return "guest"
         return "chivapp"
 

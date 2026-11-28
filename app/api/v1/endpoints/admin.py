@@ -321,6 +321,7 @@ def list_users(
             or_(
                 func.lower(User.email).like(term, escape="\\"),
                 func.lower(User.fullname).like(term, escape="\\"),
+                func.lower(User.phone).like(term, escape="\\"),
             )
         )
     if is_verified is not None:
@@ -338,7 +339,12 @@ def update_user(
     db: Session = Depends(deps.get_db),
 ):
     user_uuid = parse_uuid(user_id, "user_id")
-    user = db.query(User).filter(User.id == user_uuid).first()
+    user = (
+        db.query(User)
+        .options(joinedload(User.oauth_accounts))
+        .filter(User.id == user_uuid)
+        .first()
+    )
     if not user:
         raise HTTPException(404, "Usuario no encontrado")
     if user.id == current_admin.id and payload.is_active is False:

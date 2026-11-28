@@ -1,12 +1,12 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
+from pydantic import BaseModel, ConfigDict, model_validator
 
 
 class UserOut(BaseModel):
     id: UUID
-    email: EmailStr
+    email: str
     username: str | None = None
     fullname: str | None = None
     role: str
@@ -38,8 +38,8 @@ class UserOut(BaseModel):
                 "role": value.role.value if hasattr(value.role, "value") else value.role,
                 "phone": value.phone,
                 "profile_picture_url": value.profile_picture_url,
-                "is_verified": value.is_verified,
-                "is_active": getattr(value, "is_active", True),
+                "is_verified": bool(value.is_verified),
+                "is_active": True if getattr(value, "is_active", True) is None else bool(getattr(value, "is_active", True)),
                 "is_email_verified": value.email_verified_at is not None,
                 "has_password": bool(value.password_hash),
                 "has_connected_calendar": bool(getattr(value, "google_calendar_refresh_token", None)),
@@ -59,7 +59,3 @@ class UserOut(BaseModel):
             }
             value.pop("password_hash", None)
         return handler(value)
-
-
-
-

@@ -32,18 +32,33 @@ class AdminStatsOut(BaseModel):
 
 class AdminUserOut(BaseModel):
     id: UUID
-    email: EmailStr
+    email: str
     fullname: str | None = None
     role: str
-    phone: str | None
-    is_verified: bool
+    phone: str | None = None
+    is_verified: bool = False
     is_active: bool = True
-    created_at: datetime
-    last_login_at: datetime | None
+    created_at: datetime | None = None
+    last_login_at: datetime | None = None
     profile_picture_url: str | None = None
     registration_type: str | None = None
 
     model_config = {"from_attributes": True}
+
+    @field_validator("role", mode="before")
+    @classmethod
+    def _normalize_role(cls, value):
+        return getattr(value, "value", value) if value is not None else "contractor"
+
+    @field_validator("is_verified", mode="before")
+    @classmethod
+    def _normalize_is_verified(cls, value):
+        return bool(value)
+
+    @field_validator("is_active", mode="before")
+    @classmethod
+    def _normalize_is_active(cls, value):
+        return True if value is None else bool(value)
 
 
 class AdminUserUpdate(BaseModel):

@@ -85,7 +85,7 @@ class EnsembleMemberUpdate(BaseModel):
 
 class EnsembleMemberOut(BaseModel):
     id: UUID
-    email: EmailStr
+    email: str
     fullname: str
     phone: str | None
     specialties: list[str]
@@ -117,7 +117,7 @@ class BookingMemberInviteOut(BaseModel):
     booking_id: UUID
     ensemble_member_id: UUID
     member_fullname: str
-    member_email: EmailStr
+    member_email: str
     specialties: list[str]
     status: str
     respond_url: str | None = None
@@ -177,7 +177,7 @@ class BookingMemberPayoutOut(BaseModel):
     booking_id: UUID
     ensemble_member_id: UUID
     member_fullname: str
-    member_email: EmailStr
+    member_email: str
     amount: Decimal
     currency: str
     status: str
@@ -191,7 +191,7 @@ class BookingMemberPayoutOut(BaseModel):
 class MemberSettlementLineOut(BaseModel):
     ensemble_member_id: UUID
     member_fullname: str
-    member_email: EmailStr
+    member_email: str
     invite_status: str
     payout_id: UUID | None = None
     amount: Decimal = Decimal("0")
@@ -259,7 +259,7 @@ class MemberPayoutHistoryItem(BaseModel):
 class MemberPayoutHistoryOut(BaseModel):
     member_id: UUID
     member_fullname: str
-    member_email: EmailStr
+    member_email: str
     currency: str = "PEN"
     total_assigned: Decimal
     total_pending: Decimal
